@@ -1,5 +1,4 @@
 node_modules/
-.electron-cache/
 .npm-cache/
 .DS_Store
 native/cef-project/build/

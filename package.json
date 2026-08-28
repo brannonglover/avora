@@ -3,20 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "A small Chromium-based browser prototype with vertical tabs.",
-  "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron .",
-    "cef:configure": "bash native/scripts/configure-cef-macos.sh",
-    "cef:build": "bash native/scripts/build-cef-minimal-macos.sh",
-    "cef:open": "bash native/scripts/open-cef-minimal-macos.sh",
-    "cef:build:avora": "bash native/scripts/build-cef-avora-macos.sh",
-    "cef:open:avora": "bash native/scripts/open-cef-avora-macos.sh"
-  },
-  "devDependencies": {
-    "electron": "^42.0.0"
-  },
-  "dependencies": {
-    "extract-zip": "^2.0.1"
+    "configure": "bash native/scripts/configure-cef-macos.sh",
+    "build": "bash native/scripts/build-cef-avora-macos.sh",
+    "start": "bash native/scripts/open-cef-avora-macos.sh",
+    "build:minimal": "bash native/scripts/build-cef-minimal-macos.sh",
+    "start:minimal": "bash native/scripts/open-cef-minimal-macos.sh"
   }
 }

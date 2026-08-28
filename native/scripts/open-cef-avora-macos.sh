@@ -9,8 +9,8 @@ if [[ ! -d "$APP_PATH" ]]; then
   echo "$APP_PATH"
   echo
   echo "Run:"
-  echo "  npm run cef:configure"
-  echo "  npm run cef:build:avora"
+  echo "  npm run configure"
+  echo "  npm run build"
   exit 1
 fi
 

@@ -9,8 +9,8 @@ if [[ ! -d "$APP_PATH" ]]; then
   echo "$APP_PATH"
   echo
   echo "Run:"
-  echo "  npm run cef:configure"
-  echo "  npm run cef:build"
+  echo "  npm run configure"
+  echo "  npm run build:minimal"
   exit 1
 fi
 

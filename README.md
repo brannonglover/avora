@@ -1,36 +1,34 @@
 # Unnamed Browser
 
-A small Chromium-based browser prototype with vertical tabs and a top address bar.
-
-## Why Electron for the first build?
-
-Electron is the fastest practical way to start because it ships Chromium and gives us direct control over browser surfaces. A lower-level CEF app can be leaner later, but it takes much longer to bootstrap correctly. This version keeps the UI simple and avoids a frontend build system so iteration stays quick.
+A small Chromium-based browser prototype built with [Chromium Embedded Framework (CEF)](https://bitbucket.org/chromiumembedded/cef/wiki/Home), with vertical tabs and a top address bar implemented in the native CEF client.
 
 ## Run it
 
 ```sh
-electron_config_cache="$PWD/.electron-cache" npm install --cache .npm-cache
-npm run dev
+npm run configure
+npm run build
+npm run start
 ```
 
-The explicit cache settings keep Electron and npm downloads inside this project. That avoids issues on machines where the user-level npm or Electron cache has old permissions.
+`configure` downloads the CEF binary distribution (large, one-time setup). `build` compiles the Avora CEF target; `start` opens the built `Avora.app` on macOS.
+
+For the upstream minimal sample instead:
+
+```sh
+npm run configure
+npm run build:minimal
+npm run start:minimal
+```
+
+Local npm cache (optional): install with `npm install --cache .npm-cache` if you want caches kept inside the repo; this project otherwise has no Node runtime dependencies for the browser itself.
 
 ## Current features
 
-- Chromium page rendering through Electron `WebContentsView`
-- Vertical tab list
-- Top address/search bar
-- Back, forward, reload, new tab, close tab
-- Keyboard shortcuts: `Cmd/Ctrl+L`, `Cmd/Ctrl+T`, `Cmd/Ctrl+W`
-- Unpacked Chromium extension loading from the toolbar
+Features live in the CEF/native client under `native/cef-project` (Avora example). Chromium renders pages natively with full embedding control.
 
 ## Extensions
 
-Click the diamond button beside the new-tab button and paste either a Chrome Web Store URL or a 32-character extension ID. You can also type `1password` to install 1Password directly. The browser downloads the CRX package through Google's Chromium update service, shows progress in the lower-left corner, unpacks it, and loads it into the current browser session.
-
-Leave the prompt blank to choose an unpacked Chrome extension folder manually. The folder must contain `manifest.json`; if you are using a local Chrome profile extension, select the version folder inside that extension's ID folder.
-
-Electron does not support every Chrome extension API, so some downloaded extensions may install but not fully work yet. Store-downloaded extensions are currently unpacked under the app's user data directory and need persistence/auto-reload hardening next.
+Chrome extension support depends on how much of the Chromium extension stack is wired in the CEF build. Compatibility and install flows are tracked in `docs/` and `native/README.md`.
 
 ## Next good steps
 
@@ -38,14 +36,11 @@ Electron does not support every Chrome extension API, so some downloaded extensi
 - Add a simple start page
 - Add profile/session controls
 - Add history and bookmarks
-- Persist loaded extension paths and reload them on app start
-- Add extension compatibility warnings for unsupported Chrome APIs
-- Evaluate CEF or another native shell if minimum memory use becomes the main goal
+- Chrome Web Store CRX download/unpack/install where supported
+- Native messaging, WebAuthn/passkeys, and extension compatibility reporting
 
-## Serious browser direction
+## Architecture
 
-The current app is an Electron prototype because it is the quickest way to build around Chromium. If this grows into a daily-driver browser, the natural path is:
-
-1. Keep product UX, tab model, shortcuts, history, bookmarks, spaces, and command features in portable modules.
-2. Use Electron while product ideas are changing quickly.
-3. Move the engine host to CEF/native code only when the feature set is stable enough to justify the extra build complexity.
+- `native/cef-project`: official CEF baseline, CMake build, Avora/minimal targets
+- `native/scripts`: configure, build, and open helpers
+- `docs/`: migration notes and compatibility
