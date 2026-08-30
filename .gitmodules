@@ -1,0 +1,3 @@
+[submodule "native/cef-project"]
+	path = native/cef-project
+	url = https://github.com/chromiumembedded/cef-project.git
