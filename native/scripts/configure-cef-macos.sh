@@ -10,6 +10,13 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if [[ ! -d "$CEF_PROJECT_DIR/.git" ]]; then
+  echo "Cloning cef-project..."
+  git clone --depth 1 https://github.com/chromiumembedded/cef-project.git "$CEF_PROJECT_DIR"
+fi
+
+bash "$ROOT_DIR/native/scripts/sync-avora-example.sh"
+
 ARCH="$(uname -m)"
 if [[ "$ARCH" != "arm64" && "$ARCH" != "x86_64" ]]; then
   echo "Unsupported macOS architecture: $ARCH"
