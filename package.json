@@ -4,8 +4,12 @@
   "private": true,
   "description": "A small Chromium-based browser prototype with vertical tabs.",
   "scripts": {
-    "configure": "bash native/scripts/configure-cef-macos.sh",
-    "build": "bash native/scripts/build-cef-avora-macos.sh",
+    "configure": "bash native/scripts/configure-cef-$(uname -s | tr A-Z a-z | sed 's/darwin/macos/').sh",
+    "configure:macos": "bash native/scripts/configure-cef-macos.sh",
+    "configure:linux": "bash native/scripts/configure-cef-linux.sh",
+    "build": "bash native/scripts/build-cef-avora-$(uname -s | tr A-Z a-z | sed 's/darwin/macos/').sh",
+    "build:macos": "bash native/scripts/build-cef-avora-macos.sh",
+    "build:linux": "bash native/scripts/build-cef-avora-linux.sh",
     "start": "bash native/scripts/open-cef-avora-macos.sh",
     "build:minimal": "bash native/scripts/build-cef-minimal-macos.sh",
     "start:minimal": "bash native/scripts/open-cef-minimal-macos.sh"
