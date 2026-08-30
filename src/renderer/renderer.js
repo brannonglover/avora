@@ -39,7 +39,7 @@ let pendingSidebarResize = null;
 const SIDEBAR_MIN_WIDTH = 184;
 const SIDEBAR_MAX_WIDTH = 360;
 const CONTENT_MIN_WIDTH = 320;
-const CONTENT_INSET = 14;
+const CONTENT_INSET = 0;
 const SIDEBAR_WIDTH_STORAGE_KEY = "avora.sidebarWidth";
 
 function maxSidebarWidthForWindow() {

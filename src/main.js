@@ -10,8 +10,7 @@ const UI = {
   sidebarWidth: 236,
   minSidebarWidth: 184,
   maxSidebarWidth: 360,
-  contentInset: 14,
-  contentRadius: 16,
+  contentInset: 0,
   minContentWidth: 320,
   minContentHeight: 240,
 };
@@ -649,7 +648,6 @@ function createTab(url = "https://www.google.com", activate = true) {
       partition: "persist:main",
     },
   });
-  view.setBorderRadius(UI.contentRadius);
   view.setBackgroundColor("#ffffff");
 
   const tab = {
