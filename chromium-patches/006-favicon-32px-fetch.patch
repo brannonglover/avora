@@ -1,0 +1,34 @@
+diff --git a/components/favicon/core/favicon_handler.cc b/components/favicon/core/favicon_handler.cc
+index 07c36d7299..536edab2df 100644
+--- a/components/favicon/core/favicon_handler.cc
++++ b/components/favicon/core/favicon_handler.cc
+@@ -85,10 +85,13 @@ std::vector<int> GetDesiredPixelSizes(
+     FaviconDriverObserver::NotificationIconType handler_type) {
+   switch (handler_type) {
+     case FaviconDriverObserver::NON_TOUCH_16_DIP: {
++      // Avora: fetch at 32 DIP base so vertical-tab favicons (displayed at
++      // 32 DIP) get a native-resolution image instead of an upscaled 16px one.
++      constexpr int kDesiredBaseSizeDip = 32;
+       std::vector<int> pixel_sizes;
+       for (float scale_factor : favicon_base::GetFaviconScales()) {
+         pixel_sizes.push_back(
+-            static_cast<int>(ceil(scale_factor * gfx::kFaviconSize)));
++            static_cast<int>(ceil(scale_factor * kDesiredBaseSizeDip)));
+       }
+       return pixel_sizes;
+     }
+diff --git a/components/favicon/core/favicon_handler.h b/components/favicon/core/favicon_handler.h
+index c4413de65f..1d0068528d 100644
+--- a/components/favicon/core/favicon_handler.h
++++ b/components/favicon/core/favicon_handler.h
+@@ -291,7 +291,9 @@ class FaviconHandler {
+   // Returns the preferred size of the image. 0 means no preference (any size
+   // will do).
+   int preferred_icon_size() const {
+-    return download_largest_icon_ ? 0 : gfx::kFaviconSize;
++    // Avora: return 32 so CreateFaviconImageSkia builds a 32-DIP ImageSkia
++    // that matches the vertical-tab display size without upscaling.
++    return download_largest_icon_ ? 0 : 32;
+   }
+ 
+   // Used for the GetFaviconForPageURL() request looking up the page URL,

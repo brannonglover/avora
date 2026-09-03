@@ -1,6 +1,9 @@
 node_modules/
 .npm-cache/
 .DS_Store
-native/cef-project/build/
-native/cef-project/build-make/
-native/cef-project/third_party/cef/
+
+# Chromium source checkout (fetched via gclient/depot_tools, not our code)
+chromium/
+
+# Legacy CEF build artifacts
+native/

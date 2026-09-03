@@ -1,0 +1,319 @@
+diff --git a/chrome/browser/avora/BUILD.gn b/chrome/browser/avora/BUILD.gn
+new file mode 100644
+index 0000000000..8efb31637a
+--- /dev/null
++++ b/chrome/browser/avora/BUILD.gn
+@@ -0,0 +1,14 @@
++source_set("avora") {
++  sources = [
++    "avora_space.cc",
++    "avora_space.h",
++    "avora_space_manager.cc",
++    "avora_space_manager.h",
++  ]
++
++  deps = [
++    "//base",
++    "//components/prefs",
++    "//components/tab_groups",
++  ]
++}
+diff --git a/chrome/browser/avora/avora_space.cc b/chrome/browser/avora/avora_space.cc
+new file mode 100644
+index 0000000000..547c4219d5
+--- /dev/null
++++ b/chrome/browser/avora/avora_space.cc
+@@ -0,0 +1,47 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#include "chrome/browser/avora/avora_space.h"
++
++#include "base/uuid.h"
++
++namespace avora {
++
++base::DictValue Space::ToDict() const {
++  base::ListValue pinned_list;
++  for (const auto& url : pinned_urls) {
++    pinned_list.Append(url);
++  }
++
++  return base::DictValue()
++      .Set("id", id)
++      .Set("name", name)
++      .Set("color", static_cast<int>(color))
++      .Set("is_active", is_active)
++      .Set("pinned_urls", std::move(pinned_list));
++}
++
++Space Space::FromDict(const base::DictValue& dict) {
++  Space space;
++  if (const std::string* val = dict.FindString("id")) {
++    space.id = *val;
++  }
++  if (const std::string* val = dict.FindString("name")) {
++    space.name = *val;
++  }
++  if (std::optional<int> val = dict.FindInt("color")) {
++    space.color = static_cast<tab_groups::TabGroupColorId>(*val);
++  }
++  if (std::optional<bool> val = dict.FindBool("is_active")) {
++    space.is_active = *val;
++  }
++  if (const base::ListValue* pinned = dict.FindList("pinned_urls")) {
++    for (const auto& url_val : *pinned) {
++      if (url_val.is_string()) {
++        space.pinned_urls.push_back(url_val.GetString());
++      }
++    }
++  }
++  return space;
++}
++
++}  // namespace avora
+diff --git a/chrome/browser/avora/avora_space.h b/chrome/browser/avora/avora_space.h
+new file mode 100644
+index 0000000000..ded5af84e2
+--- /dev/null
++++ b/chrome/browser/avora/avora_space.h
+@@ -0,0 +1,32 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#ifndef CHROME_BROWSER_AVORA_AVORA_SPACE_H_
++#define CHROME_BROWSER_AVORA_AVORA_SPACE_H_
++
++#include <string>
++#include <vector>
++
++#include "base/values.h"
++#include "components/tab_groups/tab_group_color.h"
++
++namespace avora {
++
++// Represents a single Avora "Space" -- a named workspace containing tabs.
++// Spaces are backed by Chrome's tab group system and persisted via PrefService.
++struct Space {
++  std::string id;
++  std::string name;
++  tab_groups::TabGroupColorId color =
++      tab_groups::TabGroupColorId::kGrey;
++  bool is_active = false;
++
++  // URLs of pinned sites in this space.
++  std::vector<std::string> pinned_urls;
++
++  base::DictValue ToDict() const;
++  static Space FromDict(const base::DictValue& dict);
++};
++
++}  // namespace avora
++
++#endif  // CHROME_BROWSER_AVORA_AVORA_SPACE_H_
+diff --git a/chrome/browser/avora/avora_space_manager.cc b/chrome/browser/avora/avora_space_manager.cc
+new file mode 100644
+index 0000000000..3d29e33aaa
+--- /dev/null
++++ b/chrome/browser/avora/avora_space_manager.cc
+@@ -0,0 +1,122 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#include "chrome/browser/avora/avora_space_manager.h"
++
++#include <algorithm>
++
++#include "base/uuid.h"
++#include "base/values.h"
++#include "components/prefs/pref_registry_simple.h"
++#include "components/prefs/pref_service.h"
++
++namespace avora {
++
++SpaceManager::SpaceManager(PrefService* pref_service)
++    : pref_service_(pref_service) {
++  auto spaces = GetSpaces();
++  if (spaces.empty()) {
++    CreateSpace("Default");
++  }
++}
++
++SpaceManager::~SpaceManager() = default;
++
++void SpaceManager::RegisterProfilePrefs(PrefRegistrySimple* registry) {
++  registry->RegisterListPref(kSpacesPref);
++}
++
++std::vector<Space> SpaceManager::GetSpaces() const {
++  const base::ListValue& list = pref_service_->GetList(kSpacesPref);
++  std::vector<Space> spaces;
++  for (const auto& val : list) {
++    if (val.is_dict()) {
++      spaces.push_back(Space::FromDict(val.GetDict()));
++    }
++  }
++  return spaces;
++}
++
++const Space* SpaceManager::GetActiveSpace() const {
++  return nullptr;
++}
++
++std::string SpaceManager::CreateSpace(const std::string& name) {
++  auto spaces = GetSpaces();
++
++  Space space;
++  space.id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  space.name = name;
++  space.color = static_cast<tab_groups::TabGroupColorId>(
++      spaces.size() % 8);
++
++  if (spaces.empty()) {
++    space.is_active = true;
++  }
++
++  spaces.push_back(std::move(space));
++  SaveSpaces(spaces);
++  return spaces.back().id;
++}
++
++void SpaceManager::RemoveSpace(const std::string& id) {
++  auto spaces = GetSpaces();
++  std::erase_if(spaces, [&id](const Space& s) { return s.id == id; });
++  SaveSpaces(spaces);
++}
++
++void SpaceManager::ActivateSpace(const std::string& id) {
++  auto spaces = GetSpaces();
++  for (auto& space : spaces) {
++    space.is_active = (space.id == id);
++  }
++  SaveSpaces(spaces);
++}
++
++void SpaceManager::RenameSpace(const std::string& id,
++                                const std::string& new_name) {
++  auto spaces = GetSpaces();
++  for (auto& space : spaces) {
++    if (space.id == id) {
++      space.name = new_name;
++      break;
++    }
++  }
++  SaveSpaces(spaces);
++}
++
++void SpaceManager::AddPinnedUrl(const std::string& space_id,
++                                 const std::string& url) {
++  auto spaces = GetSpaces();
++  for (auto& space : spaces) {
++    if (space.id == space_id) {
++      if (std::find(space.pinned_urls.begin(), space.pinned_urls.end(), url) ==
++          space.pinned_urls.end()) {
++        space.pinned_urls.push_back(url);
++      }
++      break;
++    }
++  }
++  SaveSpaces(spaces);
++}
++
++void SpaceManager::RemovePinnedUrl(const std::string& space_id,
++                                    const std::string& url) {
++  auto spaces = GetSpaces();
++  for (auto& space : spaces) {
++    if (space.id == space_id) {
++      std::erase(space.pinned_urls, url);
++      break;
++    }
++  }
++  SaveSpaces(spaces);
++}
++
++void SpaceManager::SaveSpaces(const std::vector<Space>& spaces) {
++  base::ListValue list;
++  for (const auto& space : spaces) {
++    list.Append(space.ToDict());
++  }
++  pref_service_->SetList(kSpacesPref, std::move(list));
++}
++
++}  // namespace avora
+diff --git a/chrome/browser/avora/avora_space_manager.h b/chrome/browser/avora/avora_space_manager.h
+new file mode 100644
+index 0000000000..8ef7d2391b
+--- /dev/null
++++ b/chrome/browser/avora/avora_space_manager.h
+@@ -0,0 +1,62 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#ifndef CHROME_BROWSER_AVORA_AVORA_SPACE_MANAGER_H_
++#define CHROME_BROWSER_AVORA_AVORA_SPACE_MANAGER_H_
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/avora/avora_space.h"
++
++class PrefService;
++class PrefRegistrySimple;
++
++namespace avora {
++
++// Manages Avora Spaces -- named workspaces that group tabs.
++// Each space stores its own set of pinned URLs.
++// Persists to Chrome's PrefService so spaces survive across restarts.
++class SpaceManager {
++ public:
++  static constexpr char kSpacesPref[] = "avora.spaces";
++
++  explicit SpaceManager(PrefService* pref_service);
++  ~SpaceManager();
++
++  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
++
++  // Returns all spaces.
++  std::vector<Space> GetSpaces() const;
++
++  // Returns the currently active space, or nullptr if none.
++  const Space* GetActiveSpace() const;
++
++  // Creates a new space with the given name and returns its ID.
++  std::string CreateSpace(const std::string& name);
++
++  // Removes the space with the given ID.
++  void RemoveSpace(const std::string& id);
++
++  // Switches to the space with the given ID.
++  void ActivateSpace(const std::string& id);
++
++  // Renames a space.
++  void RenameSpace(const std::string& id, const std::string& new_name);
++
++  // Adds a pinned URL to a space.
++  void AddPinnedUrl(const std::string& space_id, const std::string& url);
++
++  // Removes a pinned URL from a space.
++  void RemovePinnedUrl(const std::string& space_id, const std::string& url);
++
++ private:
++  void SaveSpaces(const std::vector<Space>& spaces);
++
++  raw_ptr<PrefService> pref_service_;
++};
++
++}  // namespace avora
++
++#endif  // CHROME_BROWSER_AVORA_AVORA_SPACE_MANAGER_H_
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index f261c72029..359e1c969f 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1056,6 +1056,7 @@ source_set("core") {
+     "//chrome/browser/tracing",
+     "//chrome/browser/translate",
+     "//chrome/browser/trusted_vault",
++    "//chrome/browser/avora",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui:ui_features",
+     "//chrome/browser/ui/actions",

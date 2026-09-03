@@ -2,12 +2,13 @@
   "name": "avora",
   "version": "0.1.0",
   "private": true,
-  "description": "A small Chromium-based browser prototype with vertical tabs.",
+  "description": "A Chromium-based browser with vertical tabs and spaces.",
   "scripts": {
-    "configure": "bash native/scripts/configure-cef-macos.sh",
-    "build": "bash native/scripts/build-cef-avora-macos.sh",
-    "start": "bash native/scripts/open-cef-avora-macos.sh",
-    "build:minimal": "bash native/scripts/build-cef-minimal-macos.sh",
-    "start:minimal": "bash native/scripts/open-cef-minimal-macos.sh"
+    "build": "bash build-scripts/incremental-build.sh",
+    "build:full": "bash build-scripts/build.sh full",
+    "build:gen": "bash build-scripts/build.sh gen",
+    "build:patches": "bash build-scripts/build.sh apply-patches",
+    "start": "open chromium/src/out/Default/Avora.app",
+    "cleanup": "bash build-scripts/build.sh cleanup"
   }
 }
