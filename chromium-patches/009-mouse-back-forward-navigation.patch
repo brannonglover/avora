@@ -1,0 +1,101 @@
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.cc b/chrome/browser/ui/views/frame/browser_root_view.cc
+index 659c915653..c967de49a3 100644
+--- a/chrome/browser/ui/views/frame/browser_root_view.cc
++++ b/chrome/browser/ui/views/frame/browser_root_view.cc
+@@ -318,6 +318,20 @@ views::View::DropCallback BrowserRootView::GetDropCallback(
+                         weak_ptr_factory_.GetWeakPtr(), std::move(drop_info_));
+ }
+ 
++bool BrowserRootView::OnMousePressed(const ui::MouseEvent& event) {
++  if (event.changed_button_flags() == ui::EF_BACK_MOUSE_BUTTON) {
++    chrome::GoBack(browser_view_->browser(),
++                   WindowOpenDisposition::CURRENT_TAB);
++    return true;
++  }
++  if (event.changed_button_flags() == ui::EF_FORWARD_MOUSE_BUTTON) {
++    chrome::GoForward(browser_view_->browser(),
++                      WindowOpenDisposition::CURRENT_TAB);
++    return true;
++  }
++  return RootView::OnMousePressed(event);
++}
++
+ bool BrowserRootView::OnMouseWheel(const ui::MouseWheelEvent& event) {
+   // TODO(dfried): See if it's possible to move this logic deeper into the view
+   // hierarchy - ideally to HorizontalTabStripRegionView.
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.h b/chrome/browser/ui/views/frame/browser_root_view.h
+index 6bff662b1f..f10ad20167 100644
+--- a/chrome/browser/ui/views/frame/browser_root_view.h
++++ b/chrome/browser/ui/views/frame/browser_root_view.h
+@@ -86,6 +86,7 @@ class BrowserRootView : public views::internal::RootView {
+   DropCallback GetDropCallback(const ui::DropTargetEvent& event) override;
+   bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
+   void OnMouseExited(const ui::MouseEvent& event) override;
++  bool OnMousePressed(const ui::MouseEvent& event) override;
+   gfx::Size CalculatePreferredSize(
+       const views::SizeBounds& available_size) const override;
+ 
+diff --git a/ui/events/cocoa/cocoa_event_utils.mm b/ui/events/cocoa/cocoa_event_utils.mm
+index bd8521a30f..60f098afba 100644
+--- a/ui/events/cocoa/cocoa_event_utils.mm
++++ b/ui/events/cocoa/cocoa_event_utils.mm
+@@ -38,6 +38,28 @@ bool IsMiddleButtonEvent(NSEvent* event) {
+          type == NSEventTypeOtherMouseUp;
+ }
+ 
++bool IsBackButtonEvent(NSEvent* event) {
++  if (event.buttonNumber != 3) {
++    return false;
++  }
++
++  NSEventType type = event.type;
++  return type == NSEventTypeOtherMouseDown ||
++         type == NSEventTypeOtherMouseDragged ||
++         type == NSEventTypeOtherMouseUp;
++}
++
++bool IsForwardButtonEvent(NSEvent* event) {
++  if (event.buttonNumber != 4) {
++    return false;
++  }
++
++  NSEventType type = event.type;
++  return type == NSEventTypeOtherMouseDown ||
++         type == NSEventTypeOtherMouseDragged ||
++         type == NSEventTypeOtherMouseUp;
++}
++
+ // Return true if the target modifier key is up. OS X has an "official" flag
+ // to test whether either left or right versions of a modifier key are held,
+ // and "unofficial" flags for the left and right versions independently. This
+@@ -85,6 +107,8 @@ int EventFlagsFromNSEventWithModifiers(NSEvent* event, NSUInteger modifiers) {
+ 
+   flags |= IsRightButtonEvent(event) ? ui::EF_RIGHT_MOUSE_BUTTON : 0;
+   flags |= IsMiddleButtonEvent(event) ? ui::EF_MIDDLE_MOUSE_BUTTON : 0;
++  flags |= IsBackButtonEvent(event) ? ui::EF_BACK_MOUSE_BUTTON : 0;
++  flags |= IsForwardButtonEvent(event) ? ui::EF_FORWARD_MOUSE_BUTTON : 0;
+ 
+   if (event.type == NSEventTypeKeyDown && event.ARepeat) {
+     flags |= ui::EF_IS_REPEAT;
+diff --git a/ui/events/cocoa/events_mac.mm b/ui/events/cocoa/events_mac.mm
+index 93f5733277..29b17469ff 100644
+--- a/ui/events/cocoa/events_mac.mm
++++ b/ui/events/cocoa/events_mac.mm
+@@ -143,7 +143,16 @@ int GetChangedMouseButtonFlagsFromNative(const PlatformEvent& platform_event) {
+     case NSEventTypeOtherMouseDown:
+     case NSEventTypeOtherMouseUp:
+     case NSEventTypeOtherMouseDragged:
+-      return EF_MIDDLE_MOUSE_BUTTON;
++      switch ([platform_event.Get() buttonNumber]) {
++        case 2:
++          return EF_MIDDLE_MOUSE_BUTTON;
++        case 3:
++          return EF_BACK_MOUSE_BUTTON;
++        case 4:
++          return EF_FORWARD_MOUSE_BUTTON;
++        default:
++          return 0;
++      }
+     default:
+       break;
+   }

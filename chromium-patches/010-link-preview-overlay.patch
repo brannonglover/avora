@@ -1,0 +1,699 @@
+diff --git a/chrome/browser/ui/views/avora/avora_link_preview_view.cc b/chrome/browser/ui/views/avora/avora_link_preview_view.cc
+new file mode 100644
+index 0000000000..b21bbc441d
+--- /dev/null
++++ b/chrome/browser/ui/views/avora/avora_link_preview_view.cc
+@@ -0,0 +1,356 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
++
++#include <algorithm>
++
++#include "base/functional/bind.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "components/vector_icons/vector_icons.h"
++#include "content/public/browser/web_contents.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/accessibility/ax_enums.mojom.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/compositor/layer.h"
++#include "ui/events/keycodes/keyboard_codes.h"
++#include "ui/gfx/canvas.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/rounded_corners_f.h"
++#include "ui/gfx/paint_vector_icon.h"
++#include "ui/views/background.h"
++#include "ui/views/controls/button/image_button.h"
++#include "ui/views/controls/webview/webview.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/layout/fill_layout.h"
++
++namespace avora {
++
++namespace {
++
++constexpr SkColor kBackdropColor = SkColorSetARGB(0x66, 0x10, 0x10, 0x18);
++constexpr SkColor kCardBg = SkColorSetARGB(0xFF, 0x1E, 0x22, 0x2A);
++constexpr SkColor kCardBorder = SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF);
++constexpr SkColor kButtonBg = SkColorSetARGB(0xCC, 0x28, 0x2C, 0x34);
++constexpr SkColor kButtonHoverBg = SkColorSetARGB(0xFF, 0x38, 0x3C, 0x46);
++constexpr SkColor kButtonIconColor = SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5);
++
++constexpr int kBackdropBlurRadius = 12;
++constexpr float kBackdropBlurQuality = 0.33f;
++
++class RoundedBackground : public views::Background {
++ public:
++  RoundedBackground(SkColor fill, SkColor border, int radius)
++      : fill_(fill), border_(border), radius_(radius) {}
++
++  void Paint(gfx::Canvas* canvas, views::View* view) const override {
++    const gfx::Rect bounds = view->GetLocalBounds();
++    const float r = static_cast<float>(radius_);
++
++    cc::PaintFlags fill_flags;
++    fill_flags.setAntiAlias(true);
++    fill_flags.setColor(fill_);
++    fill_flags.setStyle(cc::PaintFlags::kFill_Style);
++    canvas->DrawRoundRect(bounds, r, fill_flags);
++
++    if (SkColorGetA(border_) > 0) {
++      cc::PaintFlags border_flags;
++      border_flags.setAntiAlias(true);
++      border_flags.setColor(border_);
++      border_flags.setStyle(cc::PaintFlags::kStroke_Style);
++      border_flags.setStrokeWidth(1.0f);
++      gfx::RectF br(bounds);
++      br.Inset(0.5f);
++      canvas->DrawRoundRect(br, r, border_flags);
++    }
++  }
++
++ private:
++  SkColor fill_;
++  SkColor border_;
++  int radius_;
++};
++
++class HoverImageButton : public views::ImageButton {
++  METADATA_HEADER(HoverImageButton, views::ImageButton)
++
++ public:
++  HoverImageButton() = default;
++  ~HoverImageButton() override = default;
++
++  void OnPaintBackground(gfx::Canvas* canvas) override {
++    const gfx::Rect bounds = GetLocalBounds();
++    const float r = bounds.width() / 2.0f;
++    SkColor bg = kButtonBg;
++    if (GetState() == views::Button::STATE_HOVERED ||
++        GetState() == views::Button::STATE_PRESSED) {
++      bg = kButtonHoverBg;
++    }
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    flags.setColor(bg);
++    flags.setStyle(cc::PaintFlags::kFill_Style);
++    canvas->DrawRoundRect(bounds, r, flags);
++  }
++};
++
++BEGIN_METADATA(HoverImageButton)
++END_METADATA
++
++}  // namespace
++
++// ═══════════════════════════════════════════════════════════════════════════
++// AvoraLinkPreviewView
++// ═══════════════════════════════════════════════════════════════════════════
++
++AvoraLinkPreviewView::AvoraLinkPreviewView(
++    BrowserWindowInterface* browser,
++    LinkPreviewOpenCallback open_cb,
++    LinkPreviewDismissCallback dismiss_cb)
++    : browser_(browser),
++      open_cb_(std::move(open_cb)),
++      dismiss_cb_(std::move(dismiss_cb)) {
++  SetPaintToLayer();
++  layer()->SetFillsBoundsOpaquely(false);
++
++  auto backdrop = std::make_unique<views::View>();
++  backdrop->SetPaintToLayer();
++  backdrop->layer()->SetFillsBoundsOpaquely(false);
++  backdrop->layer()->SetBackgroundBlur(kBackdropBlurRadius);
++  backdrop->layer()->SetBackdropFilterQuality(kBackdropBlurQuality);
++  backdrop->SetBackground(views::CreateSolidBackground(kBackdropColor));
++  backdrop->SetCanProcessEventsWithinSubtree(false);
++  backdrop_ = AddChildView(std::move(backdrop));
++
++  SetFocusBehavior(FocusBehavior::ALWAYS);
++  SetAccessibleRole(ax::mojom::Role::kDialog);
++  SetAccessibleName(u"Link preview overlay");
++  SetVisible(false);
++
++  BuildUI();
++}
++
++AvoraLinkPreviewView::~AvoraLinkPreviewView() {
++  if (owned_contents_) {
++    owned_contents_->SetDelegate(nullptr);
++  }
++}
++
++// ── Public API ──────────────────────────────────────────────────────────────
++
++void AvoraLinkPreviewView::Show(const GURL& url) {
++  previewed_url_ = url;
++
++  Profile* profile = browser_->GetProfile();
++  auto contents = content::WebContents::Create(
++      content::WebContents::CreateParams(profile));
++  contents->SetDelegate(this);
++  contents->GetController().LoadURL(
++      url, content::Referrer(), ui::PAGE_TRANSITION_LINK, std::string());
++
++  owned_contents_ = std::move(contents);
++  if (web_view_) {
++    web_view_->SetWebContents(owned_contents_.get());
++  }
++
++  SetVisible(true);
++  LayoutCard();
++  RequestFocus();
++}
++
++void AvoraLinkPreviewView::ShowWithContents(
++    std::unique_ptr<content::WebContents> contents,
++    const GURL& url) {
++  previewed_url_ = url;
++
++  contents->SetDelegate(this);
++  owned_contents_ = std::move(contents);
++  if (web_view_) {
++    web_view_->SetWebContents(owned_contents_.get());
++  }
++
++  SetVisible(true);
++  LayoutCard();
++  RequestFocus();
++}
++
++void AvoraLinkPreviewView::Hide() {
++  SetVisible(false);
++  if (web_view_) {
++    web_view_->SetWebContents(nullptr);
++  }
++  if (owned_contents_) {
++    owned_contents_->SetDelegate(nullptr);
++    owned_contents_.reset();
++  }
++  previewed_url_ = GURL();
++}
++
++bool AvoraLinkPreviewView::IsShowing() const {
++  return GetVisible();
++}
++
++// ── View overrides ──────────────────────────────────────────────────────────
++
++bool AvoraLinkPreviewView::OnMousePressed(const ui::MouseEvent& event) {
++  if (card_) {
++    gfx::Point point_in_card = event.location();
++    views::View::ConvertPointToTarget(this, card_, &point_in_card);
++    if (!card_->HitTestPoint(point_in_card)) {
++      Hide();
++      if (dismiss_cb_) {
++        dismiss_cb_.Run();
++      }
++      return true;
++    }
++  }
++  return true;
++}
++
++bool AvoraLinkPreviewView::OnKeyPressed(const ui::KeyEvent& event) {
++  if (event.key_code() == ui::VKEY_ESCAPE) {
++    Hide();
++    if (dismiss_cb_) {
++      dismiss_cb_.Run();
++    }
++    return true;
++  }
++  return false;
++}
++
++void AvoraLinkPreviewView::OnBoundsChanged(
++    const gfx::Rect& previous_bounds) {
++  LayoutCard();
++}
++
++// ── WebContentsDelegate ─────────────────────────────────────────────────────
++
++void AvoraLinkPreviewView::AddNewContents(
++    content::WebContents* source,
++    std::unique_ptr<content::WebContents> new_contents,
++    const GURL& target_url,
++    WindowOpenDisposition disposition,
++    const blink::mojom::WindowFeatures& window_features,
++    bool user_gesture,
++    bool* was_blocked) {
++  if (open_cb_ && target_url.is_valid()) {
++    open_cb_.Run(target_url);
++  }
++}
++
++// ── Private helpers ─────────────────────────────────────────────────────────
++
++void AvoraLinkPreviewView::BuildUI() {
++  auto card = std::make_unique<views::View>();
++  card->SetPaintToLayer();
++  card->layer()->SetFillsBoundsOpaquely(false);
++  card->layer()->SetRoundedCornerRadius(
++      gfx::RoundedCornersF(kCardCornerRadius));
++
++  card->SetBackground(std::make_unique<RoundedBackground>(
++      kCardBg, kCardBorder, kCardCornerRadius));
++
++  card->SetLayoutManager(std::make_unique<views::FillLayout>());
++
++  Profile* profile = browser_->GetProfile();
++  auto wv = std::make_unique<views::WebView>(profile);
++  wv->SetPaintToLayer();
++  wv->layer()->SetFillsBoundsOpaquely(false);
++  wv->layer()->SetRoundedCornerRadius(
++      gfx::RoundedCornersF(kCardCornerRadius));
++  web_view_ = card->AddChildView(std::move(wv));
++
++  card_ = AddChildView(std::move(card));
++
++  // Button column — sits outside the card, overlaying the upper right.
++  auto close_btn = std::make_unique<HoverImageButton>();
++  close_btn->SetImageModel(
++      views::Button::STATE_NORMAL,
++      ui::ImageModel::FromVectorIcon(
++          vector_icons::kCloseIcon, kButtonIconColor, 16));
++  close_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
++  close_btn->SetAccessibleName(u"Close preview");
++  close_btn->SetCallback(base::BindRepeating(
++      &AvoraLinkPreviewView::OnCloseClicked, weak_factory_.GetWeakPtr()));
++  close_button_ = AddChildView(std::move(close_btn));
++
++  auto open_btn = std::make_unique<HoverImageButton>();
++  open_btn->SetImageModel(
++      views::Button::STATE_NORMAL,
++      ui::ImageModel::FromVectorIcon(
++          vector_icons::kOpenInNewFlippableIcon, kButtonIconColor, 16));
++  open_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
++  open_btn->SetAccessibleName(u"Open in new tab");
++  open_btn->SetCallback(base::BindRepeating(
++      &AvoraLinkPreviewView::OnOpenInNewTabClicked,
++      weak_factory_.GetWeakPtr()));
++  open_tab_button_ = AddChildView(std::move(open_btn));
++}
++
++void AvoraLinkPreviewView::LayoutCard() {
++  if (!card_) {
++    return;
++  }
++
++  const gfx::Size host = size();
++  if (host.IsEmpty()) {
++    return;
++  }
++
++  if (backdrop_) {
++    backdrop_->SetBoundsRect(gfx::Rect(host));
++    constexpr float kWindowRadius = 10.0f;
++    backdrop_->layer()->SetRoundedCornerRadius(
++        gfx::RoundedCornersF(kWindowRadius));
++    backdrop_->layer()->SetIsFastRoundedCorner(true);
++  }
++
++  int card_width = std::min(host.width() - 48, kCardWidth);
++  int card_x = (host.width() - card_width) / 2;
++  int card_y = kCardVerticalMargin;
++  int card_height = host.height() - 2 * kCardVerticalMargin;
++  card_height = std::max(card_height, 200);
++
++  card_->SetBoundsRect(gfx::Rect(card_x, card_y, card_width, card_height));
++
++  // Position buttons vertically stacked to the upper right of the card.
++  int btn_x = card_x + card_width + kButtonMargin;
++  // If buttons would go off-screen, place them inside the card's right edge.
++  if (btn_x + kButtonSize > host.width()) {
++    btn_x = card_x + card_width - kButtonSize - kButtonMargin;
++  }
++  int btn_y = card_y + kButtonMargin;
++
++  if (close_button_) {
++    close_button_->SetBoundsRect(
++        gfx::Rect(btn_x, btn_y, kButtonSize, kButtonSize));
++  }
++  if (open_tab_button_) {
++    open_tab_button_->SetBoundsRect(
++        gfx::Rect(btn_x, btn_y + kButtonSize + kButtonSpacing,
++                   kButtonSize, kButtonSize));
++  }
++}
++
++void AvoraLinkPreviewView::OnCloseClicked() {
++  Hide();
++  if (dismiss_cb_) {
++    dismiss_cb_.Run();
++  }
++}
++
++void AvoraLinkPreviewView::OnOpenInNewTabClicked() {
++  GURL url = previewed_url_;
++  Hide();
++  if (open_cb_ && url.is_valid()) {
++    open_cb_.Run(url);
++  }
++  if (dismiss_cb_) {
++    dismiss_cb_.Run();
++  }
++}
++
++BEGIN_METADATA(AvoraLinkPreviewView)
++END_METADATA
++
++}  // namespace avora
+diff --git a/chrome/browser/ui/views/avora/avora_link_preview_view.h b/chrome/browser/ui/views/avora/avora_link_preview_view.h
+new file mode 100644
+index 0000000000..0f5937b34f
+--- /dev/null
++++ b/chrome/browser/ui/views/avora/avora_link_preview_view.h
+@@ -0,0 +1,114 @@
++// Copyright 2026 Avora. All rights reserved.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_LINK_PREVIEW_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_LINK_PREVIEW_VIEW_H_
++
++#include <memory>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "content/public/browser/web_contents_delegate.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++#include "url/gurl.h"
++
++class BrowserWindowInterface;
++
++namespace content {
++class WebContents;
++}
++
++namespace views {
++class ImageButton;
++class WebView;
++}  // namespace views
++
++namespace avora {
++
++// Callback invoked when the user clicks "open in new tab".
++using LinkPreviewOpenCallback =
++    base::RepeatingCallback<void(const GURL&)>;
++
++// Callback invoked when the overlay should be dismissed.
++using LinkPreviewDismissCallback = base::RepeatingClosure;
++
++// Full-content overlay that intercepts target="_blank" link navigations.
++// Instead of opening a new tab, the destination is rendered inside a centered
++// 1200px-wide card overlaid on top of the current page.  The upper-right
++// corner has close (×) and "open in new tab" (↗) buttons stacked vertically.
++class AvoraLinkPreviewView : public views::View,
++                             public content::WebContentsDelegate {
++  METADATA_HEADER(AvoraLinkPreviewView, views::View)
++
++ public:
++  static constexpr int kCardWidth = 1200;
++  static constexpr int kCardCornerRadius = 16;
++  static constexpr int kCardVerticalMargin = 40;
++  static constexpr int kButtonSize = 32;
++  static constexpr int kButtonMargin = 12;
++  static constexpr int kButtonSpacing = 8;
++
++  AvoraLinkPreviewView(BrowserWindowInterface* browser,
++                       LinkPreviewOpenCallback open_cb,
++                       LinkPreviewDismissCallback dismiss_cb);
++  AvoraLinkPreviewView(const AvoraLinkPreviewView&) = delete;
++  AvoraLinkPreviewView& operator=(const AvoraLinkPreviewView&) = delete;
++  ~AvoraLinkPreviewView() override;
++
++  // Show the overlay, loading the given URL in the embedded web view.
++  void Show(const GURL& url);
++
++  // Show the overlay with already-created WebContents (from AddNewContents).
++  void ShowWithContents(std::unique_ptr<content::WebContents> contents,
++                        const GURL& url);
++
++  // Hide the overlay and destroy the web contents.
++  void Hide();
++
++  bool IsShowing() const;
++
++  // The URL currently being previewed.
++  const GURL& previewed_url() const { return previewed_url_; }
++
++  // views::View overrides:
++  bool OnMousePressed(const ui::MouseEvent& event) override;
++  bool OnKeyPressed(const ui::KeyEvent& event) override;
++  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
++
++  // content::WebContentsDelegate:
++  void AddNewContents(content::WebContents* source,
++                      std::unique_ptr<content::WebContents> new_contents,
++                      const GURL& target_url,
++                      WindowOpenDisposition disposition,
++                      const blink::mojom::WindowFeatures& window_features,
++                      bool user_gesture,
++                      bool* was_blocked) override;
++
++ private:
++  void BuildUI();
++  void LayoutCard();
++
++  void OnCloseClicked();
++  void OnOpenInNewTabClicked();
++
++  raw_ptr<BrowserWindowInterface> browser_;
++  LinkPreviewOpenCallback open_cb_;
++  LinkPreviewDismissCallback dismiss_cb_;
++
++  raw_ptr<views::View> backdrop_ = nullptr;
++  raw_ptr<views::View> card_ = nullptr;
++  raw_ptr<views::WebView> web_view_ = nullptr;
++  raw_ptr<views::ImageButton> close_button_ = nullptr;
++  raw_ptr<views::ImageButton> open_tab_button_ = nullptr;
++
++  GURL previewed_url_;
++  std::unique_ptr<content::WebContents> owned_contents_;
++
++  base::WeakPtrFactory<AvoraLinkPreviewView> weak_factory_{this};
++};
++
++}  // namespace avora
++
++#endif  // CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_LINK_PREVIEW_VIEW_H_
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+index 9e27bdcb53..ec8f284dca 100644
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -47,6 +47,7 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+ #include "chrome/browser/ui/views/frame/contents_web_view.h"
+ #include "chrome/browser/ui/views/status_bubble_views.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -696,6 +697,22 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
+                                                         source, disposition);
+   }
+ 
++  // Avora: intercept target="_blank" links (NEW_FOREGROUND_TAB) and show them
++  // in the link preview overlay instead of opening a new tab.
++  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB &&
++      target_url.is_valid() && user_gesture &&
++      !target_url.SchemeIs("chrome") &&
++      !target_url.SchemeIs("chrome-native") &&
++      !target_url.SchemeIs("devtools")) {
++    BrowserView* browser_view =
++        BrowserView::GetBrowserViewForBrowser(&*browser_);
++    if (browser_view && !browser_view->IsAvoraLinkPreviewShowing()) {
++      browser_view->ShowAvoraLinkPreviewWithContents(
++          std::move(new_contents), target_url);
++      return nullptr;
++    }
++  }
++
+   // Postpone activating popups opened by content-fullscreen tabs. This permits
+   // popups on other screens and retains fullscreen focus for exit accelerators.
+   // Popups are activated when the opener exits fullscreen, which happens
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index 2471d6b062..91062ed0ce 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -186,6 +186,7 @@
+ #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
+ #include "chrome/browser/avora/avora_search_engine.h"
+ #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
++#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+ #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
+ #include "chrome/browser/ui/webui/avora_settings/avora_settings_ui.h"
+ #include "components/url_formatter/url_fixer.h"
+@@ -1044,6 +1045,15 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+             base::BindRepeating(&BrowserView::HideAvoraQuickNav,
+                                 base::Unretained(this))));
+ 
++    // Link preview overlay (target="_blank" interception).
++    avora_link_preview_ =
++        AddChildView(std::make_unique<avora::AvoraLinkPreviewView>(
++            browser_.get(),
++            base::BindRepeating(&BrowserView::OnLinkPreviewOpenInNewTab,
++                                base::Unretained(this)),
++            base::BindRepeating(&BrowserView::HideAvoraLinkPreview,
++                                base::Unretained(this))));
++
+     vertical_tab_strip_top_corner_ =
+         AddChildView(std::make_unique<CustomFloatingCorner>(
+             *this, CornerOrientation::kTopLeading,
+@@ -4684,6 +4694,14 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
+       }
+     }
+ 
++    // Avora link preview overlay captures all input when visible.
++    if (avora_link_preview_ && avora_link_preview_->GetVisible()) {
++      gfx::Point test_point(point);
++      if (ConvertedHitTest(parent(), avora_link_preview_, &test_point)) {
++        return HTCLIENT;
++      }
++    }
++
+     // The Avora sidebar header and vertical tabstrip are not part of the
+     // overlay in immersive mode and must be tested separately.
+     if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
+@@ -4773,6 +4791,14 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
+     }
+   }
+ 
++  // Link preview overlay captures all input when visible.
++  if (avora_link_preview_ && avora_link_preview_->GetVisible()) {
++    gfx::Point test_point(point);
++    if (ConvertedHitTest(parent(), avora_link_preview_, &test_point)) {
++      return HTCLIENT;
++    }
++  }
++
+   if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
+     gfx::Point test_point(point);
+     if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
+@@ -5176,6 +5202,7 @@ void BrowserView::AddedToWidget() {
+   layout_views.avora_sidebar_header = avora_sidebar_header_;
+   layout_views.avora_spaces_bar = avora_spaces_bar_;
+   layout_views.avora_quick_nav = avora_quick_nav_;
++  layout_views.avora_link_preview = avora_link_preview_;
+   // LINT.ThenChange(//chrome/browser/ui/views/frame/layout/browser_view_layout.h:BrowserViewLayoutViews)
+ 
+   SetLayoutManager(BrowserViewLayout::CreateLayout(
+@@ -6333,6 +6360,52 @@ void BrowserView::HideAvoraQuickNav() {
+   avora_quick_nav_->Hide();
+ }
+ 
++void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
++  if (!avora_link_preview_) {
++    return;
++  }
++  avora_link_preview_->SetBoundsRect(
++      multi_contents_view_ ? multi_contents_view_->bounds()
++                           : GetLocalBounds());
++  avora_link_preview_->Show(url);
++  ReorderChildView(avora_link_preview_, children().size());
++  DeprecatedLayoutImmediately();
++}
++
++void BrowserView::ShowAvoraLinkPreviewWithContents(
++    std::unique_ptr<content::WebContents> contents,
++    const GURL& url) {
++  if (!avora_link_preview_) {
++    return;
++  }
++  avora_link_preview_->SetBoundsRect(
++      multi_contents_view_ ? multi_contents_view_->bounds()
++                           : GetLocalBounds());
++  avora_link_preview_->ShowWithContents(std::move(contents), url);
++  ReorderChildView(avora_link_preview_, children().size());
++  DeprecatedLayoutImmediately();
++}
++
++void BrowserView::HideAvoraLinkPreview() {
++  if (!avora_link_preview_) {
++    return;
++  }
++  avora_link_preview_->Hide();
++}
++
++void BrowserView::OnLinkPreviewOpenInNewTab(const GURL& url) {
++  if (!url.is_valid()) {
++    return;
++  }
++  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  Navigate(&params);
++}
++
++bool BrowserView::IsAvoraLinkPreviewShowing() const {
++  return avora_link_preview_ && avora_link_preview_->IsShowing();
++}
++
+ void BrowserView::UpdateFullscreenAllowedFromPolicy(
+     bool allowed_without_policy) {
+   auto* fullscreen_pref_path = prefs::kFullscreenAllowed;
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+index d272e71249..c28757cfa5 100644
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -99,6 +99,7 @@ class AvoraSidebarView;
+ class AvoraSpacesBarView;
+ namespace avora {
+ class AvoraQuickNavView;
++class AvoraLinkPreviewView;
+ }  // namespace avora
+ class VerticalTabStripRegionView;
+ class WebAppFrameToolbarView;
+@@ -1230,6 +1231,15 @@ class BrowserView : public BrowserWindow,
+   // Avora quick-nav overlay (CMD+T / CMD+L).
+   raw_ptr<avora::AvoraQuickNavView> avora_quick_nav_ = nullptr;
+ 
++  // Avora link preview overlay (target="_blank" interception).
++  raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;
++  void ShowAvoraLinkPreview(const GURL& url);
++  void ShowAvoraLinkPreviewWithContents(
++      std::unique_ptr<content::WebContents> contents, const GURL& url);
++  void HideAvoraLinkPreview();
++  void OnLinkPreviewOpenInNewTab(const GURL& url);
++  bool IsAvoraLinkPreviewShowing() const;
++
+   // Outward-projecting corners of the vertical tab strip.
+   raw_ptr<CustomFloatingCorner> vertical_tab_strip_top_corner_ = nullptr;
+   raw_ptr<CustomFloatingCorner> vertical_tab_strip_bottom_corner_ = nullptr;
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_layout.h b/chrome/browser/ui/views/frame/layout/browser_view_layout.h
+index 682f2dc0ba..7c112c99b8 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout.h
+@@ -94,6 +94,9 @@ struct BrowserViewLayoutViews {
+   // Avora quick-nav overlay (CMD+T).
+   raw_ptr<views::View> avora_quick_nav = nullptr;
+ 
++  // Avora link preview overlay (target="_blank").
++  raw_ptr<views::View> avora_link_preview = nullptr;
++
+   // LINT.ThenChange(//chrome/browser/ui/views/frame/browser_view.cc:BrowserViewLayoutViews)
+ 
+   // These views are dynamically set.
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+index 8264da6917..588c13e821 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -1392,6 +1392,16 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+                     views().avora_quick_nav->GetVisible());
+   }
+ 
++  // Avora: link preview overlay covers the main content area.
++  if (views().avora_link_preview &&
++      IsParentedTo(views().avora_link_preview, views().browser_view)) {
++    gfx::Rect overlay_bounds(content_left, content_y,
++                             content_right - content_left, content_height);
++    layout.AddChild(views().avora_link_preview,
++                    overlay_bounds,
++                    views().avora_link_preview->GetVisible());
++  }
++
+   return layout;
+ }
+ 
