@@ -7,8 +7,8 @@ index 0000000000..0000000001 100644
  constexpr SkColor kAvoraSidebarText = SkColorSetRGB(0xED, 0xF2, 0xF5);
  constexpr SkColor kAvoraContentBg = SK_ColorWHITE;
 +
-+// Active tab: bold lift so users can immediately spot the current tab.
-+constexpr SkColor kAvoraActiveTabBg = SkColorSetRGB(0x30, 0x36, 0x3E);
++// Active tab: strong lift so the current tab clearly stands out.
++constexpr SkColor kAvoraActiveTabBg = SkColorSetRGB(0x3A, 0x42, 0x50);
 +
 +// Hover: pronounced highlight when the pointer enters a tab.
 +constexpr SkColor kAvoraHoverBg = SkColorSetRGB(0x38, 0x3E, 0x48);
@@ -65,65 +65,11 @@ index 0000000000..0000000001 100644
    mixer[kColorTabForegroundInactiveFrameInactive] =
 -      {SkColorSetA(kAvoraSidebarText, 0xB0)};
 +      {SkColorSetA(kAvoraSidebarText, 0xA0)};
-diff --git a/chrome/browser/ui/views/tabs/vertical_tab_style_views.h b/chrome/browser/ui/views/tabs/vertical_tab_style_views.h
-index 0000000000..0000000001 100644
---- a/chrome/browser/ui/views/tabs/vertical_tab_style_views.h
-+++ b/chrome/browser/ui/views/tabs/vertical_tab_style_views.h
-@@ -43,6 +43,7 @@ class VerticalTabStyleViews : public TabStyleViews {
-  private:
-   SkScalar GetCornerRadius() const;
-   float GetCurrentActiveOpacity() const;
-+  void PaintActiveIndicator(gfx::Canvas* canvas) const;
-   void PaintTabBackgroundWithImages(
-       gfx::Canvas* canvas,
-       std::optional<int> active_tab_fill_id,
 diff --git a/chrome/browser/ui/views/tabs/vertical_tab_style_views.cc b/chrome/browser/ui/views/tabs/vertical_tab_style_views.cc
 index 0000000000..0000000001 100644
 --- a/chrome/browser/ui/views/tabs/vertical_tab_style_views.cc
 +++ b/chrome/browser/ui/views/tabs/vertical_tab_style_views.cc
-@@ -21,6 +21,7 @@
- #include "ui/base/theme_provider.h"
- #include "ui/gfx/canvas.h"
-+#include "ui/gfx/geometry/rect_f.h"
- #include "ui/gfx/geometry/skia_conversions.h"
- #include "ui/gfx/scoped_canvas.h"
- #include "ui/views/view_utils.h"
-@@ -89,6 +90,32 @@ void VerticalTabStyleViews::PaintTab(gfx::Canvas* canvas) const {
-     PaintTabBackgroundFill(canvas, GetSelectionState(),
-                            delegate_->IsHoverAnimationActive(), std::nullopt);
-   }
-+
-+  // Avora: paint a left-edge accent indicator on the active tab so
-+  // the user can immediately see which tab is current.
-+  if (GetSelectionState() == TabStyle::TabSelectionState::kActive) {
-+    PaintActiveIndicator(canvas);
-+  }
-+}
-+
-+void VerticalTabStyleViews::PaintActiveIndicator(gfx::Canvas* canvas) const {
-+  constexpr SkColor kAvoraAccent = SkColorSetRGB(0x6E, 0xA1, 0xF7);
-+  constexpr int kIndicatorWidth = 4;
-+  constexpr int kIndicatorVerticalInset = 10;
-+  constexpr SkScalar kIndicatorCornerRadius = 2.0f;
-+
-+  gfx::Rect bounds = delegate_->GetView()->GetLocalBounds();
-+  gfx::RectF indicator_rect(
-+      bounds.x(), bounds.y() + kIndicatorVerticalInset,
-+      kIndicatorWidth,
-+      bounds.height() - 2 * kIndicatorVerticalInset);
-+
-+  gfx::ScopedCanvas scoped_canvas(canvas);
-+  const float scale = canvas->UndoDeviceScaleFactor();
-+  indicator_rect.Scale(scale);
-+
-+  cc::PaintFlags flags;
-+  flags.setAntiAlias(true);
-+  flags.setColor(kAvoraAccent);
-+  canvas->DrawRoundRect(indicator_rect, kIndicatorCornerRadius * scale, flags);
- }
- 
- void VerticalTabStyleViews::PaintTabBackgroundWithImages(
-@@ -214,8 +241,11 @@ SkColor VerticalTabStyleViews::GetCurrentTabBackgroundColor(
+@@ -214,8 +214,11 @@ SkColor VerticalTabStyleViews::GetCurrentTabBackgroundColor(
  }
  
  SkScalar VerticalTabStyleViews::GetCornerRadius() const {
@@ -135,4 +81,14 @@ index 0000000000..0000000001 100644
 +  return SkIntToScalar(
 +      kAvoraCornerRadius +
        (delegate_->IsSplit() ? delegate_->GetView()->GetInsets().height() : 0));
+ }
+ 
+@@ -222,4 +225,5 @@ gfx::Insets VerticalTabStyleViews::GetContentsInsets() const {
+-  // Avora: use tighter horizontal padding to align the favicon with the
+-  // address bar left edge and show more of the site title.
++  // Avora: generous horizontal padding so the favicon and title sit
++  // comfortably inside the rounded active/hover background.
+   return gfx::Insets::VH(
+-      GetLayoutConstant(LayoutConstant::kTabVerticalPadding), 2);
++      GetLayoutConstant(LayoutConstant::kTabVerticalPadding), 10);
  }

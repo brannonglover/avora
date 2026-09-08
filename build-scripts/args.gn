@@ -5,7 +5,11 @@ target_cpu = "arm64"
 blink_symbol_level = 0
 dcheck_always_on = false
 
-# Suppress "Google API keys are missing" infobar.
+# Suppress "Google API keys are missing" infobar.  The API key is set to
+# a dummy value so the infobar doesn't appear.  The OAuth client ID and
+# secret are intentionally left unset (defaulting to "dummytoken") so
+# that Chromium's DICE account-consistency system is disabled — otherwise
+# Google's sign-in flow returns browser-level tokens instead of setting
+# the traditional .google.com domain cookies (SID, SSID, etc.), and
+# those token exchanges fail without real credentials.
 google_api_key = "no"
-google_default_client_id = "no"
-google_default_client_secret = "no"

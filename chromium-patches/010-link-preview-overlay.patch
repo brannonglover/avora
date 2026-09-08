@@ -1,9 +1,43 @@
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+index 9e27bdcb53..ec8f284dca 100644
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -47,6 +47,7 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+ #include "chrome/browser/ui/views/frame/contents_web_view.h"
+ #include "chrome/browser/ui/views/status_bubble_views.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -696,6 +697,22 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
+                                                         source, disposition);
+   }
+ 
++  // Avora: intercept target="_blank" links (NEW_FOREGROUND_TAB) and show them
++  // in the link preview overlay instead of opening a new tab.
++  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB &&
++      target_url.is_valid() && user_gesture &&
++      !target_url.SchemeIs("chrome") &&
++      !target_url.SchemeIs("chrome-native") &&
++      !target_url.SchemeIs("devtools")) {
++    BrowserView* browser_view =
++        BrowserView::GetBrowserViewForBrowser(&*browser_);
++    if (browser_view && !browser_view->IsAvoraLinkPreviewShowing()) {
++      browser_view->ShowAvoraLinkPreviewWithContents(
++          std::move(new_contents), target_url);
++      return nullptr;
++    }
++  }
++
+   // Postpone activating popups opened by content-fullscreen tabs. This permits
+   // popups on other screens and retains fullscreen focus for exit accelerators.
+   // Popups are activated when the opener exits fullscreen, which happens
 diff --git a/chrome/browser/ui/views/avora/avora_link_preview_view.cc b/chrome/browser/ui/views/avora/avora_link_preview_view.cc
 new file mode 100644
-index 0000000000..b21bbc441d
 --- /dev/null
 +++ b/chrome/browser/ui/views/avora/avora_link_preview_view.cc
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,400 @@
 +// Copyright 2026 Avora. All rights reserved.
 +
 +#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
@@ -11,6 +45,7 @@ index 0000000000..b21bbc441d
 +#include <algorithm>
 +
 +#include "base/functional/bind.h"
++#include "chrome/app/vector_icons/vector_icons.h"
 +#include "chrome/browser/profiles/profile.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 +#include "components/vector_icons/vector_icons.h"
@@ -34,15 +69,15 @@ index 0000000000..b21bbc441d
 +
 +namespace {
 +
-+constexpr SkColor kBackdropColor = SkColorSetARGB(0x66, 0x10, 0x10, 0x18);
++constexpr SkColor kBackdropColor = SkColorSetARGB(0x99, 0x10, 0x10, 0x18);
 +constexpr SkColor kCardBg = SkColorSetARGB(0xFF, 0x1E, 0x22, 0x2A);
 +constexpr SkColor kCardBorder = SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF);
 +constexpr SkColor kButtonBg = SkColorSetARGB(0xCC, 0x28, 0x2C, 0x34);
 +constexpr SkColor kButtonHoverBg = SkColorSetARGB(0xFF, 0x38, 0x3C, 0x46);
 +constexpr SkColor kButtonIconColor = SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5);
 +
-+constexpr int kBackdropBlurRadius = 12;
-+constexpr float kBackdropBlurQuality = 0.33f;
++// Total width reserved for the button column to the right of the card.
++constexpr int kButtonColumnWidth = 56;  // kButtonSize + gap
 +
 +class RoundedBackground : public views::Background {
 + public:
@@ -122,8 +157,6 @@ index 0000000000..b21bbc441d
 +  auto backdrop = std::make_unique<views::View>();
 +  backdrop->SetPaintToLayer();
 +  backdrop->layer()->SetFillsBoundsOpaquely(false);
-+  backdrop->layer()->SetBackgroundBlur(kBackdropBlurRadius);
-+  backdrop->layer()->SetBackdropFilterQuality(kBackdropBlurQuality);
 +  backdrop->SetBackground(views::CreateSolidBackground(kBackdropColor));
 +  backdrop->SetCanProcessEventsWithinSubtree(false);
 +  backdrop_ = AddChildView(std::move(backdrop));
@@ -151,16 +184,25 @@ index 0000000000..b21bbc441d
 +  auto contents = content::WebContents::Create(
 +      content::WebContents::CreateParams(profile));
 +  contents->SetDelegate(this);
-+  contents->GetController().LoadURL(
-+      url, content::Referrer(), ui::PAGE_TRANSITION_LINK, std::string());
 +
 +  owned_contents_ = std::move(contents);
++
++  // Make visible and lay out BEFORE attaching the WebContents so the WebView
++  // already has its final size — a zero-sized viewport stalls the renderer.
++  SetVisible(true);
++  LayoutCard();
++  if (card_) {
++    card_->DeprecatedLayoutImmediately();
++  }
++
 +  if (web_view_) {
 +    web_view_->SetWebContents(owned_contents_.get());
 +  }
 +
-+  SetVisible(true);
-+  LayoutCard();
++  // Start navigation after the WebContents is hosted in a sized view.
++  owned_contents_->GetController().LoadURL(
++      url, content::Referrer(), ui::PAGE_TRANSITION_LINK, std::string());
++
 +  RequestFocus();
 +}
 +
@@ -171,12 +213,19 @@ index 0000000000..b21bbc441d
 +
 +  contents->SetDelegate(this);
 +  owned_contents_ = std::move(contents);
++
++  // Make visible and lay out BEFORE attaching the WebContents so the WebView
++  // already has its final size — a zero-sized viewport stalls the renderer.
++  SetVisible(true);
++  LayoutCard();
++  if (card_) {
++    card_->DeprecatedLayoutImmediately();
++  }
++
 +  if (web_view_) {
 +    web_view_->SetWebContents(owned_contents_.get());
 +  }
 +
-+  SetVisible(true);
-+  LayoutCard();
 +  RequestFocus();
 +}
 +
@@ -199,6 +248,22 @@ index 0000000000..b21bbc441d
 +// ── View overrides ──────────────────────────────────────────────────────────
 +
 +bool AvoraLinkPreviewView::OnMousePressed(const ui::MouseEvent& event) {
++  // Don't dismiss if the click landed on a button.
++  if (close_button_) {
++    gfx::Point pt = event.location();
++    views::View::ConvertPointToTarget(this, close_button_, &pt);
++    if (close_button_->HitTestPoint(pt)) {
++      return false;
++    }
++  }
++  if (open_tab_button_) {
++    gfx::Point pt = event.location();
++    views::View::ConvertPointToTarget(this, open_tab_button_, &pt);
++    if (open_tab_button_->HitTestPoint(pt)) {
++      return false;
++    }
++  }
++
 +  if (card_) {
 +    gfx::Point point_in_card = event.location();
 +    views::View::ConvertPointToTarget(this, card_, &point_in_card);
@@ -231,7 +296,7 @@ index 0000000000..b21bbc441d
 +
 +// ── WebContentsDelegate ─────────────────────────────────────────────────────
 +
-+void AvoraLinkPreviewView::AddNewContents(
++content::WebContents* AvoraLinkPreviewView::AddNewContents(
 +    content::WebContents* source,
 +    std::unique_ptr<content::WebContents> new_contents,
 +    const GURL& target_url,
@@ -242,6 +307,7 @@ index 0000000000..b21bbc441d
 +  if (open_cb_ && target_url.is_valid()) {
 +    open_cb_.Run(target_url);
 +  }
++  return nullptr;
 +}
 +
 +// ── Private helpers ─────────────────────────────────────────────────────────
@@ -268,12 +334,17 @@ index 0000000000..b21bbc441d
 +
 +  card_ = AddChildView(std::move(card));
 +
-+  // Button column — sits outside the card, overlaying the upper right.
++  // Buttons live to the right of the card, completely outside the WebView
++  // bounds so the native platform window cannot occlude them.  Each button
++  // needs its own compositing layer to paint above the backdrop layer which
++  // covers the full overlay area.
 +  auto close_btn = std::make_unique<HoverImageButton>();
++  close_btn->SetPaintToLayer();
++  close_btn->layer()->SetFillsBoundsOpaquely(false);
 +  close_btn->SetImageModel(
 +      views::Button::STATE_NORMAL,
 +      ui::ImageModel::FromVectorIcon(
-+          vector_icons::kCloseIcon, kButtonIconColor, 16));
++          vector_icons::kCloseIcon, kButtonIconColor, kButtonIconSize));
 +  close_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
 +  close_btn->SetAccessibleName(u"Close preview");
 +  close_btn->SetCallback(base::BindRepeating(
@@ -281,10 +352,12 @@ index 0000000000..b21bbc441d
 +  close_button_ = AddChildView(std::move(close_btn));
 +
 +  auto open_btn = std::make_unique<HoverImageButton>();
++  open_btn->SetPaintToLayer();
++  open_btn->layer()->SetFillsBoundsOpaquely(false);
 +  open_btn->SetImageModel(
 +      views::Button::STATE_NORMAL,
 +      ui::ImageModel::FromVectorIcon(
-+          vector_icons::kOpenInNewFlippableIcon, kButtonIconColor, 16));
++          kOpenInFullIcon, kButtonIconColor, kButtonIconSize));
 +  open_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
 +  open_btn->SetAccessibleName(u"Open in new tab");
 +  open_btn->SetCallback(base::BindRepeating(
@@ -311,7 +384,16 @@ index 0000000000..b21bbc441d
 +    backdrop_->layer()->SetIsFastRoundedCorner(true);
 +  }
 +
-+  int card_width = std::min(host.width() - 48, kCardWidth);
++  // Card fills ~80 % of the window width (minus button column + padding).
++  int desired_card_width = static_cast<int>(host.width() * 0.80);
++  int total_width = desired_card_width + kButtonColumnWidth;
++  if (total_width > host.width() - 32) {
++    total_width = host.width() - 32;
++  }
++  int card_width = total_width - kButtonColumnWidth;
++  card_width = std::max(card_width, 400);
++
++  // Center the card visually; buttons hang off its right edge.
 +  int card_x = (host.width() - card_width) / 2;
 +  int card_y = kCardVerticalMargin;
 +  int card_height = host.height() - 2 * kCardVerticalMargin;
@@ -319,12 +401,8 @@ index 0000000000..b21bbc441d
 +
 +  card_->SetBoundsRect(gfx::Rect(card_x, card_y, card_width, card_height));
 +
-+  // Position buttons vertically stacked to the upper right of the card.
-+  int btn_x = card_x + card_width + kButtonMargin;
-+  // If buttons would go off-screen, place them inside the card's right edge.
-+  if (btn_x + kButtonSize > host.width()) {
-+    btn_x = card_x + card_width - kButtonSize - kButtonMargin;
-+  }
++  // Buttons sit to the right of the card, vertically stacked near the top.
++  int btn_x = card_x + card_width + (kButtonColumnWidth - kButtonSize) / 2;
 +  int btn_y = card_y + kButtonMargin;
 +
 +  if (close_button_) {
@@ -362,10 +440,9 @@ index 0000000000..b21bbc441d
 +}  // namespace avora
 diff --git a/chrome/browser/ui/views/avora/avora_link_preview_view.h b/chrome/browser/ui/views/avora/avora_link_preview_view.h
 new file mode 100644
-index 0000000000..0f5937b34f
 --- /dev/null
 +++ b/chrome/browser/ui/views/avora/avora_link_preview_view.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,116 @@
 +// Copyright 2026 Avora. All rights reserved.
 +
 +#ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_LINK_PREVIEW_VIEW_H_
@@ -404,8 +481,8 @@ index 0000000000..0f5937b34f
 +
 +// Full-content overlay that intercepts target="_blank" link navigations.
 +// Instead of opening a new tab, the destination is rendered inside a centered
-+// 1200px-wide card overlaid on top of the current page.  The upper-right
-+// corner has close (×) and "open in new tab" (↗) buttons stacked vertically.
++// card (≈80 % of window width) overlaid on top of the current page.  The
++// upper-right corner has close (×) and "expand" (⛶) buttons stacked vertically.
 +class AvoraLinkPreviewView : public views::View,
 +                             public content::WebContentsDelegate {
 +  METADATA_HEADER(AvoraLinkPreviewView, views::View)
@@ -413,10 +490,11 @@ index 0000000000..0f5937b34f
 + public:
 +  static constexpr int kCardWidth = 1200;
 +  static constexpr int kCardCornerRadius = 16;
-+  static constexpr int kCardVerticalMargin = 40;
-+  static constexpr int kButtonSize = 32;
++  static constexpr int kCardVerticalMargin = 20;
++  static constexpr int kButtonSize = 44;
 +  static constexpr int kButtonMargin = 12;
 +  static constexpr int kButtonSpacing = 8;
++  static constexpr int kButtonIconSize = 28;
 +
 +  AvoraLinkPreviewView(BrowserWindowInterface* browser,
 +                       LinkPreviewOpenCallback open_cb,
@@ -446,13 +524,14 @@ index 0000000000..0f5937b34f
 +  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 +
 +  // content::WebContentsDelegate:
-+  void AddNewContents(content::WebContents* source,
-+                      std::unique_ptr<content::WebContents> new_contents,
-+                      const GURL& target_url,
-+                      WindowOpenDisposition disposition,
-+                      const blink::mojom::WindowFeatures& window_features,
-+                      bool user_gesture,
-+                      bool* was_blocked) override;
++  content::WebContents* AddNewContents(
++      content::WebContents* source,
++      std::unique_ptr<content::WebContents> new_contents,
++      const GURL& target_url,
++      WindowOpenDisposition disposition,
++      const blink::mojom::WindowFeatures& window_features,
++      bool user_gesture,
++      bool* was_blocked) override;
 +
 + private:
 +  void BuildUI();
@@ -516,21 +595,108 @@ index 9e27bdcb53..ec8f284dca 100644
    // popups on other screens and retains fullscreen focus for exit accelerators.
    // Popups are activated when the opener exits fullscreen, which happens
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 2471d6b062..91062ed0ce 100644
+index 24eca1ab9a..a946bfd6a4 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -186,6 +186,7 @@
+@@ -32,8 +32,10 @@
+ #include "base/metrics/user_metrics.h"
+ #include "base/notreached.h"
+ #include "base/scoped_observation.h"
++#include "base/strings/escape.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/stringprintf.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+@@ -105,6 +107,7 @@
+ #include "chrome/browser/ui/global_error/global_error_service_factory.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+ #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
+ #include "chrome/browser/ui/omnibox/omnibox_view.h"
+@@ -152,6 +155,7 @@
+ #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
+ #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views_context.h"
+ #include "chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h"
++#include "chrome/browser/ui/extensions/extensions_container.h"
+ #include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
+ #include "chrome/browser/ui/views/eye_dropper/eye_dropper.h"
+ #include "chrome/browser/ui/views/find_bar_host.h"
+@@ -180,6 +184,14 @@
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
  #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
- #include "chrome/browser/avora/avora_search_engine.h"
- #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
++#include "chrome/browser/avora/avora_search_engine.h"
++#include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 +#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
- #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
- #include "chrome/browser/ui/webui/avora_settings/avora_settings_ui.h"
- #include "components/url_formatter/url_fixer.h"
-@@ -1044,6 +1045,15 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
-             base::BindRepeating(&BrowserView::HideAvoraQuickNav,
-                                 base::Unretained(this))));
++#include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
++#include "chrome/browser/ui/views/avora/avora_spaces_bar_view.h"
++#include "chrome/browser/ui/webui/avora_settings/avora_settings_ui.h"
++#include "components/url_formatter/url_fixer.h"
++#include "components/url_formatter/url_formatter.h"
+ #include "chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.h"
+ #include "chrome/browser/ui/views/glic/glic_button_interface.h"
+ #include "chrome/browser/ui/views/global_media_controls/media_toolbar_button_view.h"
+@@ -981,6 +993,68 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+     vertical_tab_strip_region_view_ =
+         AddChildView(std::move(vertical_tab_strip_container));
  
++    {
++      auto make_cmd =
++          [](BrowserWindowInterface* b, int cmd) -> base::RepeatingClosure {
++        return base::BindRepeating(
++            [](BrowserWindowInterface* browser, int command) {
++              chrome::ExecuteCommand(browser, command);
++            },
++            base::Unretained(b), cmd);
++      };
++      avora_sidebar_header_ = AddChildView(std::make_unique<AvoraSidebarView>(
++          GetProfile(),
++          make_cmd(browser_, IDC_BACK), make_cmd(browser_, IDC_FORWARD),
++          make_cmd(browser_, IDC_RELOAD),
++          base::BindRepeating(
++              [](BrowserView* bv) {
++                auto* container =
++                    bv->toolbar() ? bv->toolbar()->extensions_container()
++                                  : nullptr;
++                if (container && bv->avora_sidebar_header_) {
++                  container->ToggleExtensionsPopup(
++                      bv->avora_sidebar_header_->manage_button());
++                }
++              },
++              base::Unretained(this)),
++          base::BindRepeating(
++              [](BrowserView* bv) {
++                bv->NavigateAvoraAddressBar(u"chrome://avora-settings",
++                                            /*new_tab=*/false);
++              },
++              base::Unretained(this)),
++          base::BindRepeating(
++              [](BrowserView* bv, const std::u16string& text) {
++                bv->NavigateAvoraAddressBar(text, /*new_tab=*/false);
++              },
++              base::Unretained(this))));
++    }
++    avora_spaces_bar_ = AddChildView(std::make_unique<AvoraSpacesBarView>(
++        base::BindRepeating([](const std::string& space_id) {
++          LOG(INFO) << "[Avora] Space clicked: " << space_id;
++        })));
++    // Seed with a default space pill.
++    avora_spaces_bar_->SetSpaces(
++        {{.id = "default", .name = "Default", .color = SkColorSetRGB(0x6E, 0xA1, 0xF7), .is_active = true}});
++
++    // Quick-nav overlay (CMD+T).
++    avora_quick_nav_ =
++        AddChildView(std::make_unique<avora::AvoraQuickNavView>(
++            browser_.get(),
++            base::BindRepeating(&BrowserView::NavigateAvoraAddressBar,
++                                base::Unretained(this)),
++            base::BindRepeating(&BrowserView::HideAvoraQuickNav,
++                                base::Unretained(this))));
++
 +    // Link preview overlay (target="_blank" interception).
 +    avora_link_preview_ =
 +        AddChildView(std::make_unique<avora::AvoraLinkPreviewView>(
@@ -543,10 +709,59 @@ index 2471d6b062..91062ed0ce 100644
      vertical_tab_strip_top_corner_ =
          AddChildView(std::make_unique<CustomFloatingCorner>(
              *this, CornerOrientation::kTopLeading,
-@@ -4684,6 +4694,14 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
-       }
+@@ -2105,6 +2179,7 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
+ 
+   // Update all the UI bits.
+   UpdateTitleBar();
++  UpdateAvoraSidebarURL();
+ 
+   CHECK_DEREF(TranslateBubbleController::From(browser_.get())).CloseBubble();
+ }
+@@ -2975,6 +3050,8 @@ void BrowserView::DidFinishNavigation(
+     return;
+   }
+ 
++  UpdateAvoraSidebarURL();
++
+   if (AppUsesUnframedMode() && !window_management_subscription_id_) {
+     SetWindowManagementPermissionSubscriptionForUnframedMode(
+         navigation_handle->GetWebContents());
+@@ -3071,9 +3148,11 @@ bool BrowserView::IsToolbarShowing() const {
+ }
+ 
+ bool BrowserView::IsLocationBarVisible() const {
+-  return WindowFeatureController::From(browser_)->SupportsWindowFeature(
++  const LocationBar* location_bar = GetLocationBar();
++  return location_bar &&
++         WindowFeatureController::From(browser_)->SupportsWindowFeature(
+              WindowFeatureController::WindowFeature::kFeatureLocationBar) &&
+-         GetLocationBar()->IsVisible();
++         location_bar->IsVisible();
+ }
+ 
+ void BrowserView::ShowUpdateChromeDialog() {
+@@ -3533,6 +3612,7 @@ void BrowserView::OnTabChangedAt(tabs::TabInterface* tab,
+   }
+ 
+   UpdateAccessibleURLForRootView(contents->GetURL());
++  UpdateAvoraSidebarURL();
+ }
+ 
+ void BrowserView::OnTabStripModelChanged(
+@@ -4607,8 +4687,34 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
+       return HTCLIENT;
      }
  
+-    // The vertical tabstrip is not part of the overlay in immersive mode and
+-    // must be tested separately.
++    // When the quick-nav overlay is showing, all input goes to it.
++    if (avora_quick_nav_ && avora_quick_nav_->GetVisible()) {
++      gfx::Point test_point(point);
++      if (ConvertedHitTest(parent(), avora_quick_nav_, &test_point)) {
++        return HTCLIENT;
++      }
++    }
++
 +    // Avora link preview overlay captures all input when visible.
 +    if (avora_link_preview_ && avora_link_preview_->GetVisible()) {
 +      gfx::Point test_point(point);
@@ -555,13 +770,33 @@ index 2471d6b062..91062ed0ce 100644
 +      }
 +    }
 +
-     // The Avora sidebar header and vertical tabstrip are not part of the
-     // overlay in immersive mode and must be tested separately.
-     if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
-@@ -4773,6 +4791,14 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
++    // The Avora sidebar header and vertical tabstrip are not part of the
++    // overlay in immersive mode and must be tested separately.
++    if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
++      gfx::Point test_point(point);
++      if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
++        if (avora_sidebar_header_->IsPositionInWindowCaption(test_point)) {
++          return HTCAPTION;
++        }
++        return HTCLIENT;
++      }
++    }
++
+     if (vertical_tab_strip_region_view_ &&
+         vertical_tab_strip_region_view_->GetVisible()) {
+       gfx::Point test_point(point);
+@@ -4678,6 +4784,50 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
      }
    }
  
++  // Quick-nav overlay takes precedence over other hit-testing.
++  if (avora_quick_nav_ && avora_quick_nav_->GetVisible()) {
++    gfx::Point test_point(point);
++    if (ConvertedHitTest(parent(), avora_quick_nav_, &test_point)) {
++      return HTCLIENT;
++    }
++  }
++
 +  // Link preview overlay captures all input when visible.
 +  if (avora_link_preview_ && avora_link_preview_->GetVisible()) {
 +    gfx::Point test_point(point);
@@ -570,21 +805,192 @@ index 2471d6b062..91062ed0ce 100644
 +    }
 +  }
 +
-   if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
-     gfx::Point test_point(point);
-     if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
-@@ -5176,6 +5202,7 @@ void BrowserView::AddedToWidget() {
-   layout_views.avora_sidebar_header = avora_sidebar_header_;
-   layout_views.avora_spaces_bar = avora_spaces_bar_;
-   layout_views.avora_quick_nav = avora_quick_nav_;
++  if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
++    gfx::Point test_point(point);
++    if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
++      if (avora_sidebar_header_->IsPositionInWindowCaption(test_point)) {
++        return HTNOWHERE;
++      }
++      return HTCLIENT;
++    }
++  }
++
++  // Quick-nav overlay takes precedence over other hit-testing.
++  if (avora_quick_nav_ && avora_quick_nav_->GetVisible()) {
++    gfx::Point test_point(point);
++    if (ConvertedHitTest(parent(), avora_quick_nav_, &test_point)) {
++      return HTCLIENT;
++    }
++  }
++
++  if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {
++    gfx::Point test_point(point);
++    if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
++      if (avora_sidebar_header_->IsPositionInWindowCaption(test_point)) {
++        return HTNOWHERE;
++      }
++      return HTCLIENT;
++    }
++  }
++
+   if (vertical_tab_strip_region_view_ &&
+       vertical_tab_strip_region_view_->GetVisible()) {
+     // See if the mouse pointer is within the bounds of the
+@@ -5068,6 +5218,10 @@ void BrowserView::AddedToWidget() {
+   layout_views.multi_contents_view = multi_contents_view_;
+   layout_views.side_panel = side_panel_;
+   layout_views.top_container_separator = top_container_separator_;
++  layout_views.avora_sidebar_header = avora_sidebar_header_;
++  layout_views.avora_spaces_bar = avora_spaces_bar_;
++  layout_views.avora_quick_nav = avora_quick_nav_;
 +  layout_views.avora_link_preview = avora_link_preview_;
    // LINT.ThenChange(//chrome/browser/ui/views/frame/layout/browser_view_layout.h:BrowserViewLayoutViews)
  
    SetLayoutManager(BrowserViewLayout::CreateLayout(
-@@ -6333,6 +6360,52 @@ void BrowserView::HideAvoraQuickNav() {
-   avora_quick_nav_->Hide();
+@@ -6079,6 +6233,192 @@ void BrowserView::UpdateAccessibleURLForRootView(const GURL& url) {
+   }
  }
  
++void BrowserView::UpdateAvoraSidebarURL() {
++  if (!avora_sidebar_header_) {
++    return;
++  }
++  content::WebContents* contents = GetActiveWebContents();
++  if (!contents) {
++    avora_sidebar_header_->SetURL(u"");
++    return;
++  }
++  const GURL& url = contents->GetVisibleURL();
++  if (!url.is_valid() || url.IsAboutBlank() ||
++      url.SchemeIs("chrome") || url.SchemeIs("chrome-native")) {
++    avora_sidebar_header_->SetURL(u"");
++    return;
++  }
++  std::string host{url.host()};
++  if (!host.empty() && host.substr(0, 4) == "www.") {
++    host = host.substr(4);
++  }
++  avora_sidebar_header_->SetURL(base::UTF8ToUTF16(host));
++}
++
++void BrowserView::NavigateAvoraAddressBar(const std::u16string& text,
++                                          bool new_tab) {
++  std::string input = base::UTF16ToUTF8(text);
++
++  // Determine whether the input looks like a URL or a search query.
++  // FixupURL aggressively prepends http:// and percent-encodes spaces,
++  // turning plain search queries into bogus URLs.  Use simple heuristics
++  // that match what users expect:
++  //   - Contains a space           → search  (URLs never have bare spaces)
++  //   - Starts with a scheme       → URL
++  //   - Contains a dot and no space → URL  (e.g. "example.com")
++  //   - Single word like "localhost" or an IP → URL
++  //   - Everything else            → search
++  bool looks_like_url = false;
++  if (input.find(' ') == std::string::npos) {
++    // No spaces — could be a URL.
++    if (input.find("://") != std::string::npos) {
++      looks_like_url = true;
++    } else if (input.find('.') != std::string::npos) {
++      looks_like_url = true;
++    } else if (input == "localhost" ||
++               base::StartsWith(input, "localhost:",
++                                base::CompareCase::INSENSITIVE_ASCII)) {
++      looks_like_url = true;
++    }
++  }
++
++  GURL url;
++  if (looks_like_url) {
++    url = url_formatter::FixupURL(input, std::string());
++    if (!url.is_valid() ||
++        (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIs("chrome"))) {
++      looks_like_url = false;
++    }
++  }
++
++  if (!looks_like_url) {
++    avora::SearchEngineManager engine_mgr(
++        browser_->GetProfile()->GetPrefs());
++    url = GURL(engine_mgr.BuildSearchURL(input));
++  }
++
++  NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++  params.disposition = new_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
++                               : WindowOpenDisposition::CURRENT_TAB;
++  Navigate(&params);
++}
++
++void BrowserView::ShowAvoraQuickNav() {
++  if (!avora_quick_nav_) {
++    return;
++  }
++
++  // Capture the current tab's URL before anything changes — useful for the
++  // history list even though the overlay is for a "new tab" action.
++  std::string current_url;
++  content::WebContents* contents = GetActiveWebContents();
++  if (contents) {
++    const GURL& url = contents->GetVisibleURL();
++    if (url.is_valid() && !url.IsAboutBlank() &&
++        !url.SchemeIs("chrome") && !url.SchemeIs("chrome-native")) {
++      current_url = url.spec();
++    }
++  }
++
++  // Show the overlay immediately — don't wait for a new tab or page load.
++  // The layout system positions the overlay from layout params, but set
++  // initial bounds here so it's correct before the next layout pass.
++  avora_quick_nav_->SetBoundsRect(
++      multi_contents_view_ ? multi_contents_view_->bounds()
++                           : GetLocalBounds());
++  avora_quick_nav_->Show(current_url);
++  ReorderChildView(avora_quick_nav_, children().size());
++
++  // Trigger a layout pass so the overlay gets its authoritative bounds
++  // computed from the layout parameters (independent of multi_contents_view).
++  DeprecatedLayoutImmediately();
++}
++
++void BrowserView::ShowAvoraQuickNavWithURL() {
++  if (!avora_quick_nav_) {
++    return;
++  }
++
++  std::u16string url_text;
++  std::string current_url;
++  content::WebContents* contents = GetActiveWebContents();
++  if (contents) {
++    const GURL& url = contents->GetVisibleURL();
++    if (url.is_valid() && !url.IsAboutBlank() &&
++        !url.SchemeIs("chrome") && !url.SchemeIs("chrome-native")) {
++      url_text = url_formatter::FormatUrl(
++          url, url_formatter::kFormatUrlOmitDefaults,
++          base::UnescapeRule::SPACES, nullptr, nullptr, nullptr);
++      current_url = url.spec();
++    }
++  }
++
++  // Show the overlay immediately — initial bounds will be refined by the
++  // layout pass below.
++  avora_quick_nav_->SetBoundsRect(
++      multi_contents_view_ ? multi_contents_view_->bounds()
++                           : GetLocalBounds());
++  avora_quick_nav_->ShowWithURL(url_text, current_url);
++  ReorderChildView(avora_quick_nav_, children().size());
++
++  // Trigger a layout pass so the overlay gets its authoritative bounds
++  // computed from the layout parameters (independent of multi_contents_view).
++  DeprecatedLayoutImmediately();
++}
++
++void BrowserView::HideAvoraQuickNav() {
++  if (!avora_quick_nav_) {
++    return;
++  }
++  avora_quick_nav_->Hide();
++}
++
 +void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
 +  if (!avora_link_preview_) {
 +    return;
@@ -635,41 +1041,76 @@ index 2471d6b062..91062ed0ce 100644
      bool allowed_without_policy) {
    auto* fullscreen_pref_path = prefs::kFullscreenAllowed;
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
-index d272e71249..c28757cfa5 100644
+index 38dae976bf..1f144b9a39 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
-@@ -99,6 +99,7 @@ class AvoraSidebarView;
- class AvoraSpacesBarView;
- namespace avora {
- class AvoraQuickNavView;
+@@ -95,6 +95,12 @@ class ToolbarView;
+ class TopContainerView;
+ class TopControlsSlideController;
+ class TopControlsSlideControllerTest;
++class AvoraSidebarView;
++class AvoraSpacesBarView;
++namespace avora {
++class AvoraQuickNavView;
 +class AvoraLinkPreviewView;
- }  // namespace avora
++}  // namespace avora
  class VerticalTabStripRegionView;
  class WebAppFrameToolbarView;
-@@ -1230,6 +1231,15 @@ class BrowserView : public BrowserWindow,
-   // Avora quick-nav overlay (CMD+T / CMD+L).
-   raw_ptr<avora::AvoraQuickNavView> avora_quick_nav_ = nullptr;
  
-+  // Avora link preview overlay (target="_blank" interception).
-+  raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;
+@@ -802,6 +808,18 @@ class BrowserView : public BrowserWindow,
+   bool IsLockedFullscreen() const;
+ #endif
+ 
++  // Avora quick-nav overlay (CMD+T / CMD+L).
++  void ShowAvoraQuickNav();
++  void ShowAvoraQuickNavWithURL();
++  void HideAvoraQuickNav();
++
++  // Avora link preview overlay.
 +  void ShowAvoraLinkPreview(const GURL& url);
 +  void ShowAvoraLinkPreviewWithContents(
 +      std::unique_ptr<content::WebContents> contents, const GURL& url);
 +  void HideAvoraLinkPreview();
-+  void OnLinkPreviewOpenInNewTab(const GURL& url);
 +  bool IsAvoraLinkPreviewShowing() const;
++
+  protected:
+   // BrowserWindow:
+   void DeleteBrowserWindow() final;
+@@ -1211,6 +1229,19 @@ class BrowserView : public BrowserWindow,
+   raw_ptr<VerticalTabStripBackgroundBlurBackdrop>
+       vertical_tab_strip_background_blur_backdrop_ = nullptr;
+ 
++  // Avora sidebar header (nav row + address chip + space name) and footer.
++  raw_ptr<AvoraSidebarView> avora_sidebar_header_ = nullptr;
++  raw_ptr<AvoraSpacesBarView> avora_spaces_bar_ = nullptr;
++  void UpdateAvoraSidebarURL();
++  void NavigateAvoraAddressBar(const std::u16string& text, bool new_tab);
++
++  // Avora quick-nav overlay (CMD+T / CMD+L).
++  raw_ptr<avora::AvoraQuickNavView> avora_quick_nav_ = nullptr;
++
++  // Avora link preview overlay (target="_blank" interception).
++  raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;
++  void OnLinkPreviewOpenInNewTab(const GURL& url);
 +
    // Outward-projecting corners of the vertical tab strip.
    raw_ptr<CustomFloatingCorner> vertical_tab_strip_top_corner_ = nullptr;
    raw_ptr<CustomFloatingCorner> vertical_tab_strip_bottom_corner_ = nullptr;
 diff --git a/chrome/browser/ui/views/frame/layout/browser_view_layout.h b/chrome/browser/ui/views/frame/layout/browser_view_layout.h
-index 682f2dc0ba..7c112c99b8 100644
+index 04ce33b996..7c112c99b8 100644
 --- a/chrome/browser/ui/views/frame/layout/browser_view_layout.h
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_layout.h
-@@ -94,6 +94,9 @@ struct BrowserViewLayoutViews {
-   // Avora quick-nav overlay (CMD+T).
-   raw_ptr<views::View> avora_quick_nav = nullptr;
+@@ -87,6 +87,16 @@ struct BrowserViewLayoutViews {
+   // overlaid (i.e. no immersive fullscreen).
+   raw_ptr<views::View> top_container_separator = nullptr;
  
++  // Avora sidebar header (nav + address + space name) and spaces bar footer.
++  raw_ptr<views::View> avora_sidebar_header = nullptr;
++  raw_ptr<views::View> avora_spaces_bar = nullptr;
++
++  // Avora quick-nav overlay (CMD+T).
++  raw_ptr<views::View> avora_quick_nav = nullptr;
++
 +  // Avora link preview overlay (target="_blank").
 +  raw_ptr<views::View> avora_link_preview = nullptr;
 +
@@ -677,13 +1118,143 @@ index 682f2dc0ba..7c112c99b8 100644
  
    // These views are dynamically set.
 diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
-index 8264da6917..588c13e821 100644
+index 0e295be787..588c13e821 100644
 --- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
-@@ -1392,6 +1392,16 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
-                     views().avora_quick_nav->GetVisible());
+@@ -35,6 +35,7 @@
+ #include "chrome/browser/ui/views/frame/shadow_frame_view.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
++#include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
+@@ -836,9 +837,55 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+             0, horizontal_layout.vertical_tab_strip_width, 0, 0));
+       }
+     }
++    // Avora hybrid sidebar: the Avora header (nav + address chip + space name)
++    // sits at the top; Chromium's vertical tab strip region (with its own
++    // top/bottom containers for collapse, tab search, new tab) fills the
++    // middle; and the spaces bar sits at the bottom.
++    const bool avora_active =
++        layout_data_->tab_strip_type == TabStripType::kVertical &&
++        !is_fullscreen(layout_data_->window_state);
++
++    gfx::Rect avora_header_bounds;
++    gfx::Rect avora_bar_bounds;
++    gfx::Rect adjusted_tab_strip_bounds = vertical_tab_strip_bounds;
++
++    if (avora_active && views().avora_sidebar_header) {
++      avora_header_bounds = gfx::Rect(
++          vertical_tab_strip_bounds.x(), vertical_tab_strip_bounds.y(),
++          vertical_tab_strip_bounds.width(),
++          AvoraSidebarView::kHeaderHeight);
++
++      adjusted_tab_strip_bounds.Inset(
++          gfx::Insets::TLBR(AvoraSidebarView::kHeaderHeight, 0, 0, 0));
++    }
++
++    if (avora_active && views().avora_spaces_bar) {
++      avora_bar_bounds = gfx::Rect(
++          vertical_tab_strip_bounds.x(),
++          vertical_tab_strip_bounds.bottom() -
++              AvoraSidebarView::kSpacesBarHeight,
++          vertical_tab_strip_bounds.width(),
++          AvoraSidebarView::kSpacesBarHeight);
++
++      adjusted_tab_strip_bounds.Inset(
++          gfx::Insets::TLBR(0, 0, AvoraSidebarView::kSpacesBarHeight, 0));
++    }
++
+     layout.AddChild(views().vertical_tab_strip_region_view,
+-                    vertical_tab_strip_bounds,
++                    adjusted_tab_strip_bounds,
+                     layout_data_->tab_strip_type == TabStripType::kVertical);
++
++    if (views().avora_sidebar_header &&
++        IsParentedTo(views().avora_sidebar_header, views().browser_view)) {
++      layout.AddChild(views().avora_sidebar_header, avora_header_bounds,
++                      avora_active);
++    }
++
++    if (views().avora_spaces_bar &&
++        IsParentedTo(views().avora_spaces_bar, views().browser_view)) {
++      layout.AddChild(views().avora_spaces_bar, avora_bar_bounds,
++                      avora_active);
++    }
    }
  
+   if (IsParentedTo(views().vertical_tab_strip_background_blur_backdrop,
+@@ -1163,11 +1210,25 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+     content_right =
+         std::min(content_right, browser_params.visual_client_area.right());
+   }
++  // Avora: inset the content area for the "card on dark chrome" look when
++  // vertical tabs are active.  The left inset is narrower so the content card
++  // sits close to the sidebar.
++  constexpr int kAvoraContentInset = 14;
++  constexpr int kAvoraContentLeftInset = 6;
++  int content_y = params.visual_client_area.y();
++  int content_height = params.visual_client_area.height();
++  if (layout_data_->tab_strip_type == TabStripType::kVertical &&
++      !is_fullscreen(layout_data_->window_state)) {
++    content_left += kAvoraContentLeftInset;
++    content_right -= kAvoraContentInset;
++    content_y += kAvoraContentInset;
++    content_height -= 2 * kAvoraContentInset;
++  }
+   auto& contents_layout =
+       layout.AddChild(views().multi_contents_view,
+-                      gfx::Rect(content_left, params.visual_client_area.y(),
++                      gfx::Rect(content_left, content_y,
+                                 content_right - content_left,
+-                                params.visual_client_area.height()));
++                                content_height));
+ 
+   // Maybe expand and clip the web contents to avoid issues during animation.
+   if (features::UseSidePanelFlyoverAnimation()) {
+@@ -1211,20 +1272,13 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+   }
+ 
+   // If the window goes out of glass mode, these changes won't hurt anything.
+-  if (in_glass_mode()) {
++  {
+     gfx::RoundedCornersF content_corners;
+     if (layout_data_->tab_strip_type == TabStripType::kVertical &&
+         !is_fullscreen(layout_data_->window_state)) {
+-      // Note that this will set a lower leading corner on the multi contents
+-      // view even if there's a shadow box, but since the curve is effectively
+-      // the same this will not produce a visual bug.
+-      const int radius =
+-          views().vertical_tab_strip_bottom_corner->GetCornerRadius();
+-      if (base::i18n::IsRTL()) {
+-        content_corners.set_lower_right(radius);
+-      } else {
+-        content_corners.set_lower_left(radius);
+-      }
++      // Avora: 18px rounded corners on all four corners of the content card.
++      constexpr float kAvoraContentRadius = 18.0f;
++      content_corners = gfx::RoundedCornersF(kAvoraContentRadius);
+     }
+     views().multi_contents_view->SetBackgroundRadii(content_corners);
+   }
+@@ -1326,6 +1380,28 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+                     is_scrim_visible);
+   }
+ 
++  // Avora: quick-nav overlay covers only the main content area when visible.
++  // Compute bounds from the layout parameters directly so the overlay can
++  // display even before multi_contents_view has been laid out.
++  if (views().avora_quick_nav &&
++      IsParentedTo(views().avora_quick_nav, views().browser_view)) {
++    gfx::Rect overlay_bounds(content_left, content_y,
++                             content_right - content_left, content_height);
++    layout.AddChild(views().avora_quick_nav,
++                    overlay_bounds,
++                    views().avora_quick_nav->GetVisible());
++  }
++
 +  // Avora: link preview overlay covers the main content area.
 +  if (views().avora_link_preview &&
 +      IsParentedTo(views().avora_link_preview, views().browser_view)) {
