@@ -2,7 +2,8 @@ node_modules/
 .npm-cache/
 .DS_Store
 
-# Chromium source checkout (fetched via gclient/depot_tools, not our code)
+# Chromium source checkout (fetched via gclient/depot_tools)
+# Avora modifications live on the `avora` branch inside chromium/src.
 chromium/
 
 # Legacy CEF build artifacts

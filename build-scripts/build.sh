@@ -4,50 +4,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AVORA_ROOT="$(dirname "$SCRIPT_DIR")"
 CHROMIUM_SRC="$AVORA_ROOT/chromium/src"
-PATCHES_DIR="$AVORA_ROOT/chromium-patches"
 BUILD_DIR="$CHROMIUM_SRC/out/Default"
 
 export PATH="$PATH:/Users/bglover/depot_tools"
 
 usage() {
-  echo "Usage: $0 [apply-patches|gen|build|full|clean-patches]"
+  echo "Usage: $0 [icons|copy-sources|gen|build|full|cleanup]"
   echo ""
   echo "Commands:"
-  echo "  apply-patches   Apply all patches from chromium-patches/"
-  echo "  clean-patches   Reverse all applied patches"
+  echo "  icons           Regenerate branding images from branding/avora_icon_1024.png"
+  echo "  copy-sources    Copy Avora source files into the Chromium tree"
   echo "  gen             Run gn gen with Avora args"
   echo "  build           Run autoninja to build chrome"
-  echo "  full            apply-patches -> gen -> build"
+  echo "  full            copy-sources -> gen -> build"
   echo "  cleanup         Remove stale Chromium.app build artifacts"
   exit 1
 }
 
-apply_patches() {
-  echo "==> Applying patches..."
-  cd "$CHROMIUM_SRC"
-  for patch in "$PATCHES_DIR"/*.patch; do
-    [ -f "$patch" ] || continue
-    echo "    Applying $(basename "$patch")"
-    git apply --check "$patch" 2>/dev/null && git apply "$patch" || {
-      echo "    WARNING: Patch $(basename "$patch") did not apply cleanly, trying with 3-way merge..."
-      git apply --3way "$patch" || {
-        echo "    ERROR: Failed to apply $(basename "$patch")"
-        exit 1
-      }
-    }
-  done
-  echo "==> All patches applied."
+icons() {
+  "$SCRIPT_DIR/generate-icons.sh"
 }
 
-clean_patches() {
-  echo "==> Reversing patches..."
-  cd "$CHROMIUM_SRC"
-  for patch in "$PATCHES_DIR"/*.patch; do
-    [ -f "$patch" ] || continue
-    echo "    Reversing $(basename "$patch")"
-    git apply --reverse "$patch" 2>/dev/null || echo "    (already clean or not applied)"
-  done
-  echo "==> Patches cleaned."
+copy_sources() {
+  "$SCRIPT_DIR/copy-sources.sh"
 }
 
 gen() {
@@ -63,8 +42,22 @@ build() {
   echo "==> Building Avora (this will take a while)..."
   cd "$CHROMIUM_SRC"
   caffeinate autoninja -C "$BUILD_DIR" chrome
+  refresh_icon_cache
   echo "==> Build complete!"
   echo "    Binary: $BUILD_DIR/Avora.app"
+}
+
+# The build replaces files inside Avora.app/Contents/Resources without changing
+# the bundle's own modification date, so Launch Services and the Dock keep
+# serving a cached app icon. Bumping the date and re-registering forces a reread.
+refresh_icon_cache() {
+  local app="$BUILD_DIR/Avora.app"
+  local lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  [ -d "$app" ] || return 0
+  echo "==> Refreshing app icon cache..."
+  touch "$app/Contents/Info.plist" "$app/Contents" "$app"
+  [ -x "$lsregister" ] && "$lsregister" -f "$app"
+  killall Dock 2>/dev/null || true
 }
 
 cleanup() {
@@ -74,11 +67,11 @@ cleanup() {
 }
 
 case "${1:-}" in
-  apply-patches) apply_patches ;;
-  clean-patches) clean_patches ;;
+  icons) icons ;;
+  copy-sources) copy_sources ;;
   gen) gen ;;
   build) build ;;
   cleanup) cleanup ;;
-  full) apply_patches; gen; build ;;
+  full) copy_sources; gen; build ;;
   *) usage ;;
 esac
