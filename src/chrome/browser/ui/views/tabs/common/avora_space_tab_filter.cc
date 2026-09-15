@@ -400,9 +400,11 @@ bool AvoraSpaceTabFilter::MigrateSpaceTabsToNewIdentity(
 
     // Swapping through the model preserves index, pinned state, and group, and
     // fires OnTabDiscarded so the Avora tab GUID, Space tag, and Favorite
-    // marker follow the contents.  The returned old contents is dropped here,
-    // which tears down the renderer in the previous partition.
-    model->DiscardWebContents(old_contents, std::move(new_contents));
+    // marker follow the contents.  Holding the outgoing contents in a local
+    // keeps it alive until the end of this iteration, after which its renderer
+    // in the previous partition is torn down.
+    std::unique_ptr<content::WebContents> retired =
+        model->DiscardWebContents(old_contents, std::move(new_contents));
 
     // Re-assert identity on the replacement rather than trusting the discard
     // callback alone.  SetTabGuid also mirrors the GUID onto the pending and
