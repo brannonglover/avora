@@ -3,6 +3,7 @@
 #include "chrome/browser/avora/avora_prefs.h"
 
 #include "chrome/browser/avora/avora_favorites.h"
+#include "chrome/browser/avora/avora_imported_link_store.h"
 #include "chrome/browser/avora/avora_live_folder_credentials.h"
 #include "chrome/browser/avora/avora_live_folder_store.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
@@ -17,6 +18,7 @@ namespace avora {
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   FavoritesManager::RegisterProfilePrefs(registry);
+  ImportedLinkStore::RegisterProfilePrefs(registry);
   PinnedFoldersManager::RegisterProfilePrefs(registry);
   SearchEngineManager::RegisterProfilePrefs(registry);
 
@@ -29,6 +31,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
 
   registry->RegisterIntegerPref(kTodayTabExpiryHoursPref,
                                 kDefaultTodayTabExpiryHours);
+  registry->RegisterBooleanPref(kImportOfferedPref, false);
 }
 
 base::TimeDelta GetTodayTabExpiry(PrefService* pref_service) {

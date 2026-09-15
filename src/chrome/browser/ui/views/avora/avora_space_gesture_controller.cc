@@ -5,7 +5,6 @@
 #include <cmath>
 
 #include "base/i18n/rtl.h"
-#include "chrome/browser/profiles/profile.h"
 #include "ui/events/event.h"
 #include "ui/views/view.h"
 

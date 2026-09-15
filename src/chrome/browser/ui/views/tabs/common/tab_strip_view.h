@@ -23,6 +23,7 @@ class UnpinnedTabContainerView;
 
 namespace avora {
 class AvoraFavoritesView;
+class AvoraImportedSectionView;
 class AvoraLiveFoldersView;
 class AvoraPinnedSectionView;
 class AvoraSpaceTabFilter;
@@ -85,6 +86,11 @@ class TabStripView final : public views::View,
   // provider-backed folders), below the pinned section.
   avora::AvoraLiveFoldersView* GetLiveFoldersView() const {
     return live_folders_view_;
+  }
+  // Avora: The Imported section (bookmarks imported from external browsers),
+  // below the pinned section and above the daily tab separator.
+  avora::AvoraImportedSectionView* GetImportedSectionView() const {
+    return imported_section_view_;
   }
 
   // Avora: Drag ghost – a lightweight overlay that follows the cursor when
@@ -190,6 +196,7 @@ class TabStripView final : public views::View,
   PrefChangeRegistrar pref_change_registrar_;
   raw_ptr<TabCollectionNode> collection_node_ = nullptr;
   raw_ptr<avora::AvoraFavoritesView> favorites_view_ = nullptr;
+  raw_ptr<avora::AvoraImportedSectionView> imported_section_view_ = nullptr;
   raw_ptr<avora::AvoraPinnedSectionView> pinned_section_view_ = nullptr;
   raw_ptr<avora::AvoraLiveFoldersView> live_folders_view_ = nullptr;
   raw_ptr<views::View> space_name_view_ = nullptr;

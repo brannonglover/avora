@@ -16,6 +16,11 @@ inline constexpr char kTodayTabExpiryHoursPref[] =
     "avora.today_tab_expiry_hours";
 inline constexpr int kDefaultTodayTabExpiryHours = 12;
 
+// Whether the first-run import offer has been shown.  Set to true after
+// the offer is displayed (whether accepted or dismissed) so it is not
+// shown again.
+inline constexpr char kImportOfferedPref[] = "avora.import_offered";
+
 // Registers every Avora profile pref.
 //
 // This is the single entry point Chromium's browser_prefs.cc calls, so adding

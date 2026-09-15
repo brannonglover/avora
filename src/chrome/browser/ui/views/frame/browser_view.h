@@ -20,6 +20,8 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "chrome/browser/avora/avora_window_session_data.h"
+#include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
@@ -53,6 +55,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/identifier/typed_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/native_ui_types.h"
@@ -101,7 +104,6 @@ namespace avora {
 class AvoraQuickNavView;
 class AvoraLinkPreviewView;
 class AvoraSpaceGestureController;
-class WindowSpaceState;
 }  // namespace avora
 class VerticalTabStripRegionView;
 class WebAppFrameToolbarView;
@@ -145,7 +147,8 @@ class BrowserView : public BrowserWindow,
                     public infobars::InfoBarContainer::Delegate,
                     public ImmersiveModeController::Observer,
                     public views::FocusChangeListener,
-                    public BookmarkBarController::Delegate {
+                    public BookmarkBarController::Delegate,
+                    public avora::WindowSpaceState::Observer {
   METADATA_HEADER(BrowserView, views::ClientView)
 
  public:
@@ -835,6 +838,9 @@ class BrowserView : public BrowserWindow,
     return avora_window_space_state_.get();
   }
 
+  // avora::WindowSpaceState::Observer:
+  void OnWindowActiveSpaceChanged(const std::string& space_id) override;
+
  protected:
   // BrowserWindow:
   void DeleteBrowserWindow() final;
@@ -1250,6 +1256,17 @@ class BrowserView : public BrowserWindow,
   std::unique_ptr<avora::AvoraSpaceGestureController>
       avora_space_gesture_controller_;
   std::unique_ptr<avora::WindowSpaceState> avora_window_space_state_;
+
+  // Session data holder — stores the durable window GUID and active Space ID
+  // on the BrowserWindowInterface::UnownedUserDataHost so that
+  // BuildCommandsForBrowser can read them during session rebuilds.
+  avora::AvoraWindowSessionData avora_session_data_;
+  std::optional<ui::ScopedUnownedUserData<avora::AvoraWindowSessionData>>
+      avora_session_data_holder_;
+
+  // Writes avora_window_guid and avora_active_space_id to the session service.
+  void PersistAvoraWindowSessionData();
+
   void UpdateAvoraSidebarURL();
   void NavigateAvoraAddressBar(const std::u16string& text, bool new_tab);
   void ShowAvoraExtensionPopup(const std::string& extension_id);

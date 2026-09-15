@@ -8,6 +8,10 @@ source_set("avora") {
     "avora_defaults.h",
     "avora_favorites.cc",
     "avora_favorites.h",
+    "avora_imported_links.cc",
+    "avora_imported_links.h",
+    "avora_imported_link_store.cc",
+    "avora_imported_link_store.h",
     "avora_github_provider.cc",
     "avora_github_provider.h",
     "avora_live_folder.cc",
@@ -44,6 +48,8 @@ source_set("avora") {
     "avora_tab_site_instance.h",
     "avora_window_space.cc",
     "avora_window_space.h",
+    "avora_window_session_data.cc",
+    "avora_window_session_data.h",
   ]
 
   deps = [
@@ -59,6 +65,7 @@ source_set("avora") {
     "//net",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//ui/base/unowned_user_data",
     "//url",
   ]
 }

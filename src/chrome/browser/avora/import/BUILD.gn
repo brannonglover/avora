@@ -1,0 +1,35 @@
+import("//build/config/features.gni")
+
+source_set("import") {
+  sources = [
+    "avora_import_coordinator.cc",
+    "avora_import_coordinator.h",
+    "bookmark_import_types.h",
+    "chrome_bookmark_parser.cc",
+    "chrome_bookmark_parser.h",
+    "chromium_bookmark_parser.cc",
+    "chromium_bookmark_parser.h",
+    "firefox_bookmark_parser.cc",
+    "firefox_bookmark_parser.h",
+    "html_bookmark_parser.cc",
+    "html_bookmark_parser.h",
+  ]
+
+  if (is_mac) {
+    sources += [
+      "safari_bookmark_parser.h",
+      "safari_bookmark_parser.mm",
+    ]
+  }
+
+  deps = [
+    "//base",
+    "//chrome/browser/avora",
+    "//sql",
+    "//url",
+  ]
+
+  if (is_mac) {
+    frameworks = [ "Foundation.framework" ]
+  }
+}

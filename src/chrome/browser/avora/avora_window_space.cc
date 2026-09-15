@@ -2,24 +2,52 @@
 
 #include "chrome/browser/avora/avora_window_space.h"
 
-#include <algorithm>
+#include "base/uuid.h"
 
 namespace avora {
 
-WindowSpaceState::WindowSpaceState(PrefService* prefs)
-    : space_manager_(prefs) {
-  space_manager_.AddObserver(this);
+// ---------- helpers ----------------------------------------------------------
 
-  // Seed from the global pref so existing single-window sessions and new
-  // windows start on whatever Space was last active.
+std::string WindowSpaceState::DefaultActiveSpaceId() const {
   if (const Space* active = space_manager_.GetActiveSpace()) {
-    active_space_id_ = active->id;
+    return active->id;
   }
+  const auto spaces = space_manager_.GetSpaces();
+  return spaces.empty() ? std::string() : spaces[0].id;
+}
+
+void WindowSpaceState::Init() {
+  space_manager_.AddObserver(this);
+}
+
+// ---------- constructors / destructor ----------------------------------------
+
+WindowSpaceState::WindowSpaceState(PrefService* prefs)
+    : space_manager_(prefs),
+      window_guid_(base::Uuid::GenerateRandomV4().AsLowercaseString()) {
+  active_space_id_ = DefaultActiveSpaceId();
+  Init();
+}
+
+WindowSpaceState::WindowSpaceState(PrefService* prefs,
+                                   const std::string& restored_window_guid,
+                                   const std::string& restored_space_id)
+    : space_manager_(prefs), window_guid_(restored_window_guid) {
+  // Use the restored Space if it still exists; otherwise fall back.
+  if (!restored_space_id.empty() &&
+      space_manager_.GetSpaceById(restored_space_id)) {
+    active_space_id_ = restored_space_id;
+  } else {
+    active_space_id_ = DefaultActiveSpaceId();
+  }
+  Init();
 }
 
 WindowSpaceState::~WindowSpaceState() {
   space_manager_.RemoveObserver(this);
 }
+
+// ---------- mutation ---------------------------------------------------------
 
 void WindowSpaceState::SetActiveSpaceId(const std::string& id) {
   if (id == active_space_id_) {
@@ -56,6 +84,8 @@ void WindowSpaceState::ActivateAdjacentSpace(bool forward) {
   SetActiveSpaceId(spaces[next].id);
 }
 
+// ---------- observers --------------------------------------------------------
+
 void WindowSpaceState::AddObserver(Observer* obs) {
   observers_.AddObserver(obs);
 }
@@ -63,6 +93,8 @@ void WindowSpaceState::AddObserver(Observer* obs) {
 void WindowSpaceState::RemoveObserver(Observer* obs) {
   observers_.RemoveObserver(obs);
 }
+
+// ---------- SpaceManagerObserver ---------------------------------------------
 
 void WindowSpaceState::OnSpacesChanged() {
   // If the Space this window was showing has been deleted, fall back to the

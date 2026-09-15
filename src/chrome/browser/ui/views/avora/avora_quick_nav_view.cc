@@ -392,6 +392,7 @@ AvoraQuickNavView::AvoraQuickNavView(BrowserWindowInterface* browser,
   if (window_space_state_) {
     favorites_manager_->SetWindowActiveSpaceId(
         window_space_state_->active_space_id());
+    window_space_state_->AddObserver(this);
   }
 
   suggest_provider_ = std::make_unique<SearchSuggestProvider>(
@@ -402,6 +403,9 @@ AvoraQuickNavView::AvoraQuickNavView(BrowserWindowInterface* browser,
 }
 
 AvoraQuickNavView::~AvoraQuickNavView() {
+  if (window_space_state_) {
+    window_space_state_->RemoveObserver(this);
+  }
   if (favorites_manager_) {
     favorites_manager_->RemoveObserver(this);
   }
@@ -600,6 +604,13 @@ void AvoraQuickNavView::ContentsChanged(views::Textfield* sender,
 void AvoraQuickNavView::OnFavoritesChanged() {
   if (IsShowing() && !showing_suggestions_) {
     RebuildHistoryList();
+  }
+}
+
+void AvoraQuickNavView::OnWindowActiveSpaceChanged(
+    const std::string& space_id) {
+  if (favorites_manager_) {
+    favorites_manager_->SetWindowActiveSpaceId(space_id);
   }
 }
 

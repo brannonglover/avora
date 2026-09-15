@@ -32,8 +32,22 @@ class WindowSpaceState : public SpaceManagerObserver {
     virtual void OnWindowActiveSpaceChanged(const std::string& space_id) {}
   };
 
+  // Construct for a brand-new window.  Seeds active_space_id_ from the global
+  // pref (SpaceManager::GetActiveSpace), which acts as the default Space for
+  // new windows.
   explicit WindowSpaceState(PrefService* prefs);
+
+  // Construct for a restored window.  |restored_space_id| is the Space this
+  // window was showing when the session was last saved.  If that Space no
+  // longer exists, falls back to the global default.
+  WindowSpaceState(PrefService* prefs,
+                   const std::string& restored_window_guid,
+                   const std::string& restored_space_id);
+
   ~WindowSpaceState() override;
+
+  // The durable identity of this logical window, stable across restarts.
+  const std::string& window_guid() const { return window_guid_; }
 
   // The Space this window is currently showing.
   const std::string& active_space_id() const { return active_space_id_; }
@@ -61,7 +75,15 @@ class WindowSpaceState : public SpaceManagerObserver {
   void OnSpacesChanged() override;
 
  private:
+  // Shared init logic called by both constructors after space_manager_ and
+  // active_space_id_ are set.
+  void Init();
+
+  // Choose the default active Space from the global pref.
+  std::string DefaultActiveSpaceId() const;
+
   SpaceManager space_manager_;
+  std::string window_guid_;
   std::string active_space_id_;
   base::ObserverList<Observer> observers_;
 };

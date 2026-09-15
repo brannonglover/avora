@@ -5,7 +5,10 @@
 #include <algorithm>
 
 #include "base/functional/bind.h"
+#include "base/pickle.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/avora/avora_imported_link_store.h"
+#include "chrome/browser/ui/views/avora/avora_imported_section_view.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -364,11 +367,13 @@ bool AvoraFavoritesView::GetDropFormats(
     int* formats,
     std::set<ui::ClipboardFormatType>* format_types) {
   *formats = ui::OSExchangeData::URL;
+  format_types->insert(GetImportedLinkClipboardFormatType());
   return true;
 }
 
 bool AvoraFavoritesView::CanDrop(const ui::OSExchangeData& data) {
-  return data.HasURL(ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
+  return data.HasURL(ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES) ||
+         data.HasCustomFormat(GetImportedLinkClipboardFormatType());
 }
 
 int AvoraFavoritesView::OnDragUpdated(const ui::DropTargetEvent& event) {
@@ -386,6 +391,44 @@ views::View::DropCallback AvoraFavoritesView::GetDropCallback(
           output_drag_op = ui::mojom::DragOperation::kNone;
           return;
         }
+
+        // If the drag payload contains an Avora imported-link identity,
+        // treat it as authoritative.  Either the item resolves to a valid
+        // link and we add a Favorite, or we reject the drop entirely.
+        // We never fall through to the generic URL path when the custom
+        // payload is present — the URL representation may be stale.
+        const bool has_imported_link_format =
+            event.data().HasCustomFormat(
+                GetImportedLinkClipboardFormatType());
+        if (has_imported_link_format) {
+          std::optional<base::Pickle> pickle =
+              event.data().GetPickledData(
+                  GetImportedLinkClipboardFormatType());
+          if (pickle.has_value()) {
+            base::PickleIterator iter(pickle.value());
+            std::string source_id;
+            std::string item_id;
+            if (iter.ReadString(&source_id) && iter.ReadString(&item_id)) {
+              Profile* profile = Profile::FromBrowserContext(
+                  view->browser_->GetProfile());
+              ImportedLinkStore store(profile->GetPrefs());
+              const ImportedItem* item =
+                  store.GetItemById(source_id, item_id);
+              if (item && item->type == ImportedItemType::kLink) {
+                view->GetFavoritesManager()->AddFavorite(
+                    item->url,
+                    item->title.empty() ? item->url : item->title);
+                output_drag_op = ui::mojom::DragOperation::kCopy;
+                return;
+              }
+            }
+          }
+          // Custom payload present but malformed, stale, or a folder.
+          output_drag_op = ui::mojom::DragOperation::kNone;
+          return;
+        }
+
+        // Generic URL drop (external apps, other browsers, etc.).
         auto urls = event.data().GetURLs(
             ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
         if (!urls.empty() && urls[0].url.is_valid()) {

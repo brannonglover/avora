@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.h"
 #include "chrome/browser/ui/views/avora/avora_favorites_view.h"
+#include "chrome/browser/ui/views/avora/avora_imported_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_label_view.h"
@@ -560,8 +561,15 @@ void TabStripView::SetBrowser(BrowserWindowInterface* browser,
       browser, window_space_state);
   pinned_section_view_ = AddChildViewAt(std::move(pinned_section), 2);
 
-  // Fading separator between pinned section and daily section.
-  pinned_separator_ = AddChildViewAt(std::make_unique<FadingSeparator>(), 3);
+  // Avora: Imported bookmarks from external browsers, below pinned.
+  // Collapsed by default; zero height when the active Space has no imports.
+  imported_section_view_ = AddChildViewAt(
+      std::make_unique<avora::AvoraImportedSectionView>(browser,
+                                                         window_space_state),
+      3);
+
+  // Fading separator between imported/pinned section and daily section.
+  pinned_separator_ = AddChildViewAt(std::make_unique<FadingSeparator>(), 4);
 
   // Avora: the active Space's name, below favorites.  AvoraSpaceLabelView
   // reads the active Space from WindowSpaceState and refreshes itself when it
@@ -569,7 +577,7 @@ void TabStripView::SetBrowser(BrowserWindowInterface* browser,
   space_name_view_ = AddChildViewAt(
       std::make_unique<avora::AvoraSpaceLabelView>(browser,
                                                     window_space_state),
-      4);
+      5);
 
   // Avora: scope the daily tab list to the active Space.  Created last so the
   // containers it filters already exist.

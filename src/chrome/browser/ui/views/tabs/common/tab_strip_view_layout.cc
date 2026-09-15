@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/avora/avora_favorites_view.h"
+#include "chrome/browser/ui/views/avora/avora_imported_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
@@ -251,7 +252,25 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
     }
   }
 
-  // 2b. Fading separator between pinned section and daily section.
+  // 2c. Imported section (bookmarks from external browsers), below pinned.
+  // Collapses to zero height when the active Space has no imported data or
+  // when the user has collapsed the section.
+  avora::AvoraImportedSectionView* imported_section_view =
+      tab_strip_view->GetImportedSectionView();
+  if (imported_section_view) {
+    const int imported_height =
+        imported_section_view->GetPreferredSize(size_bounds).height();
+    gfx::Rect imported_bounds(0, y, size_bounds.width().value(),
+                              imported_height);
+    layouts.child_layouts.emplace_back(imported_section_view,
+                                       imported_section_view->GetVisible(),
+                                       imported_bounds);
+    if (imported_section_view->GetVisible() && imported_height > 0) {
+      y += imported_height;
+    }
+  }
+
+  // 2d. Fading separator between imported/pinned section and daily section.
   views::Separator* pinned_separator = tab_strip_view->GetPinnedSeparator();
   if (pinned_separator) {
     y += kSectionGap;

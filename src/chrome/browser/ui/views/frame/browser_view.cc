@@ -194,8 +194,12 @@
 #include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
+#include "chrome/browser/ui/views/avora/avora_import_offer_view.h"
 #include "chrome/browser/ui/views/avora/avora_spaces_bar_view.h"
+#include "chrome/browser/avora/avora_window_session_data.h"
 #include "chrome/browser/avora/avora_window_space.h"
+#include "chrome/browser/sessions/session_service.h"
+#include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/webui/avora_settings/avora_settings_ui.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -1064,8 +1068,46 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
 
     // Per-window active Space state.  Created before the gesture controller
     // and spaces bar so they can reference it.
-    avora_window_space_state_ =
-        std::make_unique<avora::WindowSpaceState>(GetProfile()->GetPrefs());
+    //
+    // On session restore the create_params carry the durable window GUID and
+    // the Space the user was in.  Use the restore constructor when both are
+    // present; otherwise generate a new GUID (brand-new window).
+    const auto& create_params =
+        BrowserInitState::From(&*browser_)->create_params();
+    if (!create_params.avora_window_guid.empty()) {
+      avora_window_space_state_ =
+          std::make_unique<avora::WindowSpaceState>(
+              GetProfile()->GetPrefs(),
+              create_params.avora_window_guid,
+              create_params.avora_active_space_id);
+    } else {
+      avora_window_space_state_ =
+          std::make_unique<avora::WindowSpaceState>(GetProfile()->GetPrefs());
+    }
+
+    // Attach session data to the UnownedUserDataHost so that
+    // BuildCommandsForBrowser can read the GUID and active Space during
+    // session rebuilds.
+    avora_session_data_holder_.emplace(
+        browser_->GetUnownedUserDataHost(), avora_session_data_);
+    avora_session_data_.set_window_guid(
+        avora_window_space_state_->window_guid());
+    avora_session_data_.set_active_space_id(
+        avora_window_space_state_->active_space_id());
+
+    // Persist to session commands so the data is available for future restores.
+    // Deferred via PostTask because SessionService::WindowOpened() hasn't run
+    // yet during BrowserView construction — AddWindowExtraData requires the
+    // window to be in windows_tracking_, which is populated by SetWindowType
+    // inside WindowOpened.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&BrowserView::PersistAvoraWindowSessionData,
+                       weak_ptr_factory_.GetWeakPtr()));
+
+    // Observe Space changes so we can persist the active Space to session data.
+    avora_window_space_state_->AddObserver(this);
+
     avora_spaces_bar_->SetWindowSpaceState(avora_window_space_state_.get());
 
     std::vector<views::View*> gesture_regions;
@@ -1259,9 +1301,17 @@ BrowserView::~BrowserView() {
   organizer_panel_container_ = nullptr;
   side_panel_ = nullptr;
   avora_space_gesture_controller_.reset();
-  avora_window_space_state_.reset();
   avora_sidebar_header_ = nullptr;
   avora_spaces_bar_ = nullptr;
+
+  // Disconnect BrowserView's own observer before child views are destroyed.
+  if (avora_window_space_state_) {
+    avora_window_space_state_->RemoveObserver(this);
+  }
+
+  // Release the session data holder before RemoveAllChildViews; after this
+  // point the host entry is erased.
+  avora_session_data_holder_.reset();
 
 #if BUILDFLAG(IS_MAC)
   tab_overlay_view_ = nullptr;
@@ -1272,7 +1322,11 @@ BrowserView::~BrowserView() {
 
   // Child views maintain PrefMember attributes that point to
   // OffTheRecordProfile's PrefService which gets deleted by ~Browser.
+  // Also: child views observe avora_window_space_state_ and call
+  // RemoveObserver in their destructors, so WindowSpaceState must outlive them.
   RemoveAllChildViews();
+
+  avora_window_space_state_.reset();
 }
 
 // static
@@ -2750,6 +2804,12 @@ void BrowserView::OnWindowDidShow() {
   GlobalError* error = service->GetFirstGlobalErrorWithBubbleView();
   if (error) {
     error->ShowBubbleView(browser_);
+  }
+
+  // Avora: offer bookmark import on first run.
+  if (avora_window_space_state_) {
+    avora::AvoraImportOfferView::MaybeShow(
+        browser_.get(), avora_window_space_state_.get());
   }
 }
 
@@ -6363,6 +6423,33 @@ bool BrowserView::TryHandleSpaceSwitchMousePress(
     return true;
   }
   return false;
+}
+
+// ── Avora window session persistence ─────────────────────────────────────────
+
+void BrowserView::PersistAvoraWindowSessionData() {
+  SessionService* session_service =
+      SessionServiceFactory::GetForProfileForSessionRestore(GetProfile());
+  if (!session_service) {
+    return;
+  }
+  const SessionID session_id = browser_->GetSessionID();
+  if (!session_id.is_valid()) {
+    return;
+  }
+
+  session_service->AddWindowExtraData(
+      session_id, avora::AvoraWindowSessionData::kWindowGuidKey,
+      avora_session_data_.window_guid());
+  session_service->AddWindowExtraData(
+      session_id, avora::AvoraWindowSessionData::kActiveSpaceIdKey,
+      avora_session_data_.active_space_id());
+}
+
+void BrowserView::OnWindowActiveSpaceChanged(const std::string& space_id) {
+  // Update the session data and persist.
+  avora_session_data_.set_active_space_id(space_id);
+  PersistAvoraWindowSessionData();
 }
 
 void BrowserView::UpdateAvoraSidebarURL() {

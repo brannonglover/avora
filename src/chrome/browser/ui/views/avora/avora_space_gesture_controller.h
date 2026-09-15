@@ -3,17 +3,13 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_SPACE_GESTURE_CONTROLLER_H_
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_SPACE_GESTURE_CONTROLLER_H_
 
-#include <memory>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_window_space.h"
 #include "ui/events/event_handler.h"
-
-class Profile;
 
 namespace views {
 class View;
@@ -55,7 +51,6 @@ class AvoraSpaceGestureController : public ui::EventHandler {
   void ProcessSwipeOffset(float x_offset, float y_offset, ui::Event* event);
   void ResetGesture();
 
-  std::unique_ptr<avora::SpaceManager> space_manager_;
   raw_ptr<WindowSpaceState> window_space_state_ = nullptr;
   std::vector<raw_ptr<views::View>> attached_views_;
 

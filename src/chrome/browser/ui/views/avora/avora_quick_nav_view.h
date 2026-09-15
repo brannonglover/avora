@@ -51,7 +51,8 @@ using QuickNavDismissCallback = base::RepeatingClosure;
 // Enter navigates; pressing Escape or clicking the backdrop dismisses.
 class AvoraQuickNavView : public views::View,
                           public views::TextfieldController,
-                          public FavoritesManager::Observer {
+                          public FavoritesManager::Observer,
+                          public avora::WindowSpaceState::Observer {
   METADATA_HEADER(AvoraQuickNavView, views::View)
 
  public:
@@ -108,6 +109,9 @@ class AvoraQuickNavView : public views::View,
 
   // FavoritesManager::Observer:
   void OnFavoritesChanged() override;
+
+  // avora::WindowSpaceState::Observer:
+  void OnWindowActiveSpaceChanged(const std::string& space_id) override;
 
  private:
   // Common implementation for Show() and ShowWithURL().
