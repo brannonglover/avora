@@ -11,7 +11,10 @@
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "ui/base/base_window.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/shell_dialogs/select_file_policy.h"
+#include "ui/shell_dialogs/selected_file_info.h"
 #include "ui/base/models/combobox_model.h"
 #include "ui/gfx/canvas.h"
 #include "ui/views/controls/label.h"
@@ -135,8 +138,9 @@ void AvoraImportDialogView::Show(BrowserWindowInterface* browser,
       browser, window_space_state, std::move(on_reveal),
       pre_select_source_id);
   views::DialogDelegate::CreateDialogWidget(
-      std::move(dialog), gfx::NativeWindow(),
-      browser->GetNativeWindow())
+      std::move(dialog),
+      browser->GetWindow()->GetNativeWindow(),
+      gfx::NativeView())
       ->Show();
 }
 

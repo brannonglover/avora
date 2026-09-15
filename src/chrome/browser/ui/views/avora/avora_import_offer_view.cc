@@ -10,6 +10,7 @@
 #include "chrome/browser/avora/import/avora_import_coordinator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "ui/base/base_window.h"
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -62,8 +63,9 @@ bool AvoraImportOfferView::MaybeShow(BrowserWindowInterface* browser,
   auto dialog = std::make_unique<AvoraImportOfferView>(
       browser, window_space_state, std::move(browsers));
   views::DialogDelegate::CreateDialogWidget(
-      std::move(dialog), gfx::NativeWindow(),
-      browser->GetNativeWindow())
+      std::move(dialog),
+      browser->GetWindow()->GetNativeWindow(),
+      gfx::NativeView())
       ->Show();
   return true;
 }

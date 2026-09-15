@@ -13,9 +13,10 @@ namespace avora {
 
 namespace {
 
+constexpr char kImportedLinksLocalPref[] = "avora.imported_links";
+
 bool IsPrefRegistered(PrefService* ps) {
-  return ps &&
-         ps->FindPreference(ImportedLinkStore::kImportedLinksPref) != nullptr;
+  return ps && ps->FindPreference(kImportedLinksLocalPref) != nullptr;
 }
 
 }  // namespace

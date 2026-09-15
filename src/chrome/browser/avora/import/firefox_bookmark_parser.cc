@@ -317,7 +317,7 @@ void ConvertRows(const std::vector<BookmarkRow>& rows,
   }
 }
 
-inline constexpr sql::Database::Tag kDatabaseTag{"AvoraFirefoxImporter"};
+inline constexpr sql::Database::Tag kDatabaseTag{"FirefoxImporter"};
 
 // Opens a SQLite database and parses its bookmarks.
 // |use_read_only| controls whether the database is opened with

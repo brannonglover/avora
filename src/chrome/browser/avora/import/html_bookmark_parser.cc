@@ -7,6 +7,7 @@
 
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
@@ -68,7 +69,7 @@ std::string ExtractText(const std::string& line,
 
 bool IsValidImportUrl(const GURL& url) {
   if (!url.is_valid()) return false;
-  const std::string& scheme = url.scheme();
+  std::string_view scheme = url.scheme();
   return scheme == "http" || scheme == "https" || scheme == "ftp" ||
          scheme == "file" || scheme == "chrome";
 }
