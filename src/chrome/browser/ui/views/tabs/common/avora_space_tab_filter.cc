@@ -12,6 +12,7 @@
 #include "chrome/browser/avora/avora_tab_guid.h"
 #include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/avora/avora_tab_space.h"
+#include "chrome/browser/avora/avora_window_session_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
@@ -219,6 +220,10 @@ void AvoraSpaceTabFilter::OnActiveSpaceChanged(const std::string& space_id) {
 
   current_space_id_ = space_id;
 
+  // Keep new-tab partition selection consistent with the Space we are entering
+  // before RestoreActiveTabFor() can create one.
+  PublishWindowActiveSpace(space_id);
+
   // Activate before hiding, so the content area never shows a tab that is
   // about to disappear from the strip.
   RestoreActiveTabFor(space_id);
@@ -238,11 +243,31 @@ void AvoraSpaceTabFilter::OnWindowActiveSpaceChanged(
 
   current_space_id_ = space_id;
 
+  // Publish the window's Space before RestoreActiveTabFor(), which creates a
+  // tab when the incoming Space is empty.  New-tab partition selection reads
+  // this value, so leaving it to another observer would make the new tab's
+  // identity depend on observer registration order -- and an empty Space
+  // entered first would open its tab in the outgoing Space's partition.
+  PublishWindowActiveSpace(space_id);
+
   RestoreActiveTabFor(space_id);
 
   AdoptUntaggedTabs();
   ApplyVisibility();
   SyncTabsToStore();
+}
+
+void AvoraSpaceTabFilter::PublishWindowActiveSpace(
+    const std::string& space_id) {
+  if (!browser_) {
+    return;
+  }
+  // Absent on windows without the Avora views; new tabs there fall back to the
+  // global active Space.
+  if (auto* data =
+          AvoraWindowSessionData::Get(browser_->GetUnownedUserDataHost())) {
+    data->set_active_space_id(space_id);
+  }
 }
 
 void AvoraSpaceTabFilter::OnSpacesChanged() {

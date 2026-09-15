@@ -78,6 +78,12 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // identity change apart from a rename, reorder, or icon edit.
   void RefreshSpaceProfileCache();
 
+  // Records |space_id| as this window's active Space on AvoraWindowSessionData,
+  // which is what new-tab partition selection reads.  Called before any path
+  // that can create a tab, so the tab's identity does not depend on which
+  // WindowSpaceState observer happens to run first.
+  void PublishWindowActiveSpace(const std::string& space_id);
+
   // Rebuilds every tab belonging to |space_id| in this window so it runs in
   // the Space's current storage partition.
   //

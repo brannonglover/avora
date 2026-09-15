@@ -6,9 +6,11 @@
 
 #include "base/functional/bind.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -141,8 +143,11 @@ void AvoraLinkPreviewView::Show(const GURL& url) {
   previewed_url_ = url;
 
   Profile* profile = browser_->GetProfile();
-  auto contents = content::WebContents::Create(
-      content::WebContents::CreateParams(profile));
+  // Preview in the Space's own partition.  Without this the preview renders
+  // with the default identity's cookies, so a link previewed inside an
+  // isolated Space would load as the wrong account.
+  auto contents = content::WebContents::Create(content::WebContents::CreateParams(
+      profile, GetSiteInstanceForNewAvoraTab(browser_, url)));
   contents->SetDelegate(this);
 
   owned_contents_ = std::move(contents);
