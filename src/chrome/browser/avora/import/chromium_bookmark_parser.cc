@@ -90,7 +90,8 @@ base::flat_map<std::string, std::string> ReadProfileDisplayNames(
     return names;
   }
 
-  auto parsed = base::JSONReader::Read(json);
+  auto parsed =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed || !parsed->is_dict()) {
     return names;
   }
@@ -357,7 +358,8 @@ DetectedBrowser ChromiumBookmarkParser::DetectProfiles(
     if (base::PathExists(profile.bookmarks_path)) {
       std::string json;
       if (base::ReadFileToString(profile.bookmarks_path, &json)) {
-        auto parsed = base::JSONReader::Read(json);
+        auto parsed =
+            base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
         if (parsed && parsed->is_dict()) {
           const base::DictValue* roots =
               parsed->GetDict().FindDict(kRootsKey);
@@ -413,7 +415,8 @@ std::optional<ParseResult> ChromiumBookmarkParser::ParseBookmarksJson(
     const std::string& json_string,
     const std::string& browser,
     const std::string& profile_name) {
-  auto parsed = base::JSONReader::Read(json_string);
+  auto parsed =
+      base::JSONReader::Read(json_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed || !parsed->is_dict()) {
     LOG(WARNING) << "Bookmarks file is not valid JSON";
     return std::nullopt;
