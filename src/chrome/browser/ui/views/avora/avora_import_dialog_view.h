@@ -3,6 +3,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_IMPORT_DIALOG_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_IMPORT_DIALOG_VIEW_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -39,9 +40,13 @@ class WindowSpaceState;
 //
 // The Imported sidebar section updates automatically through the
 // ImportedLinkStore observer — this dialog does not touch the view.
-class AvoraImportDialogView : public views::DialogDelegateView,
+//
+// This view is the contents view of a plain views::DialogDelegate rather
+// than a views::DialogDelegateView subclass; see the comment on
+// `delegate_` for the ownership contract.
+class AvoraImportDialogView : public views::View,
                               public ui::SelectFileDialog::Listener {
-  METADATA_HEADER(AvoraImportDialogView, views::DialogDelegateView)
+  METADATA_HEADER(AvoraImportDialogView, views::View)
 
  public:
   // Callback invoked with the source_id after a successful import when
@@ -53,7 +58,8 @@ class AvoraImportDialogView : public views::DialogDelegateView,
                    RevealCallback on_reveal = RevealCallback(),
                    const std::string& pre_select_source_id = std::string());
 
-  AvoraImportDialogView(BrowserWindowInterface* browser,
+  AvoraImportDialogView(std::unique_ptr<views::DialogDelegate> delegate,
+                        BrowserWindowInterface* browser,
                         WindowSpaceState* window_space_state,
                         RevealCallback on_reveal,
                         const std::string& pre_select_source_id);
@@ -63,9 +69,6 @@ class AvoraImportDialogView : public views::DialogDelegateView,
 
   // Returns a human-readable display name for a browser identifier.
   static std::u16string BrowserDisplayName(const std::string& browser);
-
-  // views::DialogDelegateView:
-  bool Accept() override;
 
   // ui::SelectFileDialog::Listener:
   void FileSelected(const ui::SelectedFileInfo& file,
@@ -87,6 +90,15 @@ class AvoraImportDialogView : public views::DialogDelegateView,
     kMissingSource,
   };
 
+  // Runs when the user presses the dialog's accept button.  Returns true to
+  // let the dialog close, false to keep it open (the selection, Safari
+  // export and missing-source states all stay open and advance instead).
+  bool OnAccept();
+
+  // Resizes the hosting Widget to this view's preferred size after the
+  // contents have been rebuilt.
+  void ResizeToPreferredSize();
+
   void BuildSelectionUI();
   void BuildErrorUI(const std::u16string& message);
   void BuildResultUI(const ImportResult& result,
@@ -101,6 +113,16 @@ class AvoraImportDialogView : public views::DialogDelegateView,
   void OnProfileSelected(ProfileSelection sel);
   void UpdateImportButtonLabel();
   bool IsReimport() const;
+
+  // The DialogDelegate hosting this view.  Widget only holds a WeakPtr to
+  // its delegate and never deletes it, and neither DeleteDelegate() nor the
+  // SetOwnedByWidget()/RegisterDeleteDelegateCallback() hooks are available
+  // to code outside //ui/views' friend lists.  Anchoring the delegate here
+  // works because Widget always calls WidgetDelegate::DeleteDelegate()
+  // before DestroyRootView(), so the delegate is still alive while the
+  // Widget needs it and is torn down with the view hierarchy afterwards,
+  // satisfying the "a WidgetDelegate must outlive its Widget" CHECK.
+  std::unique_ptr<views::DialogDelegate> delegate_;
 
   State state_ = State::kSelection;
   raw_ptr<BrowserWindowInterface> browser_;
