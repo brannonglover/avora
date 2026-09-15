@@ -365,8 +365,10 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
     scroll_view->SetDrawOverflowIndicator(false);
 
     auto contents = std::make_unique<views::View>();
-    auto* layout = contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), kGridGap));
+    auto* layout =
+        contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+            kGridGap));
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kStart);
     grid_container_ = scroll_view->SetContents(std::move(contents));

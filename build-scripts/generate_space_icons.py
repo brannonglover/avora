@@ -280,7 +280,7 @@ def cpp_literal(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def wrap_literal(text: str, indent: str, width: int = 74) -> list[str]:
+def wrap_literal(text: str, indent: str, width: int = 72) -> list[str]:
     """Splits a long path string into adjacent C++ literals on token bounds."""
     chunks: list[str] = []
     current = ""
