@@ -38,6 +38,10 @@ source_set("avora") {
     "avora_sidebar_item.h",
     "avora_space.cc",
     "avora_space.h",
+    "avora_space_icon_data.cc",
+    "avora_space_icon_data.h",
+    "avora_space_icons.cc",
+    "avora_space_icons.h",
     "avora_space_manager.cc",
     "avora_space_manager.h",
     "avora_storage_partition.cc",
@@ -65,6 +69,7 @@ source_set("avora") {
     "//net",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//skia",
     "//ui/base/unowned_user_data",
     "//url",
   ]
