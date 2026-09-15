@@ -14,6 +14,8 @@ source_set("avora") {
     "avora_imported_section_view.h",
     "avora_space_gesture_controller.cc",
     "avora_space_gesture_controller.h",
+    "avora_space_icon_picker.cc",
+    "avora_space_icon_picker.h",
     "avora_link_preview_view.cc",
     "avora_link_preview_view.h",
     "avora_lucide_icon.cc",

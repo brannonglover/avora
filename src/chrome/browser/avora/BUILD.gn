@@ -39,7 +39,6 @@ source_set("avora") {
     "avora_space.cc",
     "avora_space.h",
     "avora_space_icon_data.cc",
-    "avora_space_icon_data.h",
     "avora_space_icons.cc",
     "avora_space_icons.h",
     "avora_space_manager.cc",

@@ -73,10 +73,6 @@ std::optional<SkColor> ParseHexColor(std::string_view hex) {
 
 }  // namespace
 
-base::span<const SpaceIcon> GetSpaceIconCatalog() {
-  return base::span<const SpaceIcon>(kSpaceIconCatalog, kSpaceIconCatalogSize);
-}
-
 const SpaceIcon* FindSpaceIcon(std::string_view icon_id) {
   for (const SpaceIcon& icon : GetSpaceIconCatalog()) {
     if (icon.id == icon_id) {

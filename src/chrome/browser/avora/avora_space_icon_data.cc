@@ -8,13 +8,14 @@
 // native 24x24 coordinate space and are stroked at paint time, so a Space's
 // accent colour -- not the stored data -- decides how an icon looks.
 
-#include "chrome/browser/avora/avora_space_icon_data.h"
-
-#include <iterator>
+#include "base/containers/span.h"
+#include "chrome/browser/avora/avora_space_icons.h"
 
 namespace avora {
 
-const SpaceIcon kSpaceIconCatalog[] = {
+namespace {
+
+constexpr SpaceIcon kSpaceIconCatalog[] = {
     {"briefcase", "Briefcase", "Work",
      "M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16 M4 6H20A2 2 0 0 1 22 8V18A2 2 0 "
      "0 1 20 20H4A2 2 0 0 1 2 18V8A2 2 0 0 1 4 6Z"},
@@ -478,6 +479,10 @@ const SpaceIcon kSpaceIconCatalog[] = {
      "M2 12A10 10 0 1 0 22 12A10 10 0 1 0 2 12Z"},
 };
 
-const size_t kSpaceIconCatalogSize = std::size(kSpaceIconCatalog);
+}  // namespace
+
+base::span<const SpaceIcon> GetSpaceIconCatalog() {
+  return base::span(kSpaceIconCatalog);
+}
 
 }  // namespace avora

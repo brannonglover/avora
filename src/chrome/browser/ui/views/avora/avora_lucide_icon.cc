@@ -445,12 +445,12 @@ SkPath ParseLucidePathData(std::string_view path_data) {
   return builder.detach();
 }
 
-void PaintLucideIcon(gfx::Canvas* canvas,
-                     const gfx::Rect& bounds,
-                     std::string_view icon_id,
-                     SkColor color,
-                     float stroke_width) {
-  const SkPath path = ParseLucidePathData(GetSpaceIconPathData(icon_id));
+void PaintLucidePathData(gfx::Canvas* canvas,
+                         const gfx::Rect& bounds,
+                         std::string_view path_data,
+                         SkColor color,
+                         float stroke_width) {
+  const SkPath path = ParseLucidePathData(path_data);
   if (path.isEmpty() || bounds.IsEmpty()) {
     return;
   }
@@ -472,6 +472,15 @@ void PaintLucideIcon(gfx::Canvas* canvas,
   flags.setStrokeJoin(cc::PaintFlags::kRound_Join);
   flags.setColor(color);
   canvas->DrawPath(path, flags);
+}
+
+void PaintLucideIcon(gfx::Canvas* canvas,
+                     const gfx::Rect& bounds,
+                     std::string_view icon_id,
+                     SkColor color,
+                     float stroke_width) {
+  PaintLucidePathData(canvas, bounds, GetSpaceIconPathData(icon_id), color,
+                      stroke_width);
 }
 
 gfx::ImageSkia LucideIconImage(std::string_view icon_id,

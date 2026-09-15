@@ -308,13 +308,14 @@ def generate(icons_dir: pathlib.Path) -> str:
         "// native 24x24 coordinate space and are stroked at paint time, so a Space's",
         "// accent colour -- not the stored data -- decides how an icon looks.",
         "",
-        '#include "chrome/browser/avora/avora_space_icon_data.h"',
-        "",
-        "#include <iterator>",
+        '#include "base/containers/span.h"',
+        '#include "chrome/browser/avora/avora_space_icons.h"',
         "",
         "namespace avora {",
         "",
-        "const SpaceIcon kSpaceIconCatalog[] = {",
+        "namespace {",
+        "",
+        "constexpr SpaceIcon kSpaceIconCatalog[] = {",
     ]
 
     for category, icon_id, label in CURATED_ICONS:
@@ -333,7 +334,11 @@ def generate(icons_dir: pathlib.Path) -> str:
     lines += [
         "};",
         "",
-        "const size_t kSpaceIconCatalogSize = std::size(kSpaceIconCatalog);",
+        "}  // namespace",
+        "",
+        "base::span<const SpaceIcon> GetSpaceIconCatalog() {",
+        "  return base::span(kSpaceIconCatalog);",
+        "}",
         "",
         "}  // namespace avora",
         "",

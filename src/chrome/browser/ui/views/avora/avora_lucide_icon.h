@@ -35,6 +35,15 @@ inline constexpr float kLucideStrokeWidth = 2.0f;
 // data cannot be parsed.
 SkPath ParseLucidePathData(std::string_view path_data);
 
+// Strokes |path_data|, centred and scaled to fill |bounds|.  For Lucide icons
+// used as browser chrome, which are referenced directly instead of through the
+// Space catalog.
+void PaintLucidePathData(gfx::Canvas* canvas,
+                         const gfx::Rect& bounds,
+                         std::string_view path_data,
+                         SkColor color,
+                         float stroke_width = kLucideStrokeWidth);
+
 // Strokes the icon registered as |icon_id|, centred and scaled to fill
 // |bounds|.  Unknown identifiers draw the fallback icon.
 void PaintLucideIcon(gfx::Canvas* canvas,
