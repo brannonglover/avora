@@ -87,8 +87,7 @@ AvoraImportOfferView::AvoraImportOfferView(
 
   delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
                         static_cast<int>(ui::mojom::DialogButton::kCancel));
-  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk,
-                            u"Import bookmarks");
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Import bookmarks");
   delegate_->SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Not now");
 
   // `delegate_` is owned by this view, so it can never outlive `this`.
