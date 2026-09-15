@@ -224,7 +224,6 @@
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_dashboard_view.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
-#include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/qrcode_generator/qrcode_generator_bubble.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_view.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_device_picker_bubble_view.h"
@@ -6082,8 +6081,11 @@ void BrowserView::ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) {
     return;
   }
 
-  // Default behavior -- show the profile menu.
-  ProfileMenuCoordinator::From(browser())->Show(is_source_accelerator);
+  // Avora: with the vertical tab strip there is usually no avatar button, and
+  // falling through to the profile menu would offer Chromium profile
+  // switching -- which opens a separate window per profile.  Browsing identity
+  // belongs to a Space and is switched from the Spaces bar, so this path is
+  // deliberately inert rather than surfacing a competing identity UI.
 }
 
 void BrowserView::MaybeShowProfileSwitchIPH() {

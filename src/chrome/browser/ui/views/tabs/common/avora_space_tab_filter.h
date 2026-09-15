@@ -65,6 +65,7 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
                       TabChangeType change_type) override;
 
   // SpaceManagerObserver:
+  void OnSpacesChanged() override;
   void OnActiveSpaceChanged(const std::string& space_id) override;
 
   // WindowSpaceState::Observer:
@@ -72,6 +73,28 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
 
  private:
   TabStripModel* GetModel() const;
+
+  // Caches each Space's owning BrowserProfile so OnSpacesChanged() can tell an
+  // identity change apart from a rename, reorder, or icon edit.
+  void RefreshSpaceProfileCache();
+
+  // Rebuilds every tab belonging to |space_id| in this window so it runs in
+  // the Space's current storage partition.
+  //
+  // A tab's partition is fixed for the life of its WebContents, so switching
+  // identity means replacing the contents: for each tab we create a fresh
+  // WebContents pinned to the new partition, load the URL the tab was showing,
+  // and swap it in with TabStripModel::DiscardWebContents.  That path fires
+  // the discard callback, which carries the Avora tab GUID, Space tag, and
+  // Favorite marker across to the replacement.
+  //
+  // Live page state in those tabs (form input, scroll offset, media playback)
+  // is necessarily lost, because the old renderer cannot be reused in a
+  // different partition.
+  //
+  // Returns false if any tab could not be rebuilt, in which case the caller
+  // must keep treating the Space as still owing a migration.
+  bool MigrateSpaceTabsToNewIdentity(const std::string& space_id);
 
   // Assigns any tab with no Space to the active one.  Runs on every tab strip
   // change rather than only on insertion, so tabs that arrive by drag, restore,
@@ -149,6 +172,9 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
 
   // Owning Space per tab.
   std::map<tabs::TabHandle, std::string> tab_space_;
+
+  // space_id -> profile_id, as of the last time the Space list was seen.
+  std::map<std::string, std::string> space_profile_;
 
   // Last active tab per Space.
   std::map<std::string, tabs::TabHandle> last_active_tab_;

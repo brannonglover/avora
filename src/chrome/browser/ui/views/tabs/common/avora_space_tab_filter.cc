@@ -2,11 +2,15 @@
 
 #include "chrome/browser/ui/views/tabs/common/avora_space_tab_filter.h"
 
+#include <iterator>
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/avora/avora_prefs.h"
 #include "chrome/browser/avora/avora_tab_guid.h"
+#include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
@@ -19,7 +23,9 @@
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -48,6 +54,9 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
       current_space_id_ = active->id;
     }
     item_store_ = std::make_unique<SidebarItemStore>(profile->GetPrefs());
+
+    // Baseline for identity-change detection in OnSpacesChanged().
+    RefreshSpaceProfileCache();
   }
 
   if (TabStripModel* model = GetModel()) {
@@ -234,6 +243,193 @@ void AvoraSpaceTabFilter::OnWindowActiveSpaceChanged(
   AdoptUntaggedTabs();
   ApplyVisibility();
   SyncTabsToStore();
+}
+
+void AvoraSpaceTabFilter::OnSpacesChanged() {
+  if (!space_manager_) {
+    return;
+  }
+
+  const std::vector<Space> spaces = space_manager_->GetSpaces();
+
+  // Forget Spaces that no longer exist.
+  std::set<std::string> live;
+  for (const Space& space : spaces) {
+    live.insert(space.id);
+  }
+  for (auto it = space_profile_.begin(); it != space_profile_.end();) {
+    it = live.count(it->first) ? std::next(it) : space_profile_.erase(it);
+  }
+
+  // A Space we've never seen before is simply recorded: it has no tabs in this
+  // window yet, so there is nothing to move.
+  std::vector<std::string> reidentified;
+  for (const Space& space : spaces) {
+    const auto it = space_profile_.find(space.id);
+    if (it == space_profile_.end()) {
+      space_profile_[space.id] = space.profile_id;
+    } else if (it->second != space.profile_id) {
+      reidentified.push_back(space.id);
+    }
+  }
+
+  if (reidentified.empty()) {
+    return;
+  }
+
+  // Another tab-strip operation is mid-flight, or a migration is already
+  // running.  Leave the cached identity stale so this change is still visible
+  // as a delta and gets picked up next time, rather than being swallowed.
+  if (applying_) {
+    return;
+  }
+
+  for (const std::string& space_id : reidentified) {
+    // Only record the new identity once the tabs have actually been rebuilt in
+    // it.  If a rebuild is incomplete the entry stays stale and is retried.
+    if (MigrateSpaceTabsToNewIdentity(space_id)) {
+      if (const Space* space = space_manager_->GetSpaceById(space_id)) {
+        space_profile_[space_id] = space->profile_id;
+      }
+    }
+  }
+}
+
+void AvoraSpaceTabFilter::RefreshSpaceProfileCache() {
+  if (!space_manager_) {
+    return;
+  }
+  std::map<std::string, std::string> fresh;
+  for (const Space& space : space_manager_->GetSpaces()) {
+    fresh[space.id] = space.profile_id;
+  }
+  space_profile_ = std::move(fresh);
+}
+
+bool AvoraSpaceTabFilter::MigrateSpaceTabsToNewIdentity(
+    const std::string& space_id) {
+  TabStripModel* model = GetModel();
+  if (!model || !browser_ || space_id.empty()) {
+    return false;
+  }
+  Profile* profile = browser_->GetProfile();
+  if (!profile) {
+    return false;
+  }
+
+  // Collect first: swapping contents mutates the strip, and we don't want to
+  // iterate it while it changes.  Whether a tab is the foreground one is
+  // recorded up front too, because the active WebContents pointer is destroyed
+  // as soon as that tab is swapped and must not be compared against later.
+  content::WebContents* const active_contents = model->GetActiveWebContents();
+  std::vector<std::pair<tabs::TabHandle, bool>> targets;
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    if (!tab) {
+      continue;
+    }
+    const auto it = tab_space_.find(tab->GetHandle());
+    if (it != tab_space_.end() && it->second == space_id) {
+      targets.emplace_back(tab->GetHandle(),
+                           tab->GetContents() == active_contents);
+    }
+  }
+  if (targets.empty()) {
+    return true;
+  }
+
+  bool migrated_all = true;
+
+  applying_ = true;
+
+  for (const auto& [handle, is_active] : targets) {
+    tabs::TabInterface* tab = handle.Get();
+    if (!tab) {
+      continue;
+    }
+    content::WebContents* old_contents = tab->GetContents();
+    if (!old_contents) {
+      migrated_all = false;
+      continue;
+    }
+
+    // The discard callback is what carries the tab GUID, Space tag, and
+    // Favorite marker onto the replacement contents.  Registration normally
+    // happens in OnTabStripModelChanged, which bails out while |applying_| is
+    // set, so make sure this tab is subscribed before we swap it.
+    EnsureDiscardObserver(tab);
+
+    // Reload whatever the tab is showing now, not the URL it started on.
+    const GURL url = old_contents->GetLastCommittedURL().is_valid()
+                         ? old_contents->GetLastCommittedURL()
+                         : old_contents->GetVisibleURL();
+
+    // Capture durable identity while the outgoing contents is still alive;
+    // DiscardWebContents destroys it before we can read any of this again.
+    // The replacement is a brand-new WebContents with brand-new navigation
+    // entries, so nothing here can be recovered from it afterwards.
+    std::string tab_guid = GetTabGuid(old_contents);
+    if (tab_guid.empty()) {
+      tab_guid = FindTabGuidInController(&old_contents->GetController());
+    }
+    const bool was_favorite = IsFavoriteTab(old_contents);
+    const std::string favorite_id =
+        was_favorite ? GetFavoriteIdForTab(old_contents) : std::string();
+    const bool favorite_was_pinned =
+        was_favorite && WasPinnedBeforeFavorite(old_contents);
+
+    scoped_refptr<content::SiteInstance> site_instance =
+        GetSiteInstanceForSpace(profile, space_id, url);
+
+    content::WebContents::CreateParams create_params(profile, site_instance);
+    // A background tab must stay unrendered until the user activates it.
+    create_params.initially_hidden = !is_active;
+
+    std::unique_ptr<content::WebContents> new_contents =
+        content::WebContents::Create(create_params);
+    if (!new_contents) {
+      migrated_all = false;
+      continue;
+    }
+
+    if (url.is_valid() && !url.IsAboutBlank()) {
+      content::NavigationController::LoadURLParams load_params(url);
+      load_params.transition_type = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
+      new_contents->GetController().LoadURLWithParams(load_params);
+    }
+
+    // Swapping through the model preserves index, pinned state, and group, and
+    // fires OnTabDiscarded so the Avora tab GUID, Space tag, and Favorite
+    // marker follow the contents.  The returned old contents is dropped here,
+    // which tears down the renderer in the previous partition.
+    model->DiscardWebContents(old_contents, std::move(new_contents));
+
+    // Re-assert identity on the replacement rather than trusting the discard
+    // callback alone.  SetTabGuid also mirrors the GUID onto the pending and
+    // committed navigation entries, which is what lets session restore match
+    // this tab back to its persisted Space after a restart.
+    if (content::WebContents* swapped = tab->GetContents()) {
+      SetTabSpaceId(swapped, space_id);
+      if (!tab_guid.empty()) {
+        SetTabGuid(swapped, tab_guid);
+      } else {
+        GetOrCreateTabGuid(swapped);
+      }
+      if (was_favorite && !favorite_id.empty()) {
+        MarkFavoriteTab(swapped, favorite_id, favorite_was_pinned);
+      }
+    }
+  }
+
+  applying_ = false;
+
+  // The replacements are new WebContents, so re-apply the tags that hang off
+  // contents rather than off the tab, then refresh visibility and persistence.
+  AdoptUntaggedTabs();
+  ApplyVisibility();
+  SyncTabsToStore();
+
+  return migrated_all;
 }
 
 void AvoraSpaceTabFilter::EnsureTabStateClaimsLoaded() {

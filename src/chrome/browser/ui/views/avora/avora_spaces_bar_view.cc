@@ -14,6 +14,7 @@
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_storage_partition.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -514,6 +515,24 @@ std::u16string AvoraSpacesBarView::ProfileDisplayName(
   return u"Default";
 }
 
+std::u16string AvoraSpacesBarView::IdentityTooltipLine(
+    const std::string& profile_id) const {
+  const std::u16string name = ProfileDisplayName(profile_id);
+
+  // The default identity intentionally uses Chromium's default partition, so
+  // it shares cookies and logins with any other Space pointing at it.
+  bool isolated = false;
+  if (profile_store_) {
+    const avora::BrowserProfile* profile =
+        profile_store_->GetProfileById(profile_id);
+    isolated = profile && !avora::UsesDefaultPartition(*profile);
+  }
+
+  return base::StrCat({u"\nIdentity: ", name,
+                       isolated ? u" (isolated session)"
+                                : u" (shared session)"});
+}
+
 void AvoraSpacesBarView::RebuildManaged() {
   RemoveAllChildViews();
   active_name_label_ = nullptr;
@@ -555,8 +574,8 @@ void AvoraSpacesBarView::RebuildManaged() {
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_TAIL);
   if (active) {
-    label->SetTooltipText(base::StrCat(
-        {display_name, u"\nProfile: ", ProfileDisplayName(active->profile_id)}));
+    label->SetTooltipText(
+        base::StrCat({display_name, IdentityTooltipLine(active->profile_id)}));
   }
   active_name_label_ = AddChildView(std::move(label));
 
@@ -588,9 +607,8 @@ void AvoraSpacesBarView::RebuildManaged() {
         space.id,
         icon_text,
         active && space.id == active->id);
-    btn->SetTooltipText(base::StrCat(
-        {base::UTF8ToUTF16(space.name), u"\nProfile: ",
-         ProfileDisplayName(space.profile_id)}));
+    btn->SetTooltipText(base::StrCat({base::UTF8ToUTF16(space.name),
+                                      IdentityTooltipLine(space.profile_id)}));
     AddChildView(std::move(btn));
   }
 
@@ -760,7 +778,18 @@ void AvoraSpacesBarView::CreateSpaceWithIcon(const std::string& icon) {
   const auto spaces = space_manager_->GetSpaces();
   const int index = static_cast<int>(spaces.size());
   const std::string name = "Space " + std::to_string(index + 1);
-  const std::string new_id = space_manager_->CreateSpace(name, icon);
+
+  // Give the Space its own browser identity so it gets an isolated cookie
+  // jar, rather than sharing the default one.  The very first Space stays on
+  // the default identity, which is what lets an existing install keep its
+  // current cookies and logins; SpaceManager applies that default when
+  // |profile_id| is empty.
+  std::string profile_id;
+  if (profile_store_ && !spaces.empty()) {
+    profile_id = profile_store_->CreateProfile(name);
+  }
+
+  const std::string new_id = space_manager_->CreateSpace(name, icon, profile_id);
   if (window_space_state_) {
     window_space_state_->SetActiveSpaceId(new_id);
   } else {
