@@ -3,6 +3,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_SPACES_BAR_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_SPACES_BAR_VIEW_H_
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,30 +19,30 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/menu/menu_runner.h"
-#include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/view.h"
 
 class Profile;
 
-namespace views {
-class Label;
-class Textfield;
-}  // namespace views
+namespace avora {
+struct SpaceEditorFields;
+}  // namespace avora
 
 // A panel at the bottom of the sidebar that displays Space controls.
+//
+// In managed mode the bar is a centred strip of Lucide Space icons with a "+"
+// pinned to the right edge.  Each icon is drawn in its Space's accent colour;
+// name and icon are edited through the Space editor bubble rather than inline.
 //
 // Supports two modes:
 //   1. Legacy mode  – constructed with just a callback; call SetSpaces()
 //      to feed it data.  This keeps the existing BrowserView integration
 //      compiling.
 //   2. Managed mode – call ConnectToProfile() to hand it a Profile.
-//      The view then self-updates via the observer interface and shows
-//      icons, the active-space name, and a "+" button.
+//      The view then self-updates via the observer interface.
 class AvoraSpacesBarView : public views::View,
                            public avora::SpaceManagerObserver,
                            public avora::WindowSpaceState::Observer,
-                           public avora::BrowserProfileStore::Observer,
-                           public views::TextfieldController {
+                           public avora::BrowserProfileStore::Observer {
   METADATA_HEADER(AvoraSpacesBarView, views::View)
 
  public:
@@ -88,10 +89,6 @@ class AvoraSpacesBarView : public views::View,
   // avora::BrowserProfileStore::Observer:
   void OnBrowserProfilesChanged() override;
 
-  // views::TextfieldController:
-  bool HandleKeyEvent(views::Textfield* sender,
-                      const ui::KeyEvent& key_event) override;
-
  private:
   void TryAutoConnectSpaceManager();
   void RebuildLegacy();
@@ -99,18 +96,23 @@ class AvoraSpacesBarView : public views::View,
 
   void OnSpaceClicked(const std::string& id);
   void OnSpaceContextMenu(const std::string& id, const gfx::Point& screen_point);
-  void OnCreateSpaceClicked(const gfx::Point& screen_point);
-  void CreateSpaceWithIcon(const std::string& icon);
+  void OnCreateSpaceClicked();
 
   void ShowSpaceContextMenu(const std::string& space_id,
                             const gfx::Point& screen_point);
-  void ShowCreateSpaceMenu(const gfx::Point& screen_point);
+
+  // Space editor bubble, in its create and edit flavours.
+  void ShowCreateSpaceEditor();
+  void ShowEditSpaceEditor(const std::string& space_id);
+  void OnCreateSpaceCommitted(const avora::SpaceEditorFields& fields);
+  void OnEditSpaceCommitted(const std::string& space_id,
+                            const avora::SpaceEditorFields& fields);
+
   void ConfirmDeleteSpace(const std::string& space_id);
   void DeleteSpace(const std::string& space_id);
 
-  void BeginRename();
-  void CommitRename();
-  void CancelRename();
+  // The Space this window is showing, or nullptr when there is none.
+  const avora::Space* GetActiveSpace() const;
 
   std::u16string ProfileDisplayName(const std::string& profile_id) const;
 
@@ -122,17 +124,15 @@ class AvoraSpacesBarView : public views::View,
   std::unique_ptr<avora::BrowserProfileStore> profile_store_;
   raw_ptr<avora::WindowSpaceState> window_space_state_ = nullptr;
 
-  raw_ptr<views::Label> active_name_label_ = nullptr;
-  raw_ptr<views::Textfield> rename_field_ = nullptr;
+  // Anchors the Space editor bubble; the "+" button in create mode, the
+  // Space's own icon when editing.
+  std::map<std::string, raw_ptr<views::View>> space_buttons_;
+  raw_ptr<views::View> create_button_ = nullptr;
 
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
-  std::unique_ptr<ui::SimpleMenuModel> icon_submenu_model_;
   std::unique_ptr<ui::SimpleMenuModel> profile_submenu_model_;
-  std::unique_ptr<ui::SimpleMenuModel> create_icon_submenu_model_;
   std::unique_ptr<ui::SimpleMenuModel::Delegate> context_menu_delegate_;
-  std::unique_ptr<ui::SimpleMenuModel::Delegate> icon_submenu_delegate_;
   std::unique_ptr<ui::SimpleMenuModel::Delegate> profile_submenu_delegate_;
-  std::unique_ptr<ui::SimpleMenuModel::Delegate> create_icon_submenu_delegate_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
 
   base::WeakPtrFactory<AvoraSpacesBarView> weak_factory_{this};

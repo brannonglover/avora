@@ -61,11 +61,13 @@ class SpaceManager {
   // Spaces sharing a given browser identity, sorted by order.
   std::vector<Space> GetSpacesForProfile(const std::string& profile_id) const;
 
-  // Creates a space and returns its id.  An empty |icon| picks a default; an
-  // empty |profile_id| attaches the space to the default browser identity.
+  // Creates a space and returns its id.  An empty |icon| or |accent_color|
+  // picks a default; an empty |profile_id| attaches the space to the default
+  // browser identity.
   std::string CreateSpace(const std::string& name,
                           const std::string& icon = std::string(),
-                          const std::string& profile_id = std::string());
+                          const std::string& profile_id = std::string(),
+                          const std::string& accent_color = std::string());
 
   // Removes a space.  The last remaining space cannot be removed.  Callers are
   // responsible for clearing that space's sidebar items.
@@ -78,7 +80,20 @@ class SpaceManager {
   void ActivateAdjacentSpace(bool forward);
 
   void RenameSpace(const std::string& id, const std::string& new_name);
+
+  // |icon| is a Lucide identifier; unknown ones fall back to the default icon.
   void SetSpaceIcon(const std::string& id, const std::string& icon);
+
+  // |accent_color| is "#RRGGBB".
+  void SetSpaceAccentColor(const std::string& id,
+                           const std::string& accent_color);
+
+  // Applies everything the Space editor can change in a single write, so the
+  // UI rebuilds once instead of three times.
+  void UpdateSpace(const std::string& id,
+                   const std::string& name,
+                   const std::string& icon,
+                   const std::string& accent_color);
 
   // Repoints a space at a different browser identity.  Existing tabs keep
   // their current partition until they are reloaded.
@@ -88,6 +103,10 @@ class SpaceManager {
   void ReorderSpace(const std::string& id, int new_index);
 
  private:
+  // Rewrites Spaces stored by older builds -- emoji icons, tab-group accent
+  // colours -- into the current representation, once, at startup.
+  void MigrateStoredSpaces();
+
   void SaveSpaces(const std::vector<Space>& spaces);
   void RefreshCacheIfNeeded() const;
   void NotifySpacesChanged();

@@ -6,18 +6,9 @@
 #include <string>
 
 #include "base/values.h"
-#include "components/tab_groups/tab_group_color.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 namespace avora {
-
-// Default icons users can pick from when creating or editing a Space.
-inline constexpr const char* kDefaultSpaceIcons[] = {
-    "🏠", "💼", "🎮", "📚", "🎵",
-    "🧪", "🎨", "✈️",  "🛒", "💬",
-    "📷", "🔒", "⭐", "🌙", "🔥",
-};
-inline constexpr size_t kDefaultSpaceIconCount =
-    sizeof(kDefaultSpaceIcons) / sizeof(kDefaultSpaceIcons[0]);
 
 // A Space is a *workspace*: it owns organizational state only.  Favorites,
 // pinned tabs, today tabs, and sidebar ordering all live in SidebarItemStore
@@ -29,6 +20,10 @@ inline constexpr size_t kDefaultSpaceIconCount =
 struct Space {
   std::string id;
   std::string name;
+
+  // Lucide icon identifier, e.g. "briefcase".  Never SVG markup: the
+  // identifier is resolved to geometry at paint time via avora_space_icons.h,
+  // which keeps stored Spaces independent of how Avora draws icons.
   std::string icon;
 
   // Owning browser identity.  See avora_profile.h.
@@ -37,12 +32,19 @@ struct Space {
   // Position in the Spaces strip; also drives swipe order.
   int order = 0;
 
-  // Retained for the accent colour shown in the Spaces UI.
-  tab_groups::TabGroupColorId color = tab_groups::TabGroupColorId::kGrey;
+  // Accent colour as "#RRGGBB".  Drives the Space's icon colour and its
+  // highlight in the Spaces bar.
+  std::string accent_color;
 
   bool is_active = false;
 
+  // |accent_color| resolved to a paintable colour.
+  SkColor AccentColor() const;
+
   base::DictValue ToDict() const;
+
+  // Tolerates Spaces written by older builds: emoji icons are mapped onto
+  // their Lucide equivalent and tab-group accent colours onto hex.
   static Space FromDict(const base::DictValue& dict);
 };
 

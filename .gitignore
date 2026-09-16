@@ -1,6 +1,7 @@
 node_modules/
 .npm-cache/
 .DS_Store
+__pycache__/
 
 # Chromium source checkout (fetched via gclient/depot_tools)
 # Avora modifications live on the `avora` branch inside chromium/src.
