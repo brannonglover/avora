@@ -4,18 +4,22 @@
 
 #include <algorithm>
 #include <map>
+#include <string>
 #include <utility>
 
-#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "cc/paint/paint_flags.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space.h"
+#include "chrome/browser/avora/avora_space_icons.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
+#include "chrome/browser/ui/views/avora/avora_space_icon_picker.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -24,15 +28,13 @@
 #include "ui/base/metadata/metadata_utils.h"
 #include "ui/base/models/dialog_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
-#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/font_list.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
-#include "ui/views/border.h"
+#include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/controls/menu/menu_runner.h"
-#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
 
@@ -44,30 +46,34 @@ constexpr int kLegacyPillHeight = 26;
 constexpr int kLegacyPillCornerRadius = 13;
 
 constexpr SkColor kBarBg = SkColorSetRGB(0x14, 0x16, 0x1C);
-constexpr SkColor kActiveIconBg = SkColorSetRGB(0x30, 0x36, 0x3E);
-constexpr SkColor kInactiveIconBg = SkColorSetARGB(0x00, 0, 0, 0);
 constexpr SkColor kIconHoverBg = SkColorSetRGB(0x24, 0x28, 0x30);
 constexpr SkColor kAddBtnBg = SkColorSetARGB(0x18, 0xFF, 0xFF, 0xFF);
 constexpr SkColor kAddBtnHoverBg = SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kNameColor = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kDimText = SkColorSetARGB(0x80, 0xED, 0xF2, 0xF5);
-constexpr SkColor kFieldBg = SkColorSetRGB(0x22, 0x28, 0x2E);
+constexpr SkColor kDimText = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
+
+// Lucide "plus", used for the create button.  Chrome UI icons live outside the
+// Space catalog but still come from the same library.
+constexpr char kPlusIconPath[] = "M5 12h14 M12 5v14";
 
 constexpr int kManagedBarHeight = 40;
 constexpr int kBarHPad = 8;
 constexpr int kBarVPad = 4;
 constexpr int kIconSize = 28;
+constexpr int kIconGlyphSize = 18;
 constexpr int kIconCornerRadius = 8;
 constexpr int kIconGap = 4;
 constexpr int kAddBtnSize = 28;
-constexpr int kNameFontSize = 12;
+constexpr int kAddGlyphSize = 16;
 
-constexpr int kMenuRename = 1;
+// Icons of Spaces this window isn't showing are dimmed rather than greyed, so
+// the strip still reads as a row of accent colours.
+constexpr SkAlpha kInactiveIconAlpha = 0xA0;
+constexpr SkAlpha kActiveBackgroundAlpha = 0x33;
+
+constexpr int kMenuEdit = 1;
 constexpr int kMenuDelete = 2;
 constexpr int kMenuNewProfile = 3;
-constexpr int kMenuIconBase = 100;
 constexpr int kMenuProfileBase = 200;
-constexpr int kMenuCreateIconBase = 300;
 
 void RemovePinnedDataForSpace(PrefService* prefs, const std::string& space_id) {
   if (!prefs || space_id.empty()) {
@@ -85,27 +91,37 @@ void RemovePinnedDataForSpace(PrefService* prefs, const std::string& space_id) {
   }
 }
 
-class SpaceIconButton : public views::LabelButton {
-  METADATA_HEADER(SpaceIconButton, views::LabelButton)
+void FillRoundRect(gfx::Canvas* canvas,
+                   const gfx::Rect& bounds,
+                   SkColor color,
+                   int radius) {
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setStyle(cc::PaintFlags::kFill_Style);
+  flags.setColor(color);
+  canvas->DrawRoundRect(bounds, radius, flags);
+}
+
+// A Space in the strip: its Lucide icon, stroked in the Space's accent colour.
+class SpaceIconButton : public views::Button {
+  METADATA_HEADER(SpaceIconButton, views::Button)
+
  public:
-  SpaceIconButton(views::Button::PressedCallback callback,
+  SpaceIconButton(PressedCallback callback,
                   base::RepeatingCallback<void(const std::string&,
                                                const gfx::Point&)>
                       context_callback,
                   const std::string& space_id,
-                  const std::u16string& icon_text,
+                  const std::string& icon_id,
+                  SkColor accent,
                   bool is_active)
-      : views::LabelButton(std::move(callback), icon_text),
+      : views::Button(std::move(callback)),
         context_callback_(std::move(context_callback)),
         space_id_(space_id),
+        icon_id_(icon_id),
+        accent_(accent),
         is_active_(is_active) {
     SetPreferredSize(gfx::Size(kIconSize, kIconSize));
-    SetHorizontalAlignment(gfx::ALIGN_CENTER);
-    label()->SetFontList(gfx::FontList({std::string("system-ui")},
-                                       gfx::Font::NORMAL, 16,
-                                       gfx::Font::Weight::NORMAL));
-    SetEnabledTextColors(SK_ColorWHITE);
-    SetBorder(nullptr);
     SetFocusBehavior(FocusBehavior::ALWAYS);
   }
 
@@ -118,131 +134,83 @@ class SpaceIconButton : public views::LabelButton {
       }
       return true;
     }
-    return views::LabelButton::OnMousePressed(event);
+    return views::Button::OnMousePressed(event);
   }
 
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    SkColor bg = kInactiveIconBg;
+  void PaintButtonContents(gfx::Canvas* canvas) override {
     if (is_active_) {
-      bg = kActiveIconBg;
+      FillRoundRect(canvas, GetLocalBounds(),
+                    SkColorSetA(accent_, kActiveBackgroundAlpha),
+                    kIconCornerRadius);
     } else if (GetState() == views::Button::STATE_HOVERED ||
                GetState() == views::Button::STATE_PRESSED) {
-      bg = kIconHoverBg;
+      FillRoundRect(canvas, GetLocalBounds(), kIconHoverBg, kIconCornerRadius);
     }
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(bg);
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    canvas->DrawRoundRect(GetLocalBounds(), kIconCornerRadius, flags);
+
+    gfx::Rect glyph(GetLocalBounds());
+    glyph.ClampToCenteredSize(gfx::Size(kIconGlyphSize, kIconGlyphSize));
+    avora::PaintLucideIcon(
+        canvas, glyph, icon_id_,
+        is_active_ ? accent_ : SkColorSetA(accent_, kInactiveIconAlpha));
   }
 
  private:
   base::RepeatingCallback<void(const std::string&, const gfx::Point&)>
       context_callback_;
   std::string space_id_;
+  std::string icon_id_;
+  SkColor accent_;
   bool is_active_ = false;
 };
 
 BEGIN_METADATA(SpaceIconButton)
 END_METADATA
 
-class CreateSpaceButton : public views::LabelButton {
-  METADATA_HEADER(CreateSpaceButton, views::LabelButton)
+class CreateSpaceButton : public views::Button {
+  METADATA_HEADER(CreateSpaceButton, views::Button)
+
  public:
-  CreateSpaceButton(
-      base::RepeatingCallback<void(const gfx::Point&)> pressed_callback)
-      : pressed_callback_(std::move(pressed_callback)) {
+  explicit CreateSpaceButton(PressedCallback callback)
+      : views::Button(std::move(callback)) {
     SetPreferredSize(gfx::Size(kAddBtnSize, kAddBtnSize));
-    SetHorizontalAlignment(gfx::ALIGN_CENTER);
-    label()->SetFontList(gfx::FontList({std::string("system-ui")},
-                                       gfx::Font::NORMAL, 18,
-                                       gfx::Font::Weight::LIGHT));
-    SetEnabledTextColors(kDimText);
-    SetBorder(nullptr);
     SetTooltipText(u"New Space");
+    GetViewAccessibility().SetName(u"New Space");
+    SetFocusBehavior(FocusBehavior::ALWAYS);
   }
 
-  bool OnMousePressed(const ui::MouseEvent& event) override {
-    if (event.IsLeftMouseButton() || event.IsRightMouseButton()) {
-      gfx::Point screen_point = event.location();
-      ConvertPointToScreen(this, &screen_point);
-      if (pressed_callback_) {
-        pressed_callback_.Run(screen_point);
-      }
-      return true;
-    }
-    return views::LabelButton::OnMousePressed(event);
-  }
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
+                         GetState() == views::Button::STATE_PRESSED;
+    FillRoundRect(canvas, GetLocalBounds(),
+                  hovered ? kAddBtnHoverBg : kAddBtnBg, kIconCornerRadius);
 
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    SkColor bg = kAddBtnBg;
-    if (GetState() == views::Button::STATE_HOVERED ||
-        GetState() == views::Button::STATE_PRESSED) {
-      bg = kAddBtnHoverBg;
-    }
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(bg);
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    canvas->DrawRoundRect(GetLocalBounds(), kIconCornerRadius, flags);
+    gfx::Rect glyph(GetLocalBounds());
+    glyph.ClampToCenteredSize(gfx::Size(kAddGlyphSize, kAddGlyphSize));
+    avora::PaintLucidePathData(canvas, glyph, kPlusIconPath, kDimText);
   }
-
- private:
-  base::RepeatingCallback<void(const gfx::Point&)> pressed_callback_;
 };
 
 BEGIN_METADATA(CreateSpaceButton)
 END_METADATA
 
-class ActiveSpaceNameView : public views::Label {
-  METADATA_HEADER(ActiveSpaceNameView, views::Label)
- public:
-  ActiveSpaceNameView(
-      const std::u16string& text,
-      base::RepeatingClosure on_double_click,
-      base::RepeatingCallback<void(const gfx::Point&)> on_context_menu)
-      : views::Label(text),
-        on_double_click_(std::move(on_double_click)),
-        on_context_menu_(std::move(on_context_menu)) {}
-
-  bool OnMousePressed(const ui::MouseEvent& event) override {
-    if (event.IsRightMouseButton()) {
-      gfx::Point screen_point = event.location();
-      ConvertPointToScreen(this, &screen_point);
-      if (on_context_menu_) {
-        on_context_menu_.Run(screen_point);
-      }
-      return true;
-    }
-    if (event.IsLeftMouseButton() && event.GetClickCount() == 2) {
-      if (on_double_click_) {
-        on_double_click_.Run();
-      }
-      return true;
-    }
-    return views::Label::OnMousePressed(event);
-  }
-
- private:
-  base::RepeatingClosure on_double_click_;
-  base::RepeatingCallback<void(const gfx::Point&)> on_context_menu_;
-};
-
-BEGIN_METADATA(ActiveSpaceNameView)
-END_METADATA
+std::unique_ptr<views::View> MakeSpacer(int width) {
+  auto spacer = std::make_unique<views::View>();
+  spacer->SetPreferredSize(gfx::Size(width, 0));
+  return spacer;
+}
 
 class SpaceBarContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
-  SpaceBarContextMenuDelegate(base::RepeatingClosure on_rename,
+  SpaceBarContextMenuDelegate(base::RepeatingClosure on_edit,
                               base::RepeatingClosure on_delete,
                               bool can_delete)
-      : on_rename_(std::move(on_rename)),
+      : on_edit_(std::move(on_edit)),
         on_delete_(std::move(on_delete)),
         can_delete_(can_delete) {}
 
   void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id == kMenuRename && on_rename_) {
-      on_rename_.Run();
+    if (command_id == kMenuEdit && on_edit_) {
+      on_edit_.Run();
     } else if (command_id == kMenuDelete && can_delete_ && on_delete_) {
       on_delete_.Run();
     }
@@ -253,30 +221,9 @@ class SpaceBarContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
   }
 
  private:
-  base::RepeatingClosure on_rename_;
+  base::RepeatingClosure on_edit_;
   base::RepeatingClosure on_delete_;
   bool can_delete_ = true;
-};
-
-class IconPickerMenuDelegate : public ui::SimpleMenuModel::Delegate {
- public:
-  explicit IconPickerMenuDelegate(
-      base::RepeatingCallback<void(const std::string&)> on_icon_selected)
-      : on_icon_selected_(std::move(on_icon_selected)) {}
-
-  void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id >= kMenuIconBase &&
-        command_id <
-            kMenuIconBase + static_cast<int>(avora::kDefaultSpaceIconCount) &&
-        on_icon_selected_) {
-      const size_t icon_index =
-          static_cast<size_t>(command_id - kMenuIconBase);
-      on_icon_selected_.Run(base::span(avora::kDefaultSpaceIcons)[icon_index]);
-    }
-  }
-
- private:
-  base::RepeatingCallback<void(const std::string&)> on_icon_selected_;
 };
 
 class ProfilePickerMenuDelegate : public ui::SimpleMenuModel::Delegate {
@@ -313,27 +260,6 @@ class ProfilePickerMenuDelegate : public ui::SimpleMenuModel::Delegate {
   std::string active_profile_id_;
   base::RepeatingCallback<void(const std::string&)> on_profile_selected_;
   base::RepeatingClosure on_new_profile_;
-};
-
-class CreateSpaceIconMenuDelegate : public ui::SimpleMenuModel::Delegate {
- public:
-  explicit CreateSpaceIconMenuDelegate(
-      base::RepeatingCallback<void(const std::string&)> on_icon_selected)
-      : on_icon_selected_(std::move(on_icon_selected)) {}
-
-  void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id >= kMenuCreateIconBase &&
-        command_id <
-            kMenuCreateIconBase + static_cast<int>(avora::kDefaultSpaceIconCount) &&
-        on_icon_selected_) {
-      const size_t icon_index =
-          static_cast<size_t>(command_id - kMenuCreateIconBase);
-      on_icon_selected_.Run(base::span(avora::kDefaultSpaceIcons)[icon_index]);
-    }
-  }
-
- private:
-  base::RepeatingCallback<void(const std::string&)> on_icon_selected_;
 };
 
 }  // namespace
@@ -408,6 +334,8 @@ void AvoraSpacesBarView::SetSpaces(const std::vector<SpaceInfo>& spaces) {
 
 void AvoraSpacesBarView::RebuildLegacy() {
   RemoveAllChildViews();
+  space_buttons_.clear();
+  create_button_ = nullptr;
   for (const auto& space : legacy_spaces_) {
     auto btn = std::make_unique<views::LabelButton>(
         base::BindRepeating(
@@ -450,7 +378,7 @@ void AvoraSpacesBarView::ConnectToProfile(Profile* profile) {
     SetPreferredSize(gfx::Size(0, kManagedBarHeight));
     auto* root_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
-        gfx::Insets::VH(kBarVPad, kBarHPad), kIconGap));
+        gfx::Insets::VH(kBarVPad, kBarHPad), 0));
     root_layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
@@ -514,89 +442,71 @@ std::u16string AvoraSpacesBarView::ProfileDisplayName(
   return u"Default";
 }
 
+const avora::Space* AvoraSpacesBarView::GetActiveSpace() const {
+  if (!space_manager_) {
+    return nullptr;
+  }
+  if (window_space_state_) {
+    if (const avora::Space* active = space_manager_->GetSpaceById(
+            window_space_state_->active_space_id())) {
+      return active;
+    }
+  }
+  return space_manager_->GetActiveSpace();
+}
+
 void AvoraSpacesBarView::RebuildManaged() {
   RemoveAllChildViews();
-  active_name_label_ = nullptr;
-  rename_field_ = nullptr;
+  space_buttons_.clear();
+  create_button_ = nullptr;
 
   if (!space_manager_) {
     return;
   }
 
-  const auto spaces = space_manager_->GetSpaces();
-
-  // Use the window-local active Space when available; fall back to the
-  // global pref for legacy / unconnected callers.
-  const avora::Space* active = nullptr;
-  if (window_space_state_) {
-    active =
-        space_manager_->GetSpaceById(window_space_state_->active_space_id());
-  }
-  if (!active) {
-    active = space_manager_->GetActiveSpace();
-  }
-
   auto* row_layout = static_cast<views::BoxLayout*>(GetLayoutManager());
+  const avora::Space* active = GetActiveSpace();
 
-  std::u16string display_name =
-      active ? base::UTF8ToUTF16(active->name) : u"Default Space";
+  // The icon strip is centred in the bar, so it needs to be balanced against
+  // the "+" pinned to the right edge: a spacer of the same width leads.
+  AddChildView(MakeSpacer(kAddBtnSize));
+  views::View* leading_flex = AddChildView(MakeSpacer(0));
 
-  auto label = std::make_unique<ActiveSpaceNameView>(
-      display_name,
-      base::BindRepeating(&AvoraSpacesBarView::BeginRename,
-                          base::Unretained(this)),
-      base::BindRepeating(&AvoraSpacesBarView::ShowSpaceContextMenu,
-                          base::Unretained(this),
-                          active ? active->id : std::string()));
-  label->SetFontList(gfx::FontList({std::string("system-ui")},
-                                   gfx::Font::NORMAL, kNameFontSize,
-                                   gfx::Font::Weight::MEDIUM));
-  label->SetEnabledColor(kNameColor);
-  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  label->SetElideBehavior(gfx::ELIDE_TAIL);
-  if (active) {
-    label->SetTooltipText(base::StrCat(
-        {display_name, u"\nProfile: ", ProfileDisplayName(active->profile_id)}));
-  }
-  active_name_label_ = AddChildView(std::move(label));
+  auto icons = std::make_unique<views::View>();
+  auto* icons_layout = icons->SetLayoutManager(
+      std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+          kIconGap));
+  icons_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kCenter);
 
-  auto field = std::make_unique<views::Textfield>();
-  field->SetController(this);
-  field->SetFontList(gfx::FontList({std::string("system-ui")},
-                                   gfx::Font::NORMAL, kNameFontSize,
-                                   gfx::Font::Weight::MEDIUM));
-  field->SetColor(kNameColor);
-  field->SetBackgroundColor(kFieldBg);
-  field->SetBorder(nullptr);
-  field->SetVisible(false);
-  rename_field_ = AddChildView(std::move(field));
-
-  if (row_layout) {
-    row_layout->SetFlexForView(active_name_label_, 1);
-    row_layout->SetFlexForView(rename_field_, 1);
-  }
-
-  for (const auto& space : spaces) {
-    std::u16string icon_text =
-        space.icon.empty() ? u"🏠" : base::UTF8ToUTF16(space.icon);
-
-    auto btn = std::make_unique<SpaceIconButton>(
+  for (const auto& space : space_manager_->GetSpaces()) {
+    const std::u16string tooltip = base::StrCat(
+        {base::UTF8ToUTF16(space.name), u"\nProfile: ",
+         ProfileDisplayName(space.profile_id)});
+    auto button = std::make_unique<SpaceIconButton>(
         base::BindRepeating(&AvoraSpacesBarView::OnSpaceClicked,
                             base::Unretained(this), space.id),
         base::BindRepeating(&AvoraSpacesBarView::OnSpaceContextMenu,
                             base::Unretained(this)),
-        space.id,
-        icon_text,
+        space.id, space.icon, space.AccentColor(),
         active && space.id == active->id);
-    btn->SetTooltipText(base::StrCat(
-        {base::UTF8ToUTF16(space.name), u"\nProfile: ",
-         ProfileDisplayName(space.profile_id)}));
-    AddChildView(std::move(btn));
+    button->SetTooltipText(tooltip);
+    button->GetViewAccessibility().SetName(base::UTF8ToUTF16(space.name));
+    space_buttons_[space.id] = icons->AddChildView(std::move(button));
   }
 
-  AddChildView(std::make_unique<CreateSpaceButton>(
+  AddChildView(std::move(icons));
+  views::View* trailing_flex = AddChildView(MakeSpacer(0));
+
+  create_button_ = AddChildView(std::make_unique<CreateSpaceButton>(
       base::BindRepeating(&AvoraSpacesBarView::OnCreateSpaceClicked,
                           base::Unretained(this))));
+
+  if (row_layout) {
+    row_layout->SetFlexForView(leading_flex, 1);
+    row_layout->SetFlexForView(trailing_flex, 1);
+  }
 
   InvalidateLayout();
 }
@@ -609,14 +519,11 @@ void AvoraSpacesBarView::OnSpaceClicked(const std::string& id) {
     return;
   }
 
-  // Determine the currently active space for this window.
-  const std::string current_active =
-      window_space_state_ ? window_space_state_->active_space_id()
-                          : (space_manager_->GetActiveSpace()
-                                 ? space_manager_->GetActiveSpace()->id
-                                 : std::string());
-  if (current_active == id) {
-    BeginRename();
+  // Clicking the Space this window is already showing opens its editor, which
+  // is where the name, icon, and accent colour live.
+  const avora::Space* active = GetActiveSpace();
+  if (active && active->id == id) {
+    ShowEditSpaceEditor(id);
     return;
   }
 
@@ -648,21 +555,6 @@ void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
   }
 
   const bool can_delete = space_manager_->GetSpaces().size() > 1;
-
-  icon_submenu_delegate_ = std::make_unique<IconPickerMenuDelegate>(
-      base::BindRepeating(
-          [](avora::SpaceManager* manager, const std::string& id,
-             const std::string& icon) {
-            manager->SetSpaceIcon(id, icon);
-          },
-          base::Unretained(space_manager_.get()), space_id));
-  icon_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(
-      icon_submenu_delegate_.get());
-  for (size_t i = 0; i < avora::kDefaultSpaceIconCount; ++i) {
-    icon_submenu_model_->AddItem(
-        kMenuIconBase + static_cast<int>(i),
-        base::UTF8ToUTF16(base::span(avora::kDefaultSpaceIcons)[i]));
-  }
 
   std::map<int, std::string> profile_command_ids;
   int next_profile_cmd = kMenuProfileBase;
@@ -701,16 +593,14 @@ void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
   profile_submenu_model_->AddItem(kMenuNewProfile, u"New Profile…");
 
   context_menu_delegate_ = std::make_unique<SpaceBarContextMenuDelegate>(
-      base::BindRepeating(&AvoraSpacesBarView::BeginRename,
-                          base::Unretained(this)),
+      base::BindRepeating(&AvoraSpacesBarView::ShowEditSpaceEditor,
+                          base::Unretained(this), space_id),
       base::BindRepeating(&AvoraSpacesBarView::ConfirmDeleteSpace,
                           base::Unretained(this), space_id),
       can_delete);
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
-  context_menu_model_->AddItem(kMenuRename, u"Rename Space");
-  context_menu_model_->AddSubMenu(kMenuIconBase, u"Change Icon",
-                                  icon_submenu_model_.get());
+  context_menu_model_->AddItem(kMenuEdit, u"Edit Space…");
   context_menu_model_->AddSubMenu(kMenuProfileBase, u"Profile",
                                   profile_submenu_model_.get());
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
@@ -724,43 +614,64 @@ void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
                           ui::mojom::MenuSourceType::kMouse);
 }
 
-void AvoraSpacesBarView::OnCreateSpaceClicked(const gfx::Point& screen_point) {
-  ShowCreateSpaceMenu(screen_point);
+void AvoraSpacesBarView::OnCreateSpaceClicked() {
+  ShowCreateSpaceEditor();
 }
 
-void AvoraSpacesBarView::ShowCreateSpaceMenu(const gfx::Point& screen_point) {
+void AvoraSpacesBarView::ShowCreateSpaceEditor() {
+  if (!space_manager_ || !create_button_) {
+    return;
+  }
+
+  const size_t index = space_manager_->GetSpaces().size();
+  avora::SpaceEditorFields fields;
+  fields.name = "Space " + std::to_string(index + 1);
+  fields.icon = avora::NextDefaultSpaceIconId(index);
+  fields.accent_color = avora::NextDefaultSpaceAccentColor(index);
+
+  avora::ShowSpaceEditorBubble(
+      create_button_, u"New Space", u"Create", fields,
+      base::BindOnce(&AvoraSpacesBarView::OnCreateSpaceCommitted,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void AvoraSpacesBarView::ShowEditSpaceEditor(const std::string& space_id) {
+  if (!space_manager_) {
+    return;
+  }
+  const avora::Space* space = space_manager_->GetSpaceById(space_id);
+  if (!space) {
+    return;
+  }
+
+  avora::SpaceEditorFields fields;
+  fields.name = space->name;
+  fields.icon = space->icon;
+  fields.accent_color = space->accent_color;
+
+  auto anchor = space_buttons_.find(space_id);
+  views::View* anchor_view =
+      anchor != space_buttons_.end() ? anchor->second.get() : create_button_;
+
+  avora::ShowSpaceEditorBubble(
+      anchor_view, u"Edit Space", u"Save", fields,
+      base::BindOnce(&AvoraSpacesBarView::OnEditSpaceCommitted,
+                     weak_factory_.GetWeakPtr(), space_id));
+}
+
+void AvoraSpacesBarView::OnCreateSpaceCommitted(
+    const avora::SpaceEditorFields& fields) {
   if (!space_manager_) {
     return;
   }
 
-  create_icon_submenu_delegate_ = std::make_unique<CreateSpaceIconMenuDelegate>(
-      base::BindRepeating(&AvoraSpacesBarView::CreateSpaceWithIcon,
-                          base::Unretained(this)));
-  create_icon_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(
-      create_icon_submenu_delegate_.get());
-  for (size_t i = 0; i < avora::kDefaultSpaceIconCount; ++i) {
-    create_icon_submenu_model_->AddItem(
-        kMenuCreateIconBase + static_cast<int>(i),
-        base::UTF8ToUTF16(base::span(avora::kDefaultSpaceIcons)[i]));
-  }
+  const std::string name =
+      fields.name.empty()
+          ? "Space " + std::to_string(space_manager_->GetSpaces().size() + 1)
+          : fields.name;
+  const std::string new_id = space_manager_->CreateSpace(
+      name, fields.icon, std::string(), fields.accent_color);
 
-  menu_runner_ = std::make_unique<views::MenuRunner>(
-      create_icon_submenu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-  menu_runner_->RunMenuAt(GetWidget(), nullptr,
-                          gfx::Rect(screen_point, gfx::Size()),
-                          views::MenuAnchorPosition::kTopLeft,
-                          ui::mojom::MenuSourceType::kMouse);
-}
-
-void AvoraSpacesBarView::CreateSpaceWithIcon(const std::string& icon) {
-  if (!space_manager_) {
-    return;
-  }
-
-  const auto spaces = space_manager_->GetSpaces();
-  const int index = static_cast<int>(spaces.size());
-  const std::string name = "Space " + std::to_string(index + 1);
-  const std::string new_id = space_manager_->CreateSpace(name, icon);
   if (window_space_state_) {
     window_space_state_->SetActiveSpaceId(new_id);
   } else {
@@ -769,6 +680,16 @@ void AvoraSpacesBarView::CreateSpaceWithIcon(const std::string& icon) {
   if (clicked_cb_) {
     clicked_cb_.Run(new_id);
   }
+}
+
+void AvoraSpacesBarView::OnEditSpaceCommitted(
+    const std::string& space_id,
+    const avora::SpaceEditorFields& fields) {
+  if (!space_manager_) {
+    return;
+  }
+  space_manager_->UpdateSpace(space_id, fields.name, fields.icon,
+                              fields.accent_color);
 }
 
 void AvoraSpacesBarView::ConfirmDeleteSpace(const std::string& space_id) {
@@ -814,9 +735,7 @@ void AvoraSpacesBarView::DeleteSpace(const std::string& space_id) {
   item_store.RemoveItemsForSpace(space_id);
   RemovePinnedDataForSpace(profile_->GetPrefs(), space_id);
 
-  const avora::Space* active = window_space_state_
-      ? space_manager_->GetSpaceById(window_space_state_->active_space_id())
-      : space_manager_->GetActiveSpace();
+  const avora::Space* active = GetActiveSpace();
   const bool was_active = active && active->id == space_id;
 
   space_manager_->RemoveSpace(space_id);
@@ -834,74 +753,6 @@ void AvoraSpacesBarView::DeleteSpace(const std::string& space_id) {
       clicked_cb_.Run(new_active_id);
     }
   }
-}
-
-void AvoraSpacesBarView::BeginRename() {
-  if (!active_name_label_ || !rename_field_ || !space_manager_) {
-    return;
-  }
-  const avora::Space* active = window_space_state_
-      ? space_manager_->GetSpaceById(window_space_state_->active_space_id())
-      : space_manager_->GetActiveSpace();
-  if (!active) {
-    return;
-  }
-
-  active_name_label_->SetVisible(false);
-  rename_field_->SetVisible(true);
-  rename_field_->SetText(base::UTF8ToUTF16(active->name));
-  rename_field_->SelectAll(true);
-  rename_field_->RequestFocus();
-}
-
-void AvoraSpacesBarView::CommitRename() {
-  if (!rename_field_ || !space_manager_) {
-    return;
-  }
-  const avora::Space* active = window_space_state_
-      ? space_manager_->GetSpaceById(window_space_state_->active_space_id())
-      : space_manager_->GetActiveSpace();
-  if (!active) {
-    return;
-  }
-
-  const std::u16string new_name(rename_field_->GetText());
-  if (!new_name.empty()) {
-    space_manager_->RenameSpace(active->id, base::UTF16ToUTF8(new_name));
-  }
-
-  rename_field_->SetVisible(false);
-  if (active_name_label_) {
-    active_name_label_->SetVisible(true);
-  }
-}
-
-void AvoraSpacesBarView::CancelRename() {
-  if (rename_field_) {
-    rename_field_->SetVisible(false);
-  }
-  if (active_name_label_) {
-    active_name_label_->SetVisible(true);
-  }
-}
-
-bool AvoraSpacesBarView::HandleKeyEvent(views::Textfield* sender,
-                                        const ui::KeyEvent& key_event) {
-  if (sender != rename_field_) {
-    return false;
-  }
-  if (key_event.type() != ui::EventType::kKeyPressed) {
-    return false;
-  }
-  if (key_event.key_code() == ui::VKEY_RETURN) {
-    CommitRename();
-    return true;
-  }
-  if (key_event.key_code() == ui::VKEY_ESCAPE) {
-    CancelRename();
-    return true;
-  }
-  return false;
 }
 
 BEGIN_METADATA(AvoraSpacesBarView)

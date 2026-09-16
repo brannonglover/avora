@@ -433,8 +433,7 @@ void AvoraImportDialogView::BuildSelectionUI() {
   }
 
   for (size_t i = 0; i < spaces_.size(); i++) {
-    space_names.push_back(base::UTF8ToUTF16(
-        spaces_[i].icon + " " + spaces_[i].name));
+    space_names.push_back(base::UTF8ToUTF16(spaces_[i].name));
   }
 
   auto combobox_model = std::make_unique<SpaceComboboxModel>(
@@ -660,8 +659,7 @@ void AvoraImportDialogView::BuildSafariExportFallbackUI() {
       window_space_state_ ? window_space_state_->active_space_id()
                           : std::string();
   for (size_t i = 0; i < spaces_.size(); i++) {
-    space_names.push_back(base::UTF8ToUTF16(
-        spaces_[i].icon + " " + spaces_[i].name));
+    space_names.push_back(base::UTF8ToUTF16(spaces_[i].name));
     if (spaces_[i].id == active_space_id) default_index = i;
   }
 

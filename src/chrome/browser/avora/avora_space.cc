@@ -2,7 +2,18 @@
 
 #include "chrome/browser/avora/avora_space.h"
 
+#include <optional>
+
+#include "chrome/browser/avora/avora_space_icons.h"
+#include "components/tab_groups/tab_group_color.h"
+
 namespace avora {
+
+SkColor Space::AccentColor() const {
+  return ParseSpaceAccentColor(
+      accent_color,
+      ParseSpaceAccentColor(kDefaultSpaceAccentColor, SK_ColorWHITE));
+}
 
 base::DictValue Space::ToDict() const {
   return base::DictValue()
@@ -11,7 +22,7 @@ base::DictValue Space::ToDict() const {
       .Set("icon", icon)
       .Set("profile_id", profile_id)
       .Set("order", order)
-      .Set("color", static_cast<int>(color))
+      .Set("color", accent_color)
       .Set("is_active", is_active);
 }
 
@@ -24,7 +35,9 @@ Space Space::FromDict(const base::DictValue& dict) {
     space.name = *val;
   }
   if (const std::string* val = dict.FindString("icon")) {
-    space.icon = *val;
+    space.icon = NormalizeSpaceIconId(*val);
+  } else {
+    space.icon = kDefaultSpaceIconId;
   }
   if (const std::string* val = dict.FindString("profile_id")) {
     space.profile_id = *val;
@@ -32,8 +45,14 @@ Space Space::FromDict(const base::DictValue& dict) {
   if (std::optional<int> val = dict.FindInt("order")) {
     space.order = *val;
   }
-  if (std::optional<int> val = dict.FindInt("color")) {
-    space.color = static_cast<tab_groups::TabGroupColorId>(*val);
+  if (const std::string* val = dict.FindString("color")) {
+    space.accent_color = NormalizeSpaceAccentColor(*val);
+  } else if (std::optional<int> val = dict.FindInt("color")) {
+    // Written before accent colours were hex; the int was a tab group colour.
+    space.accent_color = LegacySpaceAccentColor(
+        static_cast<tab_groups::TabGroupColorId>(*val));
+  } else {
+    space.accent_color = kDefaultSpaceAccentColor;
   }
   if (std::optional<bool> val = dict.FindBool("is_active")) {
     space.is_active = *val;

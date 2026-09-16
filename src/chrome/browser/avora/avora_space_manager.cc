@@ -8,6 +8,7 @@
 #include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/avora/avora_profile.h"
+#include "chrome/browser/avora/avora_space_icons.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 
@@ -36,9 +37,10 @@ SpaceManager::SpaceManager(PrefService* pref_service)
     Space space;
     space.id = base::Uuid::GenerateRandomV4().AsLowercaseString();
     space.name = "Default Space";
-    space.icon = kDefaultSpaceIcons[0];
+    space.icon = NextDefaultSpaceIconId(0);
     space.profile_id = BrowserProfileStore::kDefaultProfileId;
     space.order = 0;
+    space.accent_color = NextDefaultSpaceAccentColor(0);
     space.is_active = true;
     cached_spaces_.push_back(std::move(space));
     cache_dirty_ = false;
@@ -46,8 +48,10 @@ SpaceManager::SpaceManager(PrefService* pref_service)
   }
 
   if (GetSpaces().empty()) {
-    CreateSpace("Default Space", kDefaultSpaceIcons[0],
+    CreateSpace("Default Space", NextDefaultSpaceIconId(0),
                 BrowserProfileStore::kDefaultProfileId);
+  } else {
+    MigrateStoredSpaces();
   }
 
   if (const Space* active = GetActiveSpace()) {
@@ -81,6 +85,37 @@ void SpaceManager::OnSpacesPrefChanged() {
 }
 
 SpaceManager::~SpaceManager() = default;
+
+void SpaceManager::MigrateStoredSpaces() {
+  if (!pref_available_) {
+    return;
+  }
+
+  // Space::FromDict already normalises as it reads, so migrating is a matter
+  // of writing the parsed form back whenever it differs from what is stored.
+  bool stale = false;
+  for (const auto& value : pref_service_->GetList(kSpacesPref)) {
+    if (!value.is_dict()) {
+      stale = true;
+      break;
+    }
+    const base::DictValue& dict = value.GetDict();
+    const std::string* icon = dict.FindString("icon");
+    const std::string* color = dict.FindString("color");
+    if (!icon || NormalizeSpaceIconId(*icon) != *icon || !color ||
+        NormalizeSpaceAccentColor(*color) != *color) {
+      stale = true;
+      break;
+    }
+  }
+
+  if (!stale) {
+    return;
+  }
+
+  RefreshCacheIfNeeded();
+  SaveSpaces(cached_spaces_);
+}
 
 // static
 void SpaceManager::RegisterProfilePrefs(PrefRegistrySimple* registry) {
@@ -176,21 +211,23 @@ std::vector<Space> SpaceManager::GetSpacesForProfile(
 
 std::string SpaceManager::CreateSpace(const std::string& name,
                                       const std::string& icon,
-                                      const std::string& profile_id) {
+                                      const std::string& profile_id,
+                                      const std::string& accent_color) {
   RefreshCacheIfNeeded();
   auto spaces = cached_spaces_;
 
   Space space;
   space.id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   space.name = name;
-  space.icon = icon.empty()
-      ? kDefaultSpaceIcons[spaces.size() % kDefaultSpaceIconCount]
-      : icon;
+  space.icon = icon.empty() ? NextDefaultSpaceIconId(spaces.size())
+                            : NormalizeSpaceIconId(icon);
   space.profile_id = profile_id.empty()
       ? std::string(BrowserProfileStore::kDefaultProfileId)
       : profile_id;
   space.order = static_cast<int>(spaces.size());
-  space.color = static_cast<tab_groups::TabGroupColorId>(spaces.size() % 8);
+  space.accent_color = accent_color.empty()
+      ? NextDefaultSpaceAccentColor(spaces.size())
+      : NormalizeSpaceAccentColor(accent_color);
 
   if (spaces.empty()) {
     space.is_active = true;
@@ -318,9 +355,48 @@ void SpaceManager::SetSpaceIcon(const std::string& id,
   auto spaces = cached_spaces_;
   for (auto& space : spaces) {
     if (space.id == id) {
-      space.icon = icon;
+      space.icon = NormalizeSpaceIconId(icon);
       break;
     }
+  }
+  SaveSpaces(spaces);
+  NotifySpacesChanged();
+}
+
+void SpaceManager::SetSpaceAccentColor(const std::string& id,
+                                       const std::string& accent_color) {
+  RefreshCacheIfNeeded();
+  auto spaces = cached_spaces_;
+  for (auto& space : spaces) {
+    if (space.id == id) {
+      space.accent_color = NormalizeSpaceAccentColor(accent_color);
+      break;
+    }
+  }
+  SaveSpaces(spaces);
+  NotifySpacesChanged();
+}
+
+void SpaceManager::UpdateSpace(const std::string& id,
+                               const std::string& name,
+                               const std::string& icon,
+                               const std::string& accent_color) {
+  RefreshCacheIfNeeded();
+  auto spaces = cached_spaces_;
+  for (auto& space : spaces) {
+    if (space.id != id) {
+      continue;
+    }
+    if (!name.empty()) {
+      space.name = name;
+    }
+    if (!icon.empty()) {
+      space.icon = NormalizeSpaceIconId(icon);
+    }
+    if (!accent_color.empty()) {
+      space.accent_color = NormalizeSpaceAccentColor(accent_color);
+    }
+    break;
   }
   SaveSpaces(spaces);
   NotifySpacesChanged();
