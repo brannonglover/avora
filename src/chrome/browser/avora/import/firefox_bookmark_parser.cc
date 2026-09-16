@@ -317,7 +317,10 @@ void ConvertRows(const std::vector<BookmarkRow>& rows,
   }
 }
 
-inline constexpr sql::Database::Tag kDatabaseTag{"AvoraFirefoxImporter"};
+// sql::Database::Tag is consteval-validated against the DatabaseTag variant
+// list in tools/metrics/histograms/metadata/sql/histograms.xml, so only names
+// already present there compile.
+inline constexpr sql::Database::Tag kDatabaseTag{"FirefoxImporter"};
 
 // Opens a SQLite database and parses its bookmarks.
 // |use_read_only| controls whether the database is opened with

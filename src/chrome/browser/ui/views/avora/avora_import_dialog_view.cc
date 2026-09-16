@@ -2,8 +2,10 @@
 
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
 
+#include <memory>
 #include <utility>
 
+#include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/avora/avora_imported_link_store.h"
@@ -11,9 +13,12 @@
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "ui/base/base_window.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/combobox_model.h"
 #include "ui/gfx/canvas.h"
+#include "ui/shell_dialogs/select_file_policy.h"
+#include "ui/shell_dialogs/selected_file_info.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
@@ -131,27 +136,37 @@ void AvoraImportDialogView::Show(BrowserWindowInterface* browser,
                                  WindowSpaceState* window_space_state,
                                  RevealCallback on_reveal,
                                  const std::string& pre_select_source_id) {
-  auto dialog = std::make_unique<AvoraImportDialogView>(
-      browser, window_space_state, std::move(on_reveal),
-      pre_select_source_id);
+  auto delegate = std::make_unique<views::DialogDelegate>();
+  views::DialogDelegate* delegate_ptr = delegate.get();
+  delegate_ptr->SetContentsView(std::make_unique<AvoraImportDialogView>(
+      std::move(delegate), browser, window_space_state, std::move(on_reveal),
+      pre_select_source_id));
   views::DialogDelegate::CreateDialogWidget(
-      std::move(dialog), gfx::NativeWindow(),
-      browser->GetNativeWindow())
+      delegate_ptr, browser->GetWindow()->GetNativeWindow(),
+      gfx::NativeView())
       ->Show();
 }
 
 AvoraImportDialogView::AvoraImportDialogView(
+    std::unique_ptr<views::DialogDelegate> delegate,
     BrowserWindowInterface* browser,
     WindowSpaceState* window_space_state,
     RevealCallback on_reveal,
     const std::string& pre_select_source_id)
-    : browser_(browser),
+    : delegate_(std::move(delegate)),
+      browser_(browser),
       window_space_state_(window_space_state),
       on_reveal_(std::move(on_reveal)),
       pre_select_source_id_(pre_select_source_id) {
-  SetTitle(u"Import Browser Data");
-  SetModalType(ui::mojom::ModalType::kWindow);
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+  delegate_->SetTitle(u"Import Browser Data");
+  delegate_->SetModalType(ui::mojom::ModalType::kWindow);
+  delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+
+  // `delegate_` is owned by this view, so it can never outlive `this`.
+  // The bool return keeps the dialog open for the states that advance
+  // in place instead of closing.
+  delegate_->SetAcceptCallbackWithClose(base::BindRepeating(
+      &AvoraImportDialogView::OnAccept, base::Unretained(this)));
 
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical));
@@ -210,7 +225,14 @@ AvoraImportDialogView::AvoraImportDialogView(
 
 AvoraImportDialogView::~AvoraImportDialogView() = default;
 
-bool AvoraImportDialogView::Accept() {
+void AvoraImportDialogView::ResizeToPreferredSize() {
+  InvalidateLayout();
+  if (views::Widget* widget = GetWidget()) {
+    widget->SetSize(GetPreferredSize());
+  }
+}
+
+bool AvoraImportDialogView::OnAccept() {
   if (state_ == State::kSelection) {
     OnImportClicked();
     return false;
@@ -219,8 +241,7 @@ bool AvoraImportDialogView::Accept() {
     // Transition to the generic selection UI.
     pre_select_source_id_.clear();
     BuildSelectionUI();
-    InvalidateLayout();
-    if (GetWidget()) GetWidget()->SetSize(GetPreferredSize());
+    ResizeToPreferredSize();
     return false;
   }
   if (state_ == State::kSafariExport) {
@@ -459,9 +480,10 @@ void AvoraImportDialogView::BuildSelectionUI() {
   bottom_spacer->SetPreferredSize(gfx::Size(kDialogWidth, 8));
 
   // Buttons — label depends on whether this is a re-import.
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
-             static_cast<int>(ui::mojom::DialogButton::kCancel));
-  SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
+  delegate_->SetButtons(
+      static_cast<int>(ui::mojom::DialogButton::kOk) |
+      static_cast<int>(ui::mojom::DialogButton::kCancel));
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
 
   state_ = State::kSelection;
   UpdateImportButtonLabel();
@@ -481,9 +503,9 @@ void AvoraImportDialogView::BuildErrorUI(const std::u16string& message) {
   label->SetBorder(views::CreateEmptyBorder(
       gfx::Insets::VH(kRowHPadding, kRowHPadding)));
 
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk));
-  SetButtonLabel(ui::mojom::DialogButton::kOk, u"Close");
-  DialogModelChanged();
+  delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk));
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Close");
+  delegate_->DialogModelChanged();
 }
 
 void AvoraImportDialogView::BuildResultUI(
@@ -555,9 +577,9 @@ void AvoraImportDialogView::BuildResultUI(
         gfx::Insets::TLBR(0, kRowHPadding, kRowHPadding, kRowHPadding)));
   }
 
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk));
-  SetButtonLabel(ui::mojom::DialogButton::kOk, u"View Imported");
-  DialogModelChanged();
+  delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk));
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"View Imported");
+  delegate_->DialogModelChanged();
 }
 
 void AvoraImportDialogView::BuildMissingSourceUI(
@@ -609,14 +631,15 @@ void AvoraImportDialogView::BuildMissingSourceUI(
   note->SetBorder(views::CreateEmptyBorder(
       gfx::Insets::TLBR(0, kRowHPadding, kRowHPadding, kRowHPadding)));
 
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
-             static_cast<int>(ui::mojom::DialogButton::kCancel));
-  SetButtonLabel(ui::mojom::DialogButton::kOk, u"Choose Another Source");
-  SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
-  DialogModelChanged();
+  delegate_->SetButtons(
+      static_cast<int>(ui::mojom::DialogButton::kOk) |
+      static_cast<int>(ui::mojom::DialogButton::kCancel));
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk,
+                            u"Choose Another Source");
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
+  delegate_->DialogModelChanged();
 
-  InvalidateLayout();
-  if (GetWidget()) GetWidget()->SetSize(GetPreferredSize());
+  ResizeToPreferredSize();
 }
 
 void AvoraImportDialogView::BuildSafariExportFallbackUI() {
@@ -689,15 +712,15 @@ void AvoraImportDialogView::BuildSafariExportFallbackUI() {
   fda_note->SetBorder(views::CreateEmptyBorder(
       gfx::Insets::TLBR(0, kRowHPadding, 8, kRowHPadding)));
 
-  SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
-             static_cast<int>(ui::mojom::DialogButton::kCancel));
-  SetButtonLabel(ui::mojom::DialogButton::kOk,
-                 u"Import Safari Export\u2026");
-  SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
-  DialogModelChanged();
+  delegate_->SetButtons(
+      static_cast<int>(ui::mojom::DialogButton::kOk) |
+      static_cast<int>(ui::mojom::DialogButton::kCancel));
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk,
+                            u"Import Safari Export\u2026");
+  delegate_->SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
+  delegate_->DialogModelChanged();
 
-  InvalidateLayout();
-  if (GetWidget()) GetWidget()->SetSize(GetPreferredSize());
+  ResizeToPreferredSize();
 }
 
 void AvoraImportDialogView::OnImportClicked() {
@@ -722,10 +745,7 @@ void AvoraImportDialogView::OnImportClicked() {
     BuildErrorUI(
         u"The selected Space was deleted. Please close this dialog and "
         u"select another destination.");
-    InvalidateLayout();
-    if (GetWidget()) {
-      GetWidget()->SetSize(GetPreferredSize());
-    }
+    ResizeToPreferredSize();
     return;
   }
 
@@ -742,10 +762,7 @@ void AvoraImportDialogView::OnImportClicked() {
                   profile.display_name, space.name);
   }
 
-  InvalidateLayout();
-  if (GetWidget()) {
-    GetWidget()->SetSize(GetPreferredSize());
-  }
+  ResizeToPreferredSize();
 }
 
 bool AvoraImportDialogView::IsReimport() const {
@@ -770,11 +787,11 @@ bool AvoraImportDialogView::IsReimport() const {
 void AvoraImportDialogView::UpdateImportButtonLabel() {
   if (state_ != State::kSelection) return;
   if (IsReimport()) {
-    SetButtonLabel(ui::mojom::DialogButton::kOk, u"Update Import");
+    delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Update Import");
   } else {
-    SetButtonLabel(ui::mojom::DialogButton::kOk, u"Import");
+    delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Import");
   }
-  DialogModelChanged();
+  delegate_->DialogModelChanged();
 }
 
 void AvoraImportDialogView::OnProfileSelected(ProfileSelection sel) {
@@ -826,8 +843,7 @@ void AvoraImportDialogView::OnSafariExportFileSelected(
     BuildResultUI(result, "safari", "Exported Bookmarks", space.name);
   }
 
-  InvalidateLayout();
-  if (GetWidget()) GetWidget()->SetSize(GetPreferredSize());
+  ResizeToPreferredSize();
 }
 
 BEGIN_METADATA(AvoraImportDialogView)

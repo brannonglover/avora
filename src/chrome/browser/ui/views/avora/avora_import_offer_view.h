@@ -3,6 +3,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_IMPORT_OFFER_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_IMPORT_OFFER_VIEW_H_
 
+#include <memory>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -23,8 +24,12 @@ class WindowSpaceState;
 // If the user clicks "Import bookmarks", the standard import dialog
 // is opened.  If "Not now", the dialog closes and the sidebar
 // "Import Bookmarks…" link remains available for later use.
-class AvoraImportOfferView : public views::DialogDelegateView {
-  METADATA_HEADER(AvoraImportOfferView, views::DialogDelegateView)
+//
+// This view is the contents view of a plain views::DialogDelegate rather
+// than a views::DialogDelegateView subclass; see the comment on
+// `delegate_` for the ownership contract.
+class AvoraImportOfferView : public views::View {
+  METADATA_HEADER(AvoraImportOfferView, views::View)
 
  public:
   // Shows the offer dialog if appropriate (first run, browsers detected).
@@ -32,17 +37,29 @@ class AvoraImportOfferView : public views::DialogDelegateView {
   static bool MaybeShow(BrowserWindowInterface* browser,
                         WindowSpaceState* window_space_state);
 
-  AvoraImportOfferView(BrowserWindowInterface* browser,
+  AvoraImportOfferView(std::unique_ptr<views::DialogDelegate> delegate,
+                       BrowserWindowInterface* browser,
                        WindowSpaceState* window_space_state,
                        std::vector<DetectedBrowser> browsers);
   AvoraImportOfferView(const AvoraImportOfferView&) = delete;
   AvoraImportOfferView& operator=(const AvoraImportOfferView&) = delete;
   ~AvoraImportOfferView() override;
 
-  // views::DialogDelegateView:
-  bool Accept() override;
-
  private:
+  // Runs when the user presses "Import bookmarks".  The dialog closes
+  // once this returns.
+  void OnAccept();
+
+  // The DialogDelegate hosting this view.  Widget only holds a WeakPtr to
+  // its delegate and never deletes it, and neither DeleteDelegate() nor the
+  // SetOwnedByWidget()/RegisterDeleteDelegateCallback() hooks are available
+  // to code outside //ui/views' friend lists.  Anchoring the delegate here
+  // works because Widget always calls WidgetDelegate::DeleteDelegate()
+  // before DestroyRootView(), so the delegate is still alive while the
+  // Widget needs it and is torn down with the view hierarchy afterwards,
+  // satisfying the "a WidgetDelegate must outlive its Widget" CHECK.
+  std::unique_ptr<views::DialogDelegate> delegate_;
+
   raw_ptr<BrowserWindowInterface> browser_;
   raw_ptr<WindowSpaceState> window_space_state_;
   std::vector<DetectedBrowser> browsers_;

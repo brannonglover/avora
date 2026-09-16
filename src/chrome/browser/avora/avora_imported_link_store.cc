@@ -3,6 +3,7 @@
 #include "chrome/browser/avora/avora_imported_link_store.h"
 
 #include <algorithm>
+#include <string_view>
 
 #include "base/functional/bind.h"
 #include "base/uuid.h"
@@ -13,9 +14,8 @@ namespace avora {
 
 namespace {
 
-bool IsPrefRegistered(PrefService* ps) {
-  return ps &&
-         ps->FindPreference(ImportedLinkStore::kImportedLinksPref) != nullptr;
+bool IsPrefRegistered(PrefService* ps, std::string_view pref_name) {
+  return ps && ps->FindPreference(pref_name) != nullptr;
 }
 
 }  // namespace
@@ -44,7 +44,7 @@ bool IsPrefRegistered(PrefService* ps) {
 
 ImportedLinkStore::ImportedLinkStore(PrefService* pref_service)
     : pref_service_(pref_service),
-      pref_available_(IsPrefRegistered(pref_service)) {
+      pref_available_(IsPrefRegistered(pref_service, kImportedLinksPref)) {
   if (!pref_available_) {
     return;
   }

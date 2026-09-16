@@ -21,9 +21,12 @@
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
@@ -103,25 +106,25 @@ void PaintChevron(gfx::Canvas* canvas,
                   int x,
                   int y,
                   bool expanded) {
-  SkPath path;
+  SkPathBuilder builder;
   if (expanded) {
     // Down-pointing triangle.
-    path.moveTo(x, y);
-    path.lineTo(x + kChevronSize, y);
-    path.lineTo(x + kChevronSize / 2, y + kChevronSize * 0.6f);
+    builder.moveTo(x, y);
+    builder.lineTo(x + kChevronSize, y);
+    builder.lineTo(x + kChevronSize / 2, y + kChevronSize * 0.6f);
   } else {
     // Right-pointing triangle.
-    path.moveTo(x, y);
-    path.lineTo(x + kChevronSize * 0.6f, y + kChevronSize / 2);
-    path.lineTo(x, y + kChevronSize);
+    builder.moveTo(x, y);
+    builder.lineTo(x + kChevronSize * 0.6f, y + kChevronSize / 2);
+    builder.lineTo(x, y + kChevronSize);
   }
-  path.close();
+  builder.close();
 
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
   flags.setColor(kChevronColor);
   flags.setStyle(cc::PaintFlags::kFill_Style);
-  canvas->DrawPath(path, flags);
+  canvas->DrawPath(builder.detach(), flags);
 }
 
 void PaintHoverBackground(gfx::Canvas* canvas,
@@ -180,10 +183,10 @@ ImportedLinkRow::~ImportedLinkRow() = default;
 
 void ImportedLinkRow::SetFavicon(const gfx::ImageSkia& icon) {
   if (favicon_view_) {
-    favicon_view_->SetImage(
+    favicon_view_->SetImage(ui::ImageModel::FromImageSkia(
         gfx::ImageSkiaOperations::CreateResizedImage(
             icon, skia::ImageOperations::RESIZE_BEST,
-            gfx::Size(kFaviconSize, kFaviconSize)));
+            gfx::Size(kFaviconSize, kFaviconSize))));
   }
 }
 
@@ -473,7 +476,7 @@ ImportedSourceHeader::ImportedSourceHeader(const std::string& source_id,
   }
   std::string text = display_browser;
   if (!profile_name.empty()) {
-    text += u8" \u2014 " + profile_name;  // em dash
+    text += " \xe2\x80\x94 " + profile_name;  // em dash
   }
 
   auto lbl = std::make_unique<views::Label>(base::UTF8ToUTF16(text));

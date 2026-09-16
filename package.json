@@ -7,7 +7,6 @@
     "build": "bash build-scripts/incremental-build.sh",
     "build:full": "bash build-scripts/build.sh full",
     "build:gen": "bash build-scripts/build.sh gen",
-    "build:patches": "bash build-scripts/build.sh apply-patches",
     "start": "open chromium/src/out/Default/Avora.app",
     "cleanup": "bash build-scripts/build.sh cleanup"
   }
