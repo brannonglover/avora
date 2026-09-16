@@ -16,6 +16,7 @@
 #include "chrome/browser/avora/avora_space.h"
 #include "chrome/browser/avora/avora_space_icons.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_storage_partition.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
@@ -455,6 +456,24 @@ const avora::Space* AvoraSpacesBarView::GetActiveSpace() const {
   return space_manager_->GetActiveSpace();
 }
 
+std::u16string AvoraSpacesBarView::IdentityTooltipLine(
+    const std::string& profile_id) const {
+  const std::u16string name = ProfileDisplayName(profile_id);
+
+  // The default identity intentionally uses Chromium's default partition, so
+  // it shares cookies and logins with any other Space pointing at it.
+  bool isolated = false;
+  if (profile_store_) {
+    const avora::BrowserProfile* profile =
+        profile_store_->GetProfileById(profile_id);
+    isolated = profile && !avora::UsesDefaultPartition(*profile);
+  }
+
+  return base::StrCat({u"\nIdentity: ", name,
+                       isolated ? u" (isolated session)"
+                                : u" (shared session)"});
+}
+
 void AvoraSpacesBarView::RebuildManaged() {
   RemoveAllChildViews();
   space_buttons_.clear();
@@ -491,7 +510,8 @@ void AvoraSpacesBarView::RebuildManaged() {
                             base::Unretained(this)),
         space.id, space.icon, space.AccentColor(),
         active && space.id == active->id);
-    button->SetTooltipText(tooltip);
+    button->SetTooltipText(
+        base::StrCat({tooltip, IdentityTooltipLine(space.profile_id)}));
     button->GetViewAccessibility().SetName(base::UTF8ToUTF16(space.name));
     space_buttons_[space.id] = icons->AddChildView(std::move(button));
   }
@@ -670,8 +690,19 @@ void AvoraSpacesBarView::OnCreateSpaceCommitted(
       fields.name.empty()
           ? "Space " + std::to_string(space_manager_->GetSpaces().size() + 1)
           : fields.name;
+
+  // Give the Space its own browser identity so it gets an isolated cookie
+  // jar, rather than sharing the default one.  The very first Space stays on
+  // the default identity, which is what lets an existing install keep its
+  // current cookies and logins; SpaceManager applies that default when
+  // |profile_id| is empty.
+  std::string profile_id;
+  if (profile_store_ && !space_manager_->GetSpaces().empty()) {
+    profile_id = profile_store_->CreateProfile(name);
+  }
+
   const std::string new_id = space_manager_->CreateSpace(
-      name, fields.icon, std::string(), fields.accent_color);
+      name, fields.icon, profile_id, fields.accent_color);
 
   if (window_space_state_) {
     window_space_state_->SetActiveSpaceId(new_id);

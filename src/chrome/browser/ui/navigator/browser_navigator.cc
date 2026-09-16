@@ -485,8 +485,7 @@ std::unique_ptr<content::WebContents> CreateTargetContents(
   // preserving the requested opener relationship along the way.
   scoped_refptr<content::SiteInstance> initial_site_instance_for_new_contents =
       params.opener ? params.opener->GetSiteInstance()
-                    : avora::GetSiteInstanceForNewAvoraTab(
-                          params.browser->GetProfile(), url);
+                    : avora::GetSiteInstanceForNewAvoraTab(params.browser, url);
 
   WebContents::CreateParams create_params(
       params.browser->GetProfile(), initial_site_instance_for_new_contents);

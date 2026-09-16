@@ -116,6 +116,11 @@ class AvoraSpacesBarView : public views::View,
 
   std::u16string ProfileDisplayName(const std::string& profile_id) const;
 
+  // Tooltip line naming the Space's browser identity and saying whether that
+  // identity has its own cookie jar, so the user can tell an isolated Space
+  // apart from one sharing the default session.
+  std::u16string IdentityTooltipLine(const std::string& profile_id) const;
+
   SpaceClickedCallback clicked_cb_;
   std::vector<SpaceInfo> legacy_spaces_;
 

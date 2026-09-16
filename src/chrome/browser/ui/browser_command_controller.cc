@@ -1921,8 +1921,12 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_CLOSE_PROFILE, true);
   command_updater_->UpdateCommandEnabled(IDC_MANAGE_GOOGLE_ACCOUNT, true);
   command_updater_->UpdateCommandEnabled(IDC_OPEN_GUEST_PROFILE, true);
-  command_updater_->UpdateCommandEnabled(IDC_ADD_NEW_PROFILE, true);
-  command_updater_->UpdateCommandEnabled(IDC_MANAGE_CHROME_PROFILES, true);
+  // Avora: browsing identity is a property of a Space, switched from the
+  // sidebar without opening a window.  Chromium's profile commands create
+  // separate Profile windows, which contradicts that model, so they are
+  // disabled in favour of the Spaces bar.
+  command_updater_->UpdateCommandEnabled(IDC_ADD_NEW_PROFILE, false);
+  command_updater_->UpdateCommandEnabled(IDC_MANAGE_CHROME_PROFILES, false);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (profile()->IsIncognitoProfile()) {

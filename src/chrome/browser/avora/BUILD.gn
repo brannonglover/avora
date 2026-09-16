@@ -59,6 +59,7 @@ source_set("avora") {
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/tab_contents",
+    "//chrome/browser/ui/browser_window",
     "//components/os_crypt/async/browser",
     "//components/os_crypt/async/common",
     "//components/prefs",
