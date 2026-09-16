@@ -47,10 +47,10 @@ Space Space::FromDict(const base::DictValue& dict) {
   }
   if (const std::string* val = dict.FindString("color")) {
     space.accent_color = NormalizeSpaceAccentColor(*val);
-  } else if (std::optional<int> val = dict.FindInt("color")) {
+  } else if (std::optional<int> legacy_color = dict.FindInt("color")) {
     // Written before accent colours were hex; the int was a tab group colour.
     space.accent_color = LegacySpaceAccentColor(
-        static_cast<tab_groups::TabGroupColorId>(*val));
+        static_cast<tab_groups::TabGroupColorId>(*legacy_color));
   } else {
     space.accent_color = kDefaultSpaceAccentColor;
   }

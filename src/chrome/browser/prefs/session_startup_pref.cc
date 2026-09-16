@@ -66,11 +66,7 @@ SessionStartupPref::Type SessionStartupPref::GetDefaultStartupType() {
 #if BUILDFLAG(IS_CHROMEOS)
   return SessionStartupPref::LAST;
 #else
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
-  return SessionStartupPref::LAST;
-#else
   return SessionStartupPref::DEFAULT;
-#endif
 #endif
 }
 

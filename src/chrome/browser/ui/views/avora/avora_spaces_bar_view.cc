@@ -650,8 +650,9 @@ void AvoraSpacesBarView::ShowEditSpaceEditor(const std::string& space_id) {
   fields.accent_color = space->accent_color;
 
   auto anchor = space_buttons_.find(space_id);
-  views::View* anchor_view =
-      anchor != space_buttons_.end() ? anchor->second.get() : create_button_;
+  views::View* anchor_view = anchor != space_buttons_.end()
+                                  ? anchor->second.get()
+                                  : create_button_.get();
 
   avora::ShowSpaceEditorBubble(
       anchor_view, u"Edit Space", u"Save", fields,
