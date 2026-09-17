@@ -6,6 +6,7 @@
 
 #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_indicator.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
@@ -40,6 +41,13 @@ void TabViewVerticalLayout::OnInstalled(views::View* host) {
                      /*decorate_on_collapse=*/true),
       TabChildConfig(TabView().icon_, kIconDesignWidth, kHorizontalInset,
                      /*align_leading=*/true,
+                     /*expand=*/false),
+      // Avora: link preview marker.  Trailing, like the alert indicator, but
+      // ordered after the favicon so a collapsed strip -- which renders only
+      // the first child that wants space -- still shows the favicon.
+      TabChildConfig(TabView().avora_preview_indicator_, kIconDesignWidth,
+                     kDefaultPadding,
+                     /*align_leading=*/false,
                      /*expand=*/false),
       TabChildConfig(TabView().title_, kTitleMinWidth, kDefaultPadding,
                      /*align_leading=*/true,
@@ -160,6 +168,10 @@ bool TabViewVerticalLayout::IsChildVisible(const views::View* child_view,
       return false;
     }
     return TabView().alert_indicator_->showing_alert_state().has_value();
+  }
+
+  if (child_view == TabView().avora_preview_indicator_) {
+    return TabView().avora_preview_indicator_->has_preview();
   }
 
   if (child_view == TabView().icon_) {

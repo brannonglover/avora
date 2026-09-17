@@ -29,6 +29,8 @@
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_indicator.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/event_utils.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
@@ -347,6 +349,10 @@ TabView::TabView(TabCollectionNode* collection_node)
 
   if (orientation_ == TabStripOrientation::kVertical) {
     icon_->SetFaviconDisplaySize(16);
+    // Must exist before the layout manager is installed below: the vertical
+    // layout caches pointers to the children it positions.
+    avora_preview_indicator_ = AddChildView(
+        std::make_unique<avora::AvoraLinkPreviewTabIndicator>());
   }
 
   title_->SetProperty(views::kElementIdentifierKey, kVerticalTabTitleElementId);
@@ -401,6 +407,12 @@ TabView::TabView(TabCollectionNode* collection_node)
             &TabView::OnCollapseStateChanged, base::Unretained(this)));
   }
   close_button_observation_.Observe(close_button_);
+
+  avora_preview_state_subscription_ =
+      avora::AddLinkPreviewStateChangedCallback(
+          base::BindRepeating(&TabView::OnAvoraLinkPreviewStateChanged,
+                              base::Unretained(this)));
+  UpdateAvoraLinkPreviewIndicator();
 }
 
 TabView::~TabView() = default;
@@ -1075,6 +1087,7 @@ void TabView::UpdateTabData(const tabs::TabInterface* tab) {
   UpdateTitle(tab_data_.title, tab_data_.should_render_loading_title);
   alert_indicator_->TransitionToAlertState(tab_data_.alert_state);
   SetHoverCardDataFrom(tab_data_);
+  UpdateAvoraLinkPreviewIndicator();
 }
 
 void TabView::SetDataForTesting(tabs::TabData data) {
@@ -1091,6 +1104,29 @@ void TabView::SetDataForTesting(tabs::TabData data) {
   UpdateTitle(tab_data_.title, tab_data_.should_render_loading_title);
   alert_indicator_->TransitionToAlertState(tab_data_.alert_state);
   SetHoverCardDataFrom(tab_data_);
+}
+
+void TabView::OnAvoraLinkPreviewStateChanged(content::WebContents* tab) {
+  const tabs::TabInterface* tab_interface = GetTabInterface();
+  if (!tab_interface || tab_interface->GetContents() != tab) {
+    return;
+  }
+  UpdateAvoraLinkPreviewIndicator();
+}
+
+void TabView::UpdateAvoraLinkPreviewIndicator() {
+  if (!avora_preview_indicator_) {
+    return;
+  }
+  const tabs::TabInterface* tab_interface = GetTabInterface();
+  content::WebContents* contents =
+      tab_interface ? tab_interface->GetContents() : nullptr;
+  const bool has_preview = avora::TabHasLinkPreview(contents);
+  if (has_preview == avora_preview_indicator_->has_preview()) {
+    return;
+  }
+  avora_preview_indicator_->SetHasPreview(has_preview);
+  InvalidateLayout();
 }
 
 void TabView::UpdateTitle(std::u16string title,
@@ -1125,6 +1161,9 @@ void TabView::UpdateColors() {
   }
   TabStyle::TabColors colors = tab_styling()->CalculateTargetColors();
   title_->SetEnabledColor(colors.foreground_color);
+  if (avora_preview_indicator_) {
+    avora_preview_indicator_->SetColor(colors.foreground_color);
+  }
   close_button_->SetColors(colors);
   alert_indicator_->OnParentTabButtonColorChanged();
 

@@ -52,6 +52,7 @@ SpaceManager::SpaceManager(PrefService* pref_service)
                 BrowserProfileStore::kDefaultProfileId);
   } else {
     MigrateStoredSpaces();
+    BackfillSpaceIdentities();
   }
 
   if (const Space* active = GetActiveSpace()) {
@@ -221,9 +222,10 @@ std::string SpaceManager::CreateSpace(const std::string& name,
   space.name = name;
   space.icon = icon.empty() ? NextDefaultSpaceIconId(spaces.size())
                             : NormalizeSpaceIconId(icon);
-  space.profile_id = profile_id.empty()
-      ? std::string(BrowserProfileStore::kDefaultProfileId)
-      : profile_id;
+  space.profile_id =
+      profile_id.empty()
+          ? CreateIdentityForSpace(name, /*is_first_space=*/spaces.empty())
+          : profile_id;
   space.order = static_cast<int>(spaces.size());
   space.accent_color = accent_color.empty()
       ? NextDefaultSpaceAccentColor(spaces.size())
@@ -258,6 +260,14 @@ void SpaceManager::RemoveSpace(const std::string& id) {
     }
   }
 
+  std::string removed_profile_id;
+  for (const auto& space : spaces) {
+    if (space.id == id) {
+      removed_profile_id = space.profile_id;
+      break;
+    }
+  }
+
   std::erase_if(spaces, [&](const Space& s) { return s.id == id; });
 
   if (was_active && !spaces.empty()) {
@@ -276,6 +286,10 @@ void SpaceManager::RemoveSpace(const std::string& id) {
 
   SaveSpaces(spaces);
   NotifySpacesChanged();
+
+  // After the write: retiring the identity notifies the identity store's own
+  // observers, and they must not see a Space list that still has this Space.
+  ReleaseIdentity(removed_profile_id, cached_spaces_);
 
   if (was_active && !cached_spaces_.empty()) {
     for (const auto& space : cached_spaces_) {
@@ -339,14 +353,17 @@ void SpaceManager::RenameSpace(const std::string& id,
                                 const std::string& new_name) {
   RefreshCacheIfNeeded();
   auto spaces = cached_spaces_;
+  std::string profile_id;
   for (auto& space : spaces) {
     if (space.id == id) {
       space.name = new_name;
+      profile_id = space.profile_id;
       break;
     }
   }
   SaveSpaces(spaces);
   NotifySpacesChanged();
+  RenameIdentityForSpace(profile_id, new_name);
 }
 
 void SpaceManager::SetSpaceIcon(const std::string& id,
@@ -383,10 +400,12 @@ void SpaceManager::UpdateSpace(const std::string& id,
                                const std::string& accent_color) {
   RefreshCacheIfNeeded();
   auto spaces = cached_spaces_;
+  std::string profile_id;
   for (auto& space : spaces) {
     if (space.id != id) {
       continue;
     }
+    profile_id = space.profile_id;
     if (!name.empty()) {
       space.name = name;
     }
@@ -400,6 +419,94 @@ void SpaceManager::UpdateSpace(const std::string& id,
   }
   SaveSpaces(spaces);
   NotifySpacesChanged();
+  RenameIdentityForSpace(profile_id, name);
+}
+
+void SpaceManager::BackfillSpaceIdentities() {
+  if (!pref_available_ || !pref_service_) {
+    return;
+  }
+
+  const std::string default_id(BrowserProfileStore::kDefaultProfileId);
+  BrowserProfileStore store(pref_service_);
+
+  std::vector<Space> spaces = GetSpaces();
+  bool default_claimed = false;
+  bool changed = false;
+
+  for (auto& space : spaces) {
+    const bool resolves =
+        !space.profile_id.empty() && store.GetProfileById(space.profile_id);
+
+    // Already owns an identity of its own -- nothing to do.
+    if (resolves && space.profile_id != default_id) {
+      continue;
+    }
+
+    if (!default_claimed) {
+      default_claimed = true;
+      if (space.profile_id != default_id) {
+        space.profile_id = default_id;
+        changed = true;
+      }
+      continue;
+    }
+
+    space.profile_id =
+        store.CreateProfile(space.name.empty() ? "Space" : space.name);
+    changed = true;
+  }
+
+  if (changed) {
+    SaveSpaces(spaces);
+    NotifySpacesChanged();
+  }
+}
+
+// ── Identities ──────────────────────────────────────────────────────────────
+//
+// Spaces and identities are one-to-one: a Space owns the cookie jar it browses
+// in, and nothing else browses there.  The pairing is maintained here rather
+// than in the views so that every path creating or deleting a Space keeps it,
+// not just the Spaces bar.
+
+std::string SpaceManager::CreateIdentityForSpace(const std::string& name,
+                                                 bool is_first_space) {
+  const std::string default_id(BrowserProfileStore::kDefaultProfileId);
+  if (is_first_space || !pref_service_) {
+    return default_id;
+  }
+  // BrowserProfileStore is a thin view onto the pref, so building one here is
+  // cheap; any live store watching that pref picks the write up and tells its
+  // own observers.
+  BrowserProfileStore store(pref_service_);
+  const std::string id = store.CreateProfile(name.empty() ? "Space" : name);
+  return id.empty() ? default_id : id;
+}
+
+void SpaceManager::RenameIdentityForSpace(const std::string& profile_id,
+                                          const std::string& new_name) {
+  if (!pref_service_ || new_name.empty() || profile_id.empty() ||
+      profile_id == BrowserProfileStore::kDefaultProfileId) {
+    return;
+  }
+  BrowserProfileStore store(pref_service_);
+  store.RenameProfile(profile_id, new_name);
+}
+
+void SpaceManager::ReleaseIdentity(const std::string& profile_id,
+                                   const std::vector<Space>& remaining) {
+  if (!pref_service_ || profile_id.empty() ||
+      profile_id == BrowserProfileStore::kDefaultProfileId) {
+    return;
+  }
+  for (const auto& space : remaining) {
+    if (space.profile_id == profile_id) {
+      return;
+    }
+  }
+  BrowserProfileStore store(pref_service_);
+  store.RemoveProfile(profile_id);
 }
 
 void SpaceManager::SetSpaceProfile(const std::string& id,

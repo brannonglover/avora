@@ -8,6 +8,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_prefs.h"
 #include "chrome/browser/avora/avora_tab_guid.h"
 #include "chrome/browser/avora/avora_tab_site_instance.h"
@@ -16,6 +17,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
@@ -65,11 +68,14 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
   }
 
   // Order matters: recover last session's GUID assignments before URL fallback,
-  // and both before AdoptUntaggedTabs().
+  // both before AdoptUntaggedTabs(), and the pinned-item backfill last so it
+  // only ever creates an item for a tab nothing above already claimed.
   RestoreTagsFromGuid();
   RestoreTagsFromStore();
   AdoptFavoriteTabs();
+  AdoptPinnedItemTabs();
   AdoptUntaggedTabs();
+  BackfillNativePinnedTabs();
   RememberActiveTab();
   ApplyVisibility();
 
@@ -566,6 +572,9 @@ void AvoraSpaceTabFilter::OnTabDiscarded(
       MarkFavoriteTab(new_contents, GetFavoriteIdForTab(old_contents),
                       WasPinnedBeforeFavorite(old_contents));
     }
+    if (IsPinnedItemTab(old_contents)) {
+      MarkPinnedItemTab(new_contents, GetPinnedItemIdForTab(old_contents));
+    }
   }
 }
 
@@ -586,6 +595,7 @@ void AvoraSpaceTabFilter::ResolvePendingTabAssignments(bool sync_store) {
   RestoreTagsFromGuid();
   RestoreTagsFromStore();
   AdoptFavoriteTabs();
+  AdoptPinnedItemTabs();
   AdoptUntaggedTabs();
   if (sync_store) {
     SyncTabsToStore();
@@ -693,6 +703,155 @@ void AvoraSpaceTabFilter::AdoptFavoriteTabs() {
       SetTabSpaceId(contents, best->space_id);
     }
   }
+}
+
+void AvoraSpaceTabFilter::AdoptPinnedItemTabs() {
+  TabStripModel* model = GetModel();
+  if (!item_store_ || !model) {
+    return;
+  }
+
+  // Build a URL -> pinned item info map, mirroring AdoptFavoriteTabs()'s
+  // favorites_by_url exactly. Unlike Favorites there is no legacy alias type
+  // to also scan: kPinned has never had a predecessor record.
+  struct PinnedItemInfo {
+    std::string id;
+    std::string space_id;
+  };
+  std::multimap<std::string, PinnedItemInfo> pinned_items_by_url;
+  for (const auto& item : item_store_->GetAllItems()) {
+    if (item.type == SidebarItemType::kPinned) {
+      pinned_items_by_url.emplace(item.url,
+                                  PinnedItemInfo{item.id, item.space_id});
+    }
+  }
+  if (pinned_items_by_url.empty()) {
+    return;
+  }
+
+  std::set<std::string> claimed;
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    if (tab && tab->GetContents() && IsPinnedItemTab(tab->GetContents())) {
+      claimed.insert(GetPinnedItemIdForTab(tab->GetContents()));
+    }
+  }
+
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    if (!tab) {
+      continue;
+    }
+    content::WebContents* contents = tab->GetContents();
+    if (!contents || IsPinnedItemTab(contents)) {
+      continue;
+    }
+    MirrorTabGuidOntoContents(tab);
+    const GURL url = UrlForTab(tab);
+    if (!IsUsableTabUrl(url)) {
+      continue;
+    }
+
+    const tabs::TabHandle handle = tab->GetHandle();
+    const auto space_it = tab_space_.find(handle);
+    const bool has_space = space_it != tab_space_.end() &&
+                           !space_it->second.empty();
+    const std::string& tab_space =
+        has_space ? space_it->second : std::string();
+
+    // Find the best matching pinned item for this URL. When the tab already
+    // belongs to a Space, only accept an item from that same Space so
+    // pinned items from other Spaces do not leak across.
+    auto [range_begin, range_end] =
+        pinned_items_by_url.equal_range(url.spec());
+    const PinnedItemInfo* best = nullptr;
+    for (auto it = range_begin; it != range_end; ++it) {
+      if (claimed.count(it->second.id)) {
+        continue;
+      }
+      if (has_space && it->second.space_id == tab_space) {
+        best = &it->second;
+        break;
+      }
+      if (!has_space && !best) {
+        best = &it->second;
+      }
+    }
+    if (!best) {
+      continue;
+    }
+
+    if (has_space && !best->space_id.empty() &&
+        tab_space != best->space_id) {
+      continue;
+    }
+
+    MarkPinnedItemTab(contents, best->id);
+    claimed.insert(best->id);
+    GetOrCreateTabGuid(contents);
+
+    if (!has_space && !best->space_id.empty()) {
+      tab_space_[handle] = best->space_id;
+      SetTabSpaceId(contents, best->space_id);
+    }
+  }
+}
+
+void AvoraSpaceTabFilter::BackfillNativePinnedTabs() {
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  TabStripModel* model = GetModel();
+  if (!profile || !model) {
+    return;
+  }
+
+  PrefService* prefs = profile->GetPrefs();
+  if (!prefs ||
+      !prefs->FindPreference(
+          PinnedItemsManager::kNativePinnedTabsBackfilledPref) ||
+      prefs->GetBoolean(PinnedItemsManager::kNativePinnedTabsBackfilledPref)) {
+    return;
+  }
+
+  // A fresh manager instance is enough: it is a cheap, self-syncing facade
+  // over the same SidebarItemStore pref every other manager already writes
+  // to, not a resource that needs to outlive this one-time pass.
+  PinnedItemsManager items_manager(prefs);
+
+  const int first_unpinned = model->IndexOfFirstNonPinnedTab();
+  for (int i = 0; i < first_unpinned; ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+    if (!contents || IsPinnedItemTab(contents)) {
+      // Already backed -- e.g. AdoptPinnedItemTabs() already claimed it, or
+      // another window's backfill pass ran first this session.
+      continue;
+    }
+    const GURL url = UrlForTab(tab);
+    if (!IsUsableTabUrl(url)) {
+      continue;
+    }
+
+    const auto space_it = tab_space_.find(tab->GetHandle());
+    const std::string space_id =
+        space_it != tab_space_.end() ? space_it->second : current_space_id_;
+    if (space_id.empty()) {
+      continue;
+    }
+
+    items_manager.SetWindowActiveSpaceId(space_id);
+    std::string item_id = items_manager.AddPinnedItem(
+        url.spec(), base::UTF16ToUTF8(contents->GetTitle()));
+    if (item_id.empty()) {
+      // AddPinnedItem() no-ops when the URL is already pinned in this Space;
+      // reuse that existing id instead of leaving this tab unmarked.
+      item_id = items_manager.GetPinnedItemIdForUrl(url.spec());
+    }
+    if (!item_id.empty()) {
+      MarkPinnedItemTab(contents, item_id);
+    }
+  }
+
+  prefs->SetBoolean(PinnedItemsManager::kNativePinnedTabsBackfilledPref, true);
 }
 
 void AvoraSpaceTabFilter::SyncTabsToStore() {
@@ -911,9 +1070,10 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
 
   // Both containers are filtered.  Pinning is a per-Space decision just like
   // any other tab: a tab pinned in one Space must not surface in the others.
+  views::View* const pinned_container = tab_strip_view_->GetPinnedTabsContainer();
   views::View* const containers[] = {
       tab_strip_view_->GetUnpinnedTabsContainer(),
-      tab_strip_view_->GetPinnedTabsContainer(),
+      pinned_container,
   };
 
   applying_ = true;
@@ -921,6 +1081,11 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
     if (!container) {
       continue;
     }
+    // Which container a TabView lives in already tells us whether its tab is
+    // natively pinned (TabStripModel::IsTabPinned) -- that's exactly how
+    // Chromium partitions the two containers -- so it doubles as the signal
+    // for the kPinned-hide rule below without a second model lookup.
+    const bool is_pinned_container = (container == pinned_container);
     for (views::View* child : container->children()) {
       TabView* tab_view = views::AsViewClass<TabView>(child);
       if (!tab_view) {
@@ -942,10 +1107,27 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
         visible = (it->second == current_space_id_);
       }
 
-      // A favorite's tab is represented by its tile in the favorites row, so
-      // it never also gets a row in the daily list below.
       tabs::TabInterface* live_tab = tab->GetHandle().Get();
-      if (visible && live_tab && IsFavoriteTab(live_tab->GetContents())) {
+      content::WebContents* live_contents =
+          live_tab ? live_tab->GetContents() : nullptr;
+
+      // A favorite's tab is represented by its tile in the favorites row, so
+      // it never also gets a row in either tab-strip container.
+      if (visible && live_contents && IsFavoriteTab(live_contents)) {
+        visible = false;
+      }
+
+      // A materialized Avora pinned item's tab is represented by its row in
+      // AvoraPinnedSectionView (see Rebuild()), so it must not also render
+      // as a normal row in the daily/unpinned list -- same reasoning as the
+      // Favorite rule above. Scoped to the unpinned container only: a
+      // natively pinned tab keeps its own compact row in the pinned
+      // container regardless of whether it also carries a kPinned marker
+      // (from PinAndCreatePinnedItem() or BackfillNativePinnedTabs()) --
+      // that marker only ever changes which row AvoraPinnedSectionView
+      // draws for it, never whether the native strip shows it.
+      if (visible && !is_pinned_container && live_contents &&
+          IsPinnedItemTab(live_contents)) {
         visible = false;
       }
 

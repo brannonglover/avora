@@ -190,8 +190,9 @@
 #include "chrome/browser/extensions/extension_view_host_factory.h"
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
-#include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+#include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
 #include "chrome/browser/ui/views/avora/avora_import_offer_view.h"
@@ -317,6 +318,7 @@
 #include "content/public/browser/desktop_capture_pip_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_descriptor_util.h"
@@ -328,6 +330,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/drop_data.h"
+#include "content/public/common/referrer.h"
 #include "extensions/common/command.h"
 #include "media/capture/capture_switches.h"
 #include "third_party/blink/public/common/features.h"
@@ -2282,6 +2285,12 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   // Update all the UI bits.
   UpdateTitleBar();
   UpdateAvoraSidebarURL();
+
+  // A link preview lives on its tab, so hand the overlay to whichever preview
+  // the newly active tab is carrying (or hide it when that tab has none).
+  // Done after focus is restored above so the overlay, not the page, ends up
+  // focused when it is the thing on screen.
+  UpdateAvoraLinkPreviewForActiveTab();
 
   CHECK_DEREF(TranslateBubbleController::From(browser_.get())).CloseBubble();
 }
@@ -6636,36 +6645,77 @@ void BrowserView::HideAvoraQuickNav() {
 }
 
 void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
-  if (!avora_link_preview_) {
+  content::WebContents* host_tab = GetActiveWebContents();
+  if (!avora_link_preview_ || !host_tab || !url.is_valid()) {
     return;
   }
-  avora_link_preview_->SetBoundsRect(
-      multi_contents_view_ ? multi_contents_view_->bounds()
-                           : GetLocalBounds());
-  avora_link_preview_->Show(url);
-  ReorderChildView(avora_link_preview_, children().size());
-  DeprecatedLayoutImmediately();
+  std::unique_ptr<content::WebContents> contents =
+      avora::CreateLinkPreviewContents(browser_.get(), url);
+  if (!contents) {
+    return;
+  }
+  content::WebContents* preview = contents.get();
+  avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
+  UpdateAvoraLinkPreviewForActiveTab();
+
+  // Navigate only once the overlay has sized the WebView: a zero-sized
+  // viewport stalls the renderer.
+  preview->GetController().LoadURL(url, content::Referrer(),
+                                   ui::PAGE_TRANSITION_LINK, std::string());
 }
 
 void BrowserView::ShowAvoraLinkPreviewWithContents(
+    content::WebContents* host_tab,
     std::unique_ptr<content::WebContents> contents,
     const GURL& url) {
-  if (!avora_link_preview_) {
+  if (!avora_link_preview_ || !contents) {
     return;
   }
-  avora_link_preview_->SetBoundsRect(
-      multi_contents_view_ ? multi_contents_view_->bounds()
-                           : GetLocalBounds());
-  avora_link_preview_->ShowWithContents(std::move(contents), url);
-  ReorderChildView(avora_link_preview_, children().size());
-  DeprecatedLayoutImmediately();
+  // The opener is normally the active tab, but fall back to it when the
+  // request came from something that is not in this window's tab strip.
+  if (!host_tab || browser_->GetTabStripModel()->GetIndexOfWebContents(
+                       host_tab) == TabStripModel::kNoTab) {
+    host_tab = GetActiveWebContents();
+  }
+  if (!host_tab) {
+    return;
+  }
+  avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
+  UpdateAvoraLinkPreviewForActiveTab();
 }
 
 void BrowserView::HideAvoraLinkPreview() {
   if (!avora_link_preview_) {
     return;
   }
-  avora_link_preview_->Hide();
+  // Dismissal always comes from the overlay the user is looking at, so the
+  // preview to destroy is the attached one -- not merely the active tab's,
+  // which may already have moved on.
+  content::WebContents* host_tab = avora_link_preview_->host_tab();
+  avora_link_preview_->DetachPreview();
+  avora::LinkPreviewTabState::Clear(host_tab);
+}
+
+void BrowserView::UpdateAvoraLinkPreviewForActiveTab() {
+  if (!avora_link_preview_) {
+    return;
+  }
+  content::WebContents* host_tab = GetActiveWebContents();
+  content::WebContents* preview = avora::GetLinkPreviewContents(host_tab);
+  if (!preview) {
+    avora_link_preview_->DetachPreview();
+    return;
+  }
+  if (avora_link_preview_->attached_preview() == preview) {
+    return;
+  }
+  avora_link_preview_->SetBoundsRect(
+      multi_contents_view_ ? multi_contents_view_->bounds()
+                           : GetLocalBounds());
+  avora_link_preview_->AttachPreview(host_tab, preview,
+                                     avora::GetLinkPreviewUrl(host_tab));
+  ReorderChildView(avora_link_preview_, children().size());
+  DeprecatedLayoutImmediately();
 }
 
 void BrowserView::OnLinkPreviewOpenInNewTab(const GURL& url) {

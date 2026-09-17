@@ -149,6 +149,22 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // so the reconnect is made by URL for legacy sessions only.
   void AdoptFavoriteTabs();
 
+  // Reconnects restored tabs to the pinned items (SidebarItemType::kPinned)
+  // they materialize, mirroring AdoptFavoriteTabs() exactly: the mark lives
+  // on the WebContents and is gone after a restart, so the reconnect is made
+  // by (url, Space) for restored tabs that are not yet marked.
+  void AdoptPinnedItemTabs();
+
+  // One-time migration: gives every tab currently pinned via the native
+  // TabStripModel pinned bit a backing kPinned SidebarItem, so pinning that
+  // predates this feature is not silently lost. Guarded by
+  // kNativePinnedTabsBackfilledPref so it runs at most once per profile;
+  // safe to call from every window's constructor because
+  // PinnedItemsManager::AddPinnedItem() is itself a no-op for a URL already
+  // pinned in that Space, so a race between two windows on first launch
+  // cannot create duplicates.
+  void BackfillNativePinnedTabs();
+
   // Removes stale kToday records per |avora.today_tab_expiry_hours|.  Skipped
   // entirely when expiry is disabled (0 hours).
   void SweepExpiredTodayTabsIfEnabled();

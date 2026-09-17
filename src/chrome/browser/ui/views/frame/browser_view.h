@@ -818,11 +818,17 @@ class BrowserView : public BrowserWindow,
   void ShowAvoraQuickNavWithURL();
   void HideAvoraQuickNav();
 
-  // Avora link preview overlay.
+  // Avora link preview overlay.  A preview belongs to the tab it was opened
+  // from: it stays parked on that tab while the user works elsewhere and comes
+  // back untouched when they return to it.
   void ShowAvoraLinkPreview(const GURL& url);
   void ShowAvoraLinkPreviewWithContents(
-      std::unique_ptr<content::WebContents> contents, const GURL& url);
+      content::WebContents* host_tab,
+      std::unique_ptr<content::WebContents> contents,
+      const GURL& url);
+  // Dismisses the preview parked on the active tab, destroying it.
   void HideAvoraLinkPreview();
+  // True while a preview is painted over the active tab.
   bool IsAvoraLinkPreviewShowing() const;
 
   // Avora Space switching gestures (sidebar region only).
@@ -1277,6 +1283,9 @@ class BrowserView : public BrowserWindow,
   // Avora link preview overlay (target="_blank" interception).
   raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;
   void OnLinkPreviewOpenInNewTab(const GURL& url);
+  // Shows the active tab's parked preview, or hides the overlay when that tab
+  // has none.  Called on every active-tab change.
+  void UpdateAvoraLinkPreviewForActiveTab();
 
   // Outward-projecting corners of the vertical tab strip.
   raw_ptr<CustomFloatingCorner> vertical_tab_strip_top_corner_ = nullptr;

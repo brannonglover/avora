@@ -21,8 +21,10 @@ namespace avora {
 // IndexedDB, service workers, and permissions.  It deliberately does NOT own
 // any organizational state -- that all belongs to a Space.
 //
-// Multiple Spaces may share a single BrowserProfile, in which case they share
-// authentication state while keeping completely independent sidebar contents.
+// Exactly one Space owns each BrowserProfile -- SpaceManager mints one per
+// Space and retires it with the Space.  The default profile is the exception:
+// it is adopted by the first Space and doubles as the fallback whenever a
+// Space's identity cannot be resolved, so it is never removed.
 //
 // NOTE: named BrowserProfile rather than Profile to avoid shadowing Chromium's
 // global ::Profile class, which is a different concept entirely.

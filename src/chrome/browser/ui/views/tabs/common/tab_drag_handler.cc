@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/ui/views/avora/avora_favorites_view.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -1145,37 +1146,48 @@ void TabDragHandlerImpl::StoppedDragging() {
 
       if (!contents_to_pin.empty() || !contents_to_unpin.empty()) {
         TabStripModel* model_ptr = &*tab_strip_model_;
+        // Same window, same lifetime as model_ptr above -- both are owned by
+        // the persistent sidebar/tab-strip UI, not by the transient drag
+        // session, so capturing this raw pointer for the deferred task
+        // carries the same (already-accepted) risk as model_ptr's.
+        auto* pinned_section = tab_strip_view->GetPinnedSectionView();
+        avora::PinnedItemsManager* pinned_items_manager_ptr =
+            pinned_section ? pinned_section->GetPinnedItemsManager()
+                           : nullptr;
         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
             FROM_HERE,
             base::BindOnce(
                 [](TabStripModel* model,
+                   avora::PinnedItemsManager* pinned_items_manager,
                    std::vector<base::WeakPtr<content::WebContents>> to_pin,
                    std::vector<base::WeakPtr<content::WebContents>> to_unpin) {
+                  // Avora's pin gesture creates real kPinned persistence
+                  // immediately -- not just the native pinned bit -- so the
+                  // existing tab becomes the item's materialized instance
+                  // with no duplicate tab and no dependence on
+                  // BackfillNativePinnedTabs(), which remains a
+                  // migration/reconciliation mechanism for pre-existing
+                  // state only. Unpinning is the mirror: it removes that
+                  // persistence (and the tab's marker) independently of the
+                  // native pinned bit, and never closes the tab.
                   for (auto& weak_contents : to_pin) {
-                    if (!weak_contents) {
-                      continue;
-                    }
-                    int idx = model->GetIndexOfWebContents(
-                        weak_contents.get());
-                    if (idx != TabStripModel::kNoTab &&
-                        !model->IsTabPinned(idx)) {
-                      model->SetTabPinned(idx, true);
+                    if (weak_contents) {
+                      avora::PinAndCreatePinnedItem(model,
+                                                    pinned_items_manager,
+                                                    weak_contents.get());
                     }
                   }
                   for (auto& weak_contents : to_unpin) {
-                    if (!weak_contents) {
-                      continue;
-                    }
-                    int idx = model->GetIndexOfWebContents(
-                        weak_contents.get());
-                    if (idx != TabStripModel::kNoTab &&
-                        model->IsTabPinned(idx)) {
-                      model->SetTabPinned(idx, false);
+                    if (weak_contents) {
+                      avora::UnpinAndRemovePinnedItem(model,
+                                                      pinned_items_manager,
+                                                      weak_contents.get());
                     }
                   }
                 },
-                base::Unretained(model_ptr), std::move(contents_to_pin),
-                std::move(contents_to_unpin)));
+                base::Unretained(model_ptr),
+                base::Unretained(pinned_items_manager_ptr),
+                std::move(contents_to_pin), std::move(contents_to_unpin)));
       }
     }
   }

@@ -46,8 +46,8 @@
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/status_bubble_views.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -706,9 +706,11 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
       !target_url.SchemeIs("devtools")) {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(&*browser_);
-    if (browser_view && !browser_view->IsAvoraLinkPreviewShowing()) {
+    // One preview per tab: a second link opened from a tab that already has a
+    // preview parked on it falls through to a normal new tab.
+    if (browser_view && !avora::TabHasLinkPreview(source)) {
       browser_view->ShowAvoraLinkPreviewWithContents(
-          std::move(new_contents), target_url);
+          source, std::move(new_contents), target_url);
       return nullptr;
     }
   }

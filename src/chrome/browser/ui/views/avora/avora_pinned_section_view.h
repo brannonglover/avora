@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -174,6 +175,7 @@ class PinnedTabRow : public views::View,
 // Right-clicking shows "New Folder". Supports drag-to-folder.
 class AvoraPinnedSectionView : public views::View,
                                public PinnedFoldersManager::Observer,
+                               public PinnedItemsManager::Observer,
                                public views::ContextMenuController,
                                public TabStripModelObserver,
                                public avora::WindowSpaceState::Observer {
@@ -193,6 +195,9 @@ class AvoraPinnedSectionView : public views::View,
 
   // PinnedFoldersManager::Observer:
   void OnPinnedFoldersChanged() override;
+
+  // PinnedItemsManager::Observer:
+  void OnPinnedItemsChanged() override;
 
   // avora::WindowSpaceState::Observer:
   void OnWindowActiveSpaceChanged(const std::string& space_id) override;
@@ -221,6 +226,7 @@ class AvoraPinnedSectionView : public views::View,
   void Rebuild();
 
   PinnedFoldersManager* GetFoldersManager() const;
+  PinnedItemsManager* GetPinnedItemsManager() const;
 
   // Drag-and-drop support: highlight a folder during tab drag.
   void SetDragActive(bool active);
@@ -239,6 +245,12 @@ class AvoraPinnedSectionView : public views::View,
                         const gfx::Point& screen_point);
   void LoadFavicon(FolderTabRow* row);
 
+  // Persisted pinned item (SidebarItemType::kPinned) with no live tab yet in
+  // this window/Space. Activates an existing materialized tab if one already
+  // exists here, else lazily creates one from the item's persisted URL --
+  // mirrors AvoraFavoritesView::OnFavoriteClicked exactly.
+  void OnPersistentPinnedItemClicked(const std::string& url);
+
   // Standalone pinned tab handlers.
   void OnPinnedTabClicked(content::WebContents* contents);
   void OnPinnedTabRenamed(content::WebContents* contents,
@@ -251,6 +263,7 @@ class AvoraPinnedSectionView : public views::View,
   raw_ptr<avora::WindowSpaceState> window_space_state_ = nullptr;
   raw_ptr<TabStripModel> tab_strip_model_ = nullptr;
   std::unique_ptr<PinnedFoldersManager> folders_manager_;
+  std::unique_ptr<PinnedItemsManager> pinned_items_manager_;
 
   // Context menu state.
   std::unique_ptr<ui::SimpleMenuModel::Delegate> context_menu_delegate_;

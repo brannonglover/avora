@@ -15,8 +15,10 @@ namespace avora {
 // keyed by this Space's id -- not on this struct.
 //
 // Browser identity (cookies, storage, permissions) comes from the Space's
-// BrowserProfile via |profile_id|.  Several Spaces may point at the same
-// profile_id, sharing login state while keeping separate sidebar contents.
+// BrowserProfile via |profile_id|.  Each Space owns its identity outright:
+// SpaceManager mints one per Space and retires it with the Space, so no two
+// Spaces share a cookie jar.  The one exception is the first Space on an
+// install, which adopts the default identity so existing logins survive.
 struct Space {
   std::string id;
   std::string name;

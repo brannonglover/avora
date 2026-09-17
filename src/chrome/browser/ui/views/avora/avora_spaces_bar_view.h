@@ -114,11 +114,9 @@ class AvoraSpacesBarView : public views::View,
   // The Space this window is showing, or nullptr when there is none.
   const avora::Space* GetActiveSpace() const;
 
-  std::u16string ProfileDisplayName(const std::string& profile_id) const;
-
-  // Tooltip line naming the Space's browser identity and saying whether that
-  // identity has its own cookie jar, so the user can tell an isolated Space
-  // apart from one sharing the default session.
+  // Tooltip line saying whether this Space has a cookie jar to itself, so the
+  // user can tell an isolated Space apart from the one adopting the default
+  // browser session.
   std::u16string IdentityTooltipLine(const std::string& profile_id) const;
 
   SpaceClickedCallback clicked_cb_;
@@ -135,9 +133,7 @@ class AvoraSpacesBarView : public views::View,
   raw_ptr<views::View> create_button_ = nullptr;
 
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
-  std::unique_ptr<ui::SimpleMenuModel> profile_submenu_model_;
   std::unique_ptr<ui::SimpleMenuModel::Delegate> context_menu_delegate_;
-  std::unique_ptr<ui::SimpleMenuModel::Delegate> profile_submenu_delegate_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
 
   base::WeakPtrFactory<AvoraSpacesBarView> weak_factory_{this};

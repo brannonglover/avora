@@ -12,6 +12,8 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/favicon/core/favicon_service.h"
@@ -728,8 +730,14 @@ AvoraPinnedSectionView::AvoraPinnedSectionView(
       std::make_unique<PinnedFoldersManager>(profile->GetPrefs());
   folders_manager_->AddObserver(this);
 
+  pinned_items_manager_ =
+      std::make_unique<PinnedItemsManager>(profile->GetPrefs());
+  pinned_items_manager_->AddObserver(this);
+
   if (window_space_state_) {
     folders_manager_->SetWindowActiveSpaceId(
+        window_space_state_->active_space_id());
+    pinned_items_manager_->SetWindowActiveSpaceId(
         window_space_state_->active_space_id());
     window_space_state_->AddObserver(this);
   }
@@ -752,9 +760,16 @@ AvoraPinnedSectionView::~AvoraPinnedSectionView() {
   if (folders_manager_) {
     folders_manager_->RemoveObserver(this);
   }
+  if (pinned_items_manager_) {
+    pinned_items_manager_->RemoveObserver(this);
+  }
 }
 
 void AvoraPinnedSectionView::OnPinnedFoldersChanged() {
+  Rebuild();
+}
+
+void AvoraPinnedSectionView::OnPinnedItemsChanged() {
   Rebuild();
 }
 
@@ -762,6 +777,12 @@ void AvoraPinnedSectionView::OnWindowActiveSpaceChanged(
     const std::string& space_id) {
   if (folders_manager_) {
     folders_manager_->SetWindowActiveSpaceId(space_id);
+  }
+  if (pinned_items_manager_) {
+    // Switching Spaces only changes which persisted items Rebuild() reads
+    // (via OnPinnedItemsChanged() -> Rebuild()); it never touches the tab
+    // strip, so it can never materialize anything.
+    pinned_items_manager_->SetWindowActiveSpaceId(space_id);
   }
 }
 
@@ -847,20 +868,44 @@ void AvoraPinnedSectionView::OnPaintBackground(gfx::Canvas* canvas) {
 void AvoraPinnedSectionView::Rebuild() {
   RemoveAllChildViews();
 
-  // 1. Standalone pinned tabs (from the TabStripModel) at the top.
-  //    Only show tabs belonging to the active Space (or untagged tabs).
   const std::string active_space = folders_manager_->GetActiveSpaceId();
+
+  // Pinned-item ids with a live PinnedTabRow rendered in section 1, so
+  // section 1b never renders a second, unmaterialized row for the same item.
+  std::set<std::string> already_live;
+
+  // 1. Live rows: every tab in this window/Space that is either natively
+  //    pinned (TabStripModel::IsTabPinned, i.e. within
+  //    IndexOfFirstNonPinnedTab()) or materialized from a persisted kPinned
+  //    item (IsPinnedItemTab), or both (a natively pinned tab that a
+  //    kPinned item was backfilled onto). Each gets exactly one
+  //    PinnedTabRow regardless of which of those is true -- there is one
+  //    intentional sidebar representation per tab, never two.
+  //
+  //    ApplyVisibility() (avora_space_tab_filter.cc) is the other half of
+  //    this: it hides a materialized-but-not-natively-pinned tab's row from
+  //    the daily/unpinned tab strip, the same way it already hides a
+  //    Favorite's tab there, so the tab doesn't ALSO show as a normal daily
+  //    row while it has a live PinnedTabRow here. A natively pinned tab's
+  //    own strip row is untouched by that rule regardless of kPinned
+  //    backing -- only this section's representation changes for it.
   if (tab_strip_model_) {
-    int first_unpinned = tab_strip_model_->IndexOfFirstNonPinnedTab();
-    for (int i = 0; i < first_unpinned; ++i) {
-      content::WebContents* contents =
-          tab_strip_model_->GetWebContentsAt(i);
-      if (!contents) {
+    const int first_unpinned = tab_strip_model_->IndexOfFirstNonPinnedTab();
+    for (int i = 0; i < tab_strip_model_->count(); ++i) {
+      content::WebContents* contents = tab_strip_model_->GetWebContentsAt(i);
+      if (!contents || !TabBelongsToSpace(contents, active_space)) {
         continue;
       }
-      if (!TabBelongsToSpace(contents, active_space)) {
-        continue;
+
+      const bool natively_pinned = i < first_unpinned;
+      const std::string pinned_item_id = GetPinnedItemIdForTab(contents);
+      if (!natively_pinned && pinned_item_id.empty()) {
+        continue;  // An ordinary daily tab -- not this section's concern.
       }
+      if (!pinned_item_id.empty()) {
+        already_live.insert(pinned_item_id);
+      }
+
       auto* row = AddChildView(std::make_unique<PinnedTabRow>(
           contents,
           base::BindRepeating(&AvoraPinnedSectionView::OnPinnedTabClicked,
@@ -878,6 +923,28 @@ void AvoraPinnedSectionView::Rebuild() {
         row->SetCustomTitle(base::UTF8ToUTF16(custom));
       }
       LoadPinnedTabFavicon(row);
+    }
+  }
+
+  // 1b. Persisted pinned items (SidebarItemType::kPinned) with no live tab in
+  //     this window yet. Never eagerly materializes anything -- this only
+  //     reads PinnedItemsManager's persisted list and renders a row per
+  //     entry; a live tab is created lazily, on click, in
+  //     OnPersistentPinnedItemClicked(). An item already shown live in
+  //     section 1 above is skipped here so it never renders twice.
+  if (pinned_items_manager_) {
+    for (const auto& item : pinned_items_manager_->GetPinnedItems()) {
+      if (already_live.count(item.id)) {
+        continue;
+      }
+      auto* row = AddChildView(std::make_unique<FolderTabRow>(
+          /*folder_index=*/-1, item.url, item.title,
+          base::BindRepeating(
+              &AvoraPinnedSectionView::OnPersistentPinnedItemClicked,
+              base::Unretained(this)),
+          base::RepeatingCallback<void(int, const std::string&,
+                                       const gfx::Point&)>()));
+      LoadFavicon(row);
     }
   }
 
@@ -924,6 +991,10 @@ void AvoraPinnedSectionView::Rebuild() {
 
 PinnedFoldersManager* AvoraPinnedSectionView::GetFoldersManager() const {
   return folders_manager_.get();
+}
+
+PinnedItemsManager* AvoraPinnedSectionView::GetPinnedItemsManager() const {
+  return pinned_items_manager_.get();
 }
 
 void AvoraPinnedSectionView::SetDropHighlighted(bool highlighted) {
@@ -1077,6 +1148,54 @@ void AvoraPinnedSectionView::OnTabClicked(const std::string& url) {
   Navigate(&params);
 }
 
+void AvoraPinnedSectionView::OnPersistentPinnedItemClicked(
+    const std::string& url) {
+  if (!browser_ || !tab_strip_model_ || !pinned_items_manager_) {
+    return;
+  }
+
+  // Resolve the click to the pinned item's identity rather than comparing
+  // URLs from here on, mirroring AvoraFavoritesView::OnFavoriteClicked: a
+  // tab that has navigated away from the item's persisted target is still
+  // recognised as belonging to it.
+  const std::string item_id = pinned_items_manager_->GetPinnedItemIdForUrl(url);
+  if (item_id.empty()) {
+    return;
+  }
+
+  const std::string active_space = pinned_items_manager_->GetActiveSpaceId();
+
+  // Scoped to this window's own TabStripModel only: a match here can never
+  // resolve to (and this can never activate) a tab in another window.
+  const int existing_index = FindMaterializedPinnedItemTab(
+      tab_strip_model_, item_id, active_space);
+  if (existing_index != TabStripModel::kNoTab) {
+    tab_strip_model_->ActivateTabAt(existing_index);
+    return;
+  }
+
+  // No live tab for this item in this window/Space yet -- materialize one
+  // from the item's persisted target, not from |url| (they are the same
+  // value today, but the persisted target is the source of truth).
+  const std::string target_url =
+      pinned_items_manager_->GetPinnedItemUrlById(item_id);
+  if (target_url.empty()) {
+    return;
+  }
+
+  NavigateParams params(browser_, GURL(target_url),
+                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  Navigate(&params);
+
+  if (params.navigated_or_inserted_contents) {
+    MarkPinnedItemTab(params.navigated_or_inserted_contents, item_id);
+    if (!active_space.empty()) {
+      SetTabSpaceId(params.navigated_or_inserted_contents, active_space);
+    }
+  }
+}
+
 void AvoraPinnedSectionView::OnTabContextMenu(
     int folder_index,
     const std::string& url,
@@ -1132,13 +1251,16 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
       base::BindOnce(
           [](base::WeakPtr<AvoraPinnedSectionView> view,
              content::WebContents* wc) {
-            if (!view || !view->tab_strip_model_) {
+            if (!view) {
               return;
             }
-            int idx = view->tab_strip_model_->GetIndexOfWebContents(wc);
-            if (idx != TabStripModel::kNoTab) {
-              view->tab_strip_model_->SetTabPinned(idx, false);
-            }
+            // Clears the native pinned bit if set and independently removes
+            // any kPinned persistence -- one "Unpin Tab" action fully
+            // unpins the tab in every sense, rather than leaving it
+            // half-unpinned depending on how it came to be pinned. The live
+            // page is never closed.
+            UnpinAndRemovePinnedItem(view->tab_strip_model_,
+                                     view->pinned_items_manager_.get(), wc);
           },
           weak_factory_.GetWeakPtr(), contents),
       base::BindOnce(

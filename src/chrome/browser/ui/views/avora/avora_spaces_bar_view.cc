@@ -3,7 +3,6 @@
 #include "chrome/browser/ui/views/avora/avora_spaces_bar_view.h"
 
 #include <algorithm>
-#include <map>
 #include <string>
 #include <utility>
 
@@ -73,8 +72,6 @@ constexpr SkAlpha kActiveBackgroundAlpha = 0x33;
 
 constexpr int kMenuEdit = 1;
 constexpr int kMenuDelete = 2;
-constexpr int kMenuNewProfile = 3;
-constexpr int kMenuProfileBase = 200;
 
 void RemovePinnedDataForSpace(PrefService* prefs, const std::string& space_id) {
   if (!prefs || space_id.empty()) {
@@ -225,42 +222,6 @@ class SpaceBarContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
   base::RepeatingClosure on_edit_;
   base::RepeatingClosure on_delete_;
   bool can_delete_ = true;
-};
-
-class ProfilePickerMenuDelegate : public ui::SimpleMenuModel::Delegate {
- public:
-  ProfilePickerMenuDelegate(
-      std::map<int, std::string> profile_command_ids,
-      std::string active_profile_id,
-      base::RepeatingCallback<void(const std::string&)> on_profile_selected,
-      base::RepeatingClosure on_new_profile)
-      : profile_command_ids_(std::move(profile_command_ids)),
-        active_profile_id_(std::move(active_profile_id)),
-        on_profile_selected_(std::move(on_profile_selected)),
-        on_new_profile_(std::move(on_new_profile)) {}
-
-  void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id == kMenuNewProfile && on_new_profile_) {
-      on_new_profile_.Run();
-      return;
-    }
-    auto it = profile_command_ids_.find(command_id);
-    if (it != profile_command_ids_.end() && on_profile_selected_) {
-      on_profile_selected_.Run(it->second);
-    }
-  }
-
-  bool IsCommandIdChecked(int command_id) const override {
-    auto it = profile_command_ids_.find(command_id);
-    return it != profile_command_ids_.end() &&
-           it->second == active_profile_id_;
-  }
-
- private:
-  std::map<int, std::string> profile_command_ids_;
-  std::string active_profile_id_;
-  base::RepeatingCallback<void(const std::string&)> on_profile_selected_;
-  base::RepeatingClosure on_new_profile_;
 };
 
 }  // namespace
@@ -431,18 +392,6 @@ void AvoraSpacesBarView::OnBrowserProfilesChanged() {
   }
 }
 
-std::u16string AvoraSpacesBarView::ProfileDisplayName(
-    const std::string& profile_id) const {
-  if (!profile_store_) {
-    return u"Default";
-  }
-  if (const avora::BrowserProfile* profile =
-          profile_store_->GetProfileById(profile_id)) {
-    return base::UTF8ToUTF16(profile->name);
-  }
-  return u"Default";
-}
-
 const avora::Space* AvoraSpacesBarView::GetActiveSpace() const {
   if (!space_manager_) {
     return nullptr;
@@ -458,10 +407,10 @@ const avora::Space* AvoraSpacesBarView::GetActiveSpace() const {
 
 std::u16string AvoraSpacesBarView::IdentityTooltipLine(
     const std::string& profile_id) const {
-  const std::u16string name = ProfileDisplayName(profile_id);
-
-  // The default identity intentionally uses Chromium's default partition, so
-  // it shares cookies and logins with any other Space pointing at it.
+  // Under the one-Space-one-identity rule the identity's name always matches
+  // the Space's, so naming it again would just repeat the line above.  What
+  // the user cannot otherwise see is whether this Space has a cookie jar to
+  // itself, which is what the default identity does not give them.
   bool isolated = false;
   if (profile_store_) {
     const avora::BrowserProfile* profile =
@@ -469,9 +418,8 @@ std::u16string AvoraSpacesBarView::IdentityTooltipLine(
     isolated = profile && !avora::UsesDefaultPartition(*profile);
   }
 
-  return base::StrCat({u"\nIdentity: ", name,
-                       isolated ? u" (isolated session)"
-                                : u" (shared session)"});
+  return isolated ? u"\nSigned in separately"
+                  : u"\nShares the default browser session";
 }
 
 void AvoraSpacesBarView::RebuildManaged() {
@@ -500,9 +448,7 @@ void AvoraSpacesBarView::RebuildManaged() {
       views::BoxLayout::CrossAxisAlignment::kCenter);
 
   for (const auto& space : space_manager_->GetSpaces()) {
-    const std::u16string tooltip = base::StrCat(
-        {base::UTF8ToUTF16(space.name), u"\nProfile: ",
-         ProfileDisplayName(space.profile_id)});
+    const std::u16string tooltip = base::UTF8ToUTF16(space.name);
     auto button = std::make_unique<SpaceIconButton>(
         base::BindRepeating(&AvoraSpacesBarView::OnSpaceClicked,
                             base::Unretained(this), space.id),
@@ -565,53 +511,15 @@ void AvoraSpacesBarView::OnSpaceContextMenu(const std::string& id,
 
 void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
                                               const gfx::Point& screen_point) {
-  if (!space_manager_ || !profile_store_ || space_id.empty()) {
-    return;
-  }
-
-  const avora::Space* space = space_manager_->GetSpaceById(space_id);
-  if (!space) {
+  if (!space_manager_ || space_id.empty() ||
+      !space_manager_->GetSpaceById(space_id)) {
     return;
   }
 
   const bool can_delete = space_manager_->GetSpaces().size() > 1;
 
-  std::map<int, std::string> profile_command_ids;
-  int next_profile_cmd = kMenuProfileBase;
-  for (const auto& profile : profile_store_->GetProfiles()) {
-    profile_command_ids[next_profile_cmd] = profile.id;
-    ++next_profile_cmd;
-  }
-  profile_submenu_delegate_ = std::make_unique<ProfilePickerMenuDelegate>(
-      profile_command_ids, space->profile_id,
-      base::BindRepeating(
-          [](avora::SpaceManager* manager, const std::string& id,
-             const std::string& profile_id) {
-            manager->SetSpaceProfile(id, profile_id);
-          },
-          base::Unretained(space_manager_.get()), space_id),
-      base::BindRepeating(
-          [](avora::BrowserProfileStore* store, avora::SpaceManager* manager,
-             const std::string& space_id) {
-            const auto profiles = store->GetProfiles();
-            const std::string name =
-                "Profile " + std::to_string(profiles.size() + 1);
-            const std::string new_profile_id = store->CreateProfile(name);
-            manager->SetSpaceProfile(space_id, new_profile_id);
-          },
-          base::Unretained(profile_store_.get()),
-          base::Unretained(space_manager_.get()), space_id));
-  profile_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(
-      profile_submenu_delegate_.get());
-  next_profile_cmd = kMenuProfileBase;
-  for (const auto& profile : profile_store_->GetProfiles()) {
-    profile_submenu_model_->AddCheckItem(
-        next_profile_cmd, base::UTF8ToUTF16(profile.name));
-    ++next_profile_cmd;
-  }
-  profile_submenu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
-  profile_submenu_model_->AddItem(kMenuNewProfile, u"New Profile…");
-
+  // No identity picker: a Space owns its identity, so there is nothing to
+  // choose between.  Creating a Space is what creates an identity.
   context_menu_delegate_ = std::make_unique<SpaceBarContextMenuDelegate>(
       base::BindRepeating(&AvoraSpacesBarView::ShowEditSpaceEditor,
                           base::Unretained(this), space_id),
@@ -621,8 +529,6 @@ void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
   context_menu_model_->AddItem(kMenuEdit, u"Edit Space…");
-  context_menu_model_->AddSubMenu(kMenuProfileBase, u"Profile",
-                                  profile_submenu_model_.get());
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   context_menu_model_->AddItem(kMenuDelete, u"Delete Space…");
 
@@ -691,18 +597,10 @@ void AvoraSpacesBarView::OnCreateSpaceCommitted(
           ? "Space " + std::to_string(space_manager_->GetSpaces().size() + 1)
           : fields.name;
 
-  // Give the Space its own browser identity so it gets an isolated cookie
-  // jar, rather than sharing the default one.  The very first Space stays on
-  // the default identity, which is what lets an existing install keep its
-  // current cookies and logins; SpaceManager applies that default when
-  // |profile_id| is empty.
-  std::string profile_id;
-  if (profile_store_ && !space_manager_->GetSpaces().empty()) {
-    profile_id = profile_store_->CreateProfile(name);
-  }
-
+  // SpaceManager mints the Space's identity as part of creating it, so the
+  // |profile_id| argument is left empty here.
   const std::string new_id = space_manager_->CreateSpace(
-      name, fields.icon, profile_id, fields.accent_color);
+      name, fields.icon, /*profile_id=*/std::string(), fields.accent_color);
 
   if (window_space_state_) {
     window_space_state_->SetActiveSpaceId(new_id);
@@ -736,7 +634,8 @@ void AvoraSpacesBarView::ConfirmDeleteSpace(const std::string& space_id) {
   const std::u16string body =
       u"Delete \"" + base::UTF8ToUTF16(space->name) +
       u"\"? Its favorites, pinned items, and sidebar tabs will be "
-      u"removed. Open browser tabs are not closed.";
+      u"removed, and the identity it browsed with is retired, so its "
+      u"sign-ins go with it. Open browser tabs are not closed.";
 
   auto dialog_model =
       ui::DialogModel::Builder(std::make_unique<ui::DialogModelDelegate>())
@@ -766,6 +665,7 @@ void AvoraSpacesBarView::DeleteSpace(const std::string& space_id) {
   avora::SidebarItemStore item_store(profile_->GetPrefs());
   item_store.RemoveItemsForSpace(space_id);
   RemovePinnedDataForSpace(profile_->GetPrefs(), space_id);
+  // RemoveSpace retires the Space's identity too; see SpaceManager.
 
   const avora::Space* active = GetActiveSpace();
   const bool was_active = active && active->id == space_id;

@@ -32,6 +32,11 @@ class SpaceManagerObserver : public base::CheckedObserver {
 // sidebar contents live in SidebarItemStore; its browser identity comes from
 // the BrowserProfile named by Space::profile_id.
 //
+// Spaces and identities are one-to-one, and this class is what keeps them so:
+// creating a Space mints its identity, deleting one retires it, and renaming
+// one renames it.  Only the first Space on an install is special -- it adopts
+// the default identity so a pre-Spaces install keeps its cookies and logins.
+//
 // Instances are cheap and stateless beyond a read cache: all state lives in
 // PrefService.  Any number of components may own their own SpaceManager for the
 // same profile and they will stay consistent, because each instance watches the
@@ -62,15 +67,24 @@ class SpaceManager {
   std::vector<Space> GetSpacesForProfile(const std::string& profile_id) const;
 
   // Creates a space and returns its id.  An empty |icon| or |accent_color|
-  // picks a default; an empty |profile_id| attaches the space to the default
-  // browser identity.
+  // picks a default.
+  //
+  // An empty |profile_id| -- the normal case -- mints a fresh identity for the
+  // space, so Spaces and identities stay one-to-one.  Passing an explicit
+  // |profile_id| is for restoring a space that already has one; it deliberately
+  // bypasses that invariant and no new identity is created.
   std::string CreateSpace(const std::string& name,
                           const std::string& icon = std::string(),
                           const std::string& profile_id = std::string(),
                           const std::string& accent_color = std::string());
 
-  // Removes a space.  The last remaining space cannot be removed.  Callers are
-  // responsible for clearing that space's sidebar items.
+  // Removes a space and, with it, the identity the space owned.  The last
+  // remaining space cannot be removed.  Callers are responsible for clearing
+  // that space's sidebar items.
+  //
+  // NOTE: this drops the identity's pref entry, not its on-disk
+  // StoragePartition.  Cookies already written to disk survive until that
+  // partition is cleared separately.
   void RemoveSpace(const std::string& id);
 
   void ActivateSpace(const std::string& id);
@@ -97,6 +111,9 @@ class SpaceManager {
 
   // Repoints a space at a different browser identity.  Existing tabs keep
   // their current partition until they are reloaded.
+  //
+  // Breaks the one-Space-one-identity invariant, so there is no UI for it:
+  // this exists for data repair and for tests.
   void SetSpaceProfile(const std::string& id, const std::string& profile_id);
 
   // Moves |id| to position |new_index| and renumbers the rest.
@@ -106,6 +123,32 @@ class SpaceManager {
   // Rewrites Spaces stored by older builds -- emoji icons, tab-group accent
   // colours -- into the current representation, once, at startup.
   void MigrateStoredSpaces();
+
+  // Repairs Spaces stored before the one-to-one rule, where several could
+  // share the default identity.  Walks Spaces in order: the first one needing
+  // an identity claims the default, keeping its existing cookies; every other
+  // Space with a missing, dangling, or already-claimed identity is given its
+  // own.  Idempotent, which matters because SpaceManager is constructed on
+  // paths as hot as opening a tab.
+  void BackfillSpaceIdentities();
+
+  // Mints the identity a new Space owns.  |is_first_space| adopts the default
+  // identity instead of creating one: its partition is Chromium's default, so
+  // an install upgrading from a pre-Spaces build keeps its cookies and logins.
+  std::string CreateIdentityForSpace(const std::string& name,
+                                     bool is_first_space);
+
+  // Keeps an owned identity's name in step with its Space's.  The default
+  // identity is left alone: it is also the fallback for Spaces whose identity
+  // has gone missing, so its name is not any one Space's to change.
+  void RenameIdentityForSpace(const std::string& profile_id,
+                              const std::string& new_name);
+
+  // Drops |profile_id| once no Space in |remaining| still points at it.  The
+  // emptiness check matters because Spaces written before the one-to-one rule
+  // could share an identity.
+  void ReleaseIdentity(const std::string& profile_id,
+                       const std::vector<Space>& remaining);
 
   void SaveSpaces(const std::vector<Space>& spaces);
   void RefreshCacheIfNeeded() const;

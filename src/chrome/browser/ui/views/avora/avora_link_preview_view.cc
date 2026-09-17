@@ -6,11 +6,9 @@
 
 #include "base/functional/bind.h"
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -132,25 +130,32 @@ AvoraLinkPreviewView::AvoraLinkPreviewView(
 }
 
 AvoraLinkPreviewView::~AvoraLinkPreviewView() {
-  if (owned_contents_) {
-    owned_contents_->SetDelegate(nullptr);
+  // The preview outlives this view whenever the window closes before its tabs
+  // do, so hand it back with no delegate rather than a dangling one.
+  if (attached_preview_) {
+    attached_preview_->SetDelegate(nullptr);
   }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-void AvoraLinkPreviewView::Show(const GURL& url) {
+void AvoraLinkPreviewView::AttachPreview(content::WebContents* host_tab,
+                                        content::WebContents* preview,
+                                        const GURL& url) {
+  if (!preview) {
+    return;
+  }
+  if (attached_preview_ == preview) {
+    return;
+  }
+  DetachPreview();
+
+  host_tab_ = host_tab ? host_tab->GetWeakPtr()
+                       : base::WeakPtr<content::WebContents>();
+  attached_preview_ = preview;
   previewed_url_ = url;
-
-  Profile* profile = browser_->GetProfile();
-  // Preview in the Space's own partition.  Without this the preview renders
-  // with the default identity's cookies, so a link previewed inside an
-  // isolated Space would load as the wrong account.
-  auto contents = content::WebContents::Create(content::WebContents::CreateParams(
-      profile, GetSiteInstanceForNewAvoraTab(browser_, url)));
-  contents->SetDelegate(this);
-
-  owned_contents_ = std::move(contents);
+  preview->SetDelegate(this);
+  content::WebContentsObserver::Observe(preview);
 
   // Make visible and lay out BEFORE attaching the WebContents so the WebView
   // already has its final size — a zero-sized viewport stalls the renderer.
@@ -161,48 +166,28 @@ void AvoraLinkPreviewView::Show(const GURL& url) {
   }
 
   if (web_view_) {
-    web_view_->SetWebContents(owned_contents_.get());
+    web_view_->SetWebContents(preview);
   }
-
-  // Start navigation after the WebContents is hosted in a sized view.
-  owned_contents_->GetController().LoadURL(
-      url, content::Referrer(), ui::PAGE_TRANSITION_LINK, std::string());
+  preview->WasShown();
 
   RequestFocus();
 }
 
-void AvoraLinkPreviewView::ShowWithContents(
-    std::unique_ptr<content::WebContents> contents,
-    const GURL& url) {
-  previewed_url_ = url;
-
-  contents->SetDelegate(this);
-  owned_contents_ = std::move(contents);
-
-  // Make visible and lay out BEFORE attaching the WebContents so the WebView
-  // already has its final size — a zero-sized viewport stalls the renderer.
-  SetVisible(true);
-  LayoutCard();
-  if (card_) {
-    card_->DeprecatedLayoutImmediately();
-  }
-
-  if (web_view_) {
-    web_view_->SetWebContents(owned_contents_.get());
-  }
-
-  RequestFocus();
-}
-
-void AvoraLinkPreviewView::Hide() {
+void AvoraLinkPreviewView::DetachPreview() {
   SetVisible(false);
   if (web_view_) {
     web_view_->SetWebContents(nullptr);
   }
-  if (owned_contents_) {
-    owned_contents_->SetDelegate(nullptr);
-    owned_contents_.reset();
+  if (attached_preview_) {
+    attached_preview_->SetDelegate(nullptr);
+    if (!attached_preview_->IsBeingDestroyed()) {
+      // Park it the way a background tab is parked: alive, but not painting.
+      attached_preview_->WasHidden();
+    }
   }
+  content::WebContentsObserver::Observe(nullptr);
+  attached_preview_ = nullptr;
+  host_tab_.reset();
   previewed_url_ = GURL();
 }
 
@@ -233,7 +218,6 @@ bool AvoraLinkPreviewView::OnMousePressed(const ui::MouseEvent& event) {
     gfx::Point point_in_card = event.location();
     views::View::ConvertPointToTarget(this, card_, &point_in_card);
     if (!card_->HitTestPoint(point_in_card)) {
-      Hide();
       if (dismiss_cb_) {
         dismiss_cb_.Run();
       }
@@ -245,7 +229,6 @@ bool AvoraLinkPreviewView::OnMousePressed(const ui::MouseEvent& event) {
 
 bool AvoraLinkPreviewView::OnKeyPressed(const ui::KeyEvent& event) {
   if (event.key_code() == ui::VKEY_ESCAPE) {
-    Hide();
     if (dismiss_cb_) {
       dismiss_cb_.Run();
     }
@@ -273,6 +256,15 @@ content::WebContents* AvoraLinkPreviewView::AddNewContents(
     open_cb_.Run(target_url);
   }
   return nullptr;
+}
+
+// ── WebContentsObserver ─────────────────────────────────────────────────────
+
+void AvoraLinkPreviewView::WebContentsDestroyed() {
+  // The host tab took the preview down with it.  Drop the pointer first so the
+  // detach path does not touch a half-destroyed WebContents.
+  attached_preview_ = nullptr;
+  DetachPreview();
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────
@@ -386,7 +378,6 @@ void AvoraLinkPreviewView::LayoutCard() {
 }
 
 void AvoraLinkPreviewView::OnCloseClicked() {
-  Hide();
   if (dismiss_cb_) {
     dismiss_cb_.Run();
   }
@@ -394,12 +385,11 @@ void AvoraLinkPreviewView::OnCloseClicked() {
 
 void AvoraLinkPreviewView::OnOpenInNewTabClicked() {
   GURL url = previewed_url_;
-  Hide();
-  if (open_cb_ && url.is_valid()) {
-    open_cb_.Run(url);
-  }
   if (dismiss_cb_) {
     dismiss_cb_.Run();
+  }
+  if (open_cb_ && url.is_valid()) {
+    open_cb_.Run(url);
   }
 }
 
