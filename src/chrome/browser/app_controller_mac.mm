@@ -290,6 +290,43 @@ void AttemptSessionRestore(Profile* profile) {
   LaunchBrowserStartup(profile);
 }
 
+// Opens a window for |profile|, continuing the previous session when this is
+// the first window since the last one was closed.
+//
+// On macOS the app outlives its windows, and SessionService does not commit the
+// close of the last one -- it parks the commands in |pending_window_close_ids_|
+// -- so the daily tabs the user just closed are still sitting in the session.
+// Upstream then declines to bring them back: SessionService::ShouldRestore()
+// bails out whenever app_controller_mac::IsOpeningNewWindow() is set, which
+// every Dock click and Cmd-N goes through, so reopening lands on an empty
+// window and those tabs are reachable only through history.  Avora treats
+// reopening the way it treats relaunching: the Space picks up where it left
+// off.  A window opened while another is already open is unaffected, since
+// SessionService only restores when no trackable browser remains.
+//
+// The restore has to be kicked off from outside the base::AutoReset that
+// CreateBrowser() holds, which is why this is not simply folded into it.
+//
+// Falls back to CreateBrowser() when there is no session to resume -- guest and
+// signed-out profiles, which have no SessionService to ask.
+void CreateBrowserOrRestoreSession(Profile* profile) {
+  if (!profile) {
+    return;
+  }
+
+  if (!profile->IsGuestSession() && !IsProfileSignedOut(profile->GetPath())) {
+    SessionService* sessionService =
+        SessionServiceFactory::GetForProfileForSessionRestore(profile);
+    if (sessionService &&
+        sessionService->RestoreIfNecessary(StartupTabs(),
+                                           /*restore_apps=*/false)) {
+      return;
+    }
+  }
+
+  CreateBrowser(profile);
+}
+
 // Record the location of the application bundle (containing the main framework)
 // from which Chromium was loaded. This is used by app mode shims to find
 // Chromium.
@@ -1749,7 +1786,10 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
       }
       [[fallthrough]];  // To create new window.
     case IDC_NEW_WINDOW:
-      CreateBrowser(profile->GetOriginalProfile());
+      // Avora: with nothing open, the previous session is still recoverable,
+      // so asking for a window resumes it rather than starting over.  See
+      // CreateBrowserOrRestoreSession().
+      CreateBrowserOrRestoreSession(profile->GetOriginalProfile());
       break;
     case IDC_FOCUS_LOCATION:
       chrome::ExecuteCommand(ActivateOrCreateBrowser(profile),
@@ -1912,13 +1952,11 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   } else {
     // Asynchronously load profile first if needed.
     // TODO(crbug.com/40261514): Replace CreateBrowser by LaunchBrowserStartup
+    //
+    // Avora: reopening from the Dock resumes the session rather than opening
+    // an empty window.  See CreateBrowserOrRestoreSession().
     app_controller_mac::RunInLastProfileSafely(
-        base::BindOnce([](Profile* profile) {
-          if (!profile) {
-            return;
-          }
-          CreateBrowser(profile);
-        }),
+        base::BindOnce(&CreateBrowserOrRestoreSession),
         app_controller_mac::kShowProfilePickerOnFailure);
   }
 

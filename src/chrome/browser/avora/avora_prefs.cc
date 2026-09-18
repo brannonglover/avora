@@ -36,6 +36,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(kTodayTabExpiryHoursPref,
                                 kDefaultTodayTabExpiryHours);
   registry->RegisterBooleanPref(kImportOfferedPref, false);
+  registry->RegisterTimePref(kLastCrashRestorePref, base::Time());
 }
 
 base::TimeDelta GetTodayTabExpiry(PrefService* pref_service) {

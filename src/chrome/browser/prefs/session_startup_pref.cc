@@ -63,11 +63,17 @@ void SessionStartupPref::RegisterProfilePrefs(
 
 // static
 SessionStartupPref::Type SessionStartupPref::GetDefaultStartupType() {
-#if BUILDFLAG(IS_CHROMEOS)
+  // Avora: always continue where the user left off.  A Space's daily tabs are
+  // the user's working state -- what they have open is the point, not a
+  // browsing history they are done with -- so dropping them on the floor at
+  // every launch, which is what upstream's DEFAULT (a lone New Tab Page) does
+  // on desktop, would empty out every Space on the first restart.
+  //
+  // This is only the registered default, so a user who deliberately picks a
+  // different "On startup" setting, or a policy that sets RestoreOnStartup,
+  // still wins.  First run is also unaffected: DetermineStartupPref() forces
+  // DEFAULT there, where there is no session to restore anyway.
   return SessionStartupPref::LAST;
-#else
-  return SessionStartupPref::DEFAULT;
-#endif
 }
 
 // static

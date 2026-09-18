@@ -35,6 +35,7 @@ source_set("sessions") {
     public += [
       "app_session_service.h",
       "app_session_service_factory.h",
+      "avora_crash_restore.h",
       "exit_type_service.h",
       "exit_type_service_factory.h",
       "session_data_deleter.h",
@@ -106,6 +107,7 @@ source_set("impl") {
     sources += [
       "app_session_service.cc",
       "app_session_service_factory.cc",
+      "avora_crash_restore.cc",
       "exit_type_service.cc",
       "exit_type_service_factory.cc",
       "session_data_deleter.cc",
