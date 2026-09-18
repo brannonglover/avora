@@ -4,6 +4,7 @@
 
 #include <memory>
 
+#include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space_manager.h"
@@ -44,8 +45,11 @@ class AvoraPinnedItemMaterializerTest : public ::testing::Test {
     SpaceManager::RegisterProfilePrefs(pinned_prefs_.registry());
     SidebarItemStore::RegisterProfilePrefs(pinned_prefs_.registry());
     PinnedItemsManager::RegisterProfilePrefs(pinned_prefs_.registry());
+    PinnedFoldersManager::RegisterProfilePrefs(pinned_prefs_.registry());
     pinned_items_manager_ =
         std::make_unique<PinnedItemsManager>(&pinned_prefs_);
+    pinned_folders_manager_ =
+        std::make_unique<PinnedFoldersManager>(&pinned_prefs_);
   }
 
   void TearDown() override {
@@ -75,6 +79,7 @@ class AvoraPinnedItemMaterializerTest : public ::testing::Test {
 
   TestingPrefServiceSimple pinned_prefs_;
   std::unique_ptr<PinnedItemsManager> pinned_items_manager_;
+  std::unique_ptr<PinnedFoldersManager> pinned_folders_manager_;
 };
 
 // ── Single-window resolution ─────────────────────────────────────────────────
@@ -319,7 +324,8 @@ TEST_F(AvoraPinnedItemMaterializerTest,
   const int index = window_a_->GetIndexOfWebContents(raw);
   ASSERT_TRUE(window_a_->IsTabPinned(index));
 
-  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
 
   EXPECT_FALSE(window_a_->IsTabPinned(window_a_->GetIndexOfWebContents(raw)));
   EXPECT_FALSE(IsPinnedItemTab(raw));
@@ -341,7 +347,8 @@ TEST_F(AvoraPinnedItemMaterializerTest,
   MarkPinnedItemTab(raw, item_id);
   ASSERT_FALSE(window_a_->IsTabPinned(window_a_->GetIndexOfWebContents(raw)));
 
-  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
 
   EXPECT_FALSE(IsPinnedItemTab(raw));
   EXPECT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
@@ -358,7 +365,8 @@ TEST_F(AvoraPinnedItemMaterializerTest,
   const int index = window_a_->GetIndexOfWebContents(raw);
   window_a_->SetTabPinned(index, true);
 
-  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
 
   EXPECT_FALSE(window_a_->IsTabPinned(window_a_->GetIndexOfWebContents(raw)));
   EXPECT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
@@ -369,7 +377,8 @@ TEST_F(AvoraPinnedItemMaterializerTest, UnpinOfUntouchedTabIsNoOp) {
   content::WebContents* raw = contents.get();
   window_a_->AppendWebContents(std::move(contents), true);
 
-  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
 
   EXPECT_NE(window_a_->GetIndexOfWebContents(raw), TabStripModel::kNoTab);
   EXPECT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
@@ -387,7 +396,8 @@ TEST_F(AvoraPinnedItemMaterializerTest, RepinAfterUnpinCreatesFreshRecord) {
 
   PinAndCreatePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
   const std::string first_id = GetPinnedItemIdForTab(raw);
-  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
   ASSERT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
 
   PinAndCreatePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
@@ -417,6 +427,95 @@ TEST_F(AvoraPinnedItemMaterializerTest,
   EXPECT_EQ(window_b_->count(), window_b_count_before);
   EXPECT_FALSE(window_b_->GetWebContentsAt(0) &&
               IsPinnedItemTab(window_b_->GetWebContentsAt(0)));
+}
+
+// ── Phase 3: folder integration ─────────────────────────────────────────────
+
+TEST_F(AvoraPinnedItemMaterializerTest,
+      UnpinningFolderMemberRemovesMembershipNoDanglingId) {
+  const std::string folder_id = pinned_folders_manager_->AddFolder("Dev");
+
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://example.com/"));
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinAndCreatePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+  const std::string item_id = GetPinnedItemIdForTab(raw);
+  pinned_folders_manager_->MoveItemToFolder(item_id, folder_id);
+  ASSERT_EQ(pinned_folders_manager_->GetFolderIdForItem(item_id), folder_id);
+
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
+
+  EXPECT_FALSE(IsPinnedItemTab(raw));
+  EXPECT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
+  // No dangling id: the folder no longer references the (now-nonexistent)
+  // item at all.
+  bool found = false;
+  for (const auto& folder : pinned_folders_manager_->GetFolders()) {
+    if (folder.id == folder_id) {
+      EXPECT_THAT(folder.ordered_item_ids, testing::IsEmpty());
+      found = true;
+    }
+  }
+  EXPECT_TRUE(found);
+  // The live page stays open.
+  EXPECT_NE(window_a_->GetIndexOfWebContents(raw), TabStripModel::kNoTab);
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest,
+      UnpinWithNullFoldersManagerStillRemovesItemAndMarker) {
+  // A call site with no PinnedFoldersManager in scope (the parameter is
+  // documented as nullable) must still fully unpin -- it just skips the
+  // folder-membership scrub.
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://example.com/"));
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinAndCreatePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw);
+
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           /*pinned_folders_manager=*/nullptr, raw);
+
+  EXPECT_FALSE(IsPinnedItemTab(raw));
+  EXPECT_THAT(pinned_items_manager_->GetPinnedItems(), IsEmpty());
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest,
+      FolderOrganizationChangeNeverTouchesOtherWindowsLiveTabs) {
+  // Window A materializes an item, files it into a folder, then reorganizes
+  // it -- none of that is a TabStripModel operation, so it must be
+  // impossible for it to affect window B's independent tabs, materialized
+  // or not.
+  const std::string folder_id = pinned_folders_manager_->AddFolder("Dev");
+
+  auto contents_a = CreateWebContents();
+  content::WebContents* raw_a = contents_a.get();
+  content::WebContentsTester::For(raw_a)->NavigateAndCommit(
+      GURL("https://example.com/"));
+  window_a_->AppendWebContents(std::move(contents_a), true);
+  PinAndCreatePinnedItem(window_a_.get(), pinned_items_manager_.get(), raw_a);
+  const std::string item_id = GetPinnedItemIdForTab(raw_a);
+
+  // Window B has its own, unrelated live tab.
+  window_b_->AppendWebContents(CreateWebContents(), true);
+  const int window_b_count_before = window_b_->count();
+
+  pinned_folders_manager_->MoveItemToFolder(item_id, folder_id);
+  pinned_folders_manager_->ReorderItemInFolder(folder_id, item_id, 0);
+  pinned_folders_manager_->RenameFolder(folder_id, "Renamed");
+  pinned_folders_manager_->RemoveFolder(folder_id);  // Promotes item back.
+
+  // Window B: untouched throughout.
+  EXPECT_EQ(window_b_->count(), window_b_count_before);
+  EXPECT_FALSE(window_b_->GetWebContentsAt(0) &&
+              IsPinnedItemTab(window_b_->GetWebContentsAt(0)));
+  // Window A's own materialized tab: still the same, still live, never
+  // recreated/closed/navigated by any of the organizational changes above.
+  EXPECT_EQ(window_a_->GetIndexOfWebContents(raw_a), 0);
+  EXPECT_EQ(GetPinnedItemIdForTab(raw_a), item_id);
 }
 
 }  // namespace

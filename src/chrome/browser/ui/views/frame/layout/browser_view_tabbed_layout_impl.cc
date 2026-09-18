@@ -1402,6 +1402,20 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
                     views().avora_link_preview->GetVisible());
   }
 
+  // Avora: confirmation toast sits in the upper-right of the content area.
+  // The toast reserves space around its card for the drop shadow, so the gap
+  // from the content edges is this margin plus that reserved space.
+  if (views().avora_toast &&
+      IsParentedTo(views().avora_toast, views().browser_view)) {
+    constexpr int kToastMargin = 2;
+    const gfx::Size toast_size = views().avora_toast->GetPreferredSize();
+    gfx::Rect toast_bounds(
+        content_right - kToastMargin - toast_size.width(),
+        content_y + kToastMargin, toast_size.width(), toast_size.height());
+    layout.AddChild(views().avora_toast, toast_bounds,
+                    views().avora_toast->GetVisible());
+  }
+
   return layout;
 }
 

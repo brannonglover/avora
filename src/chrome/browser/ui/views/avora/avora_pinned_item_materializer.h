@@ -13,6 +13,7 @@ class WebContents;
 
 namespace avora {
 
+class PinnedFoldersManager;
 class PinnedItemsManager;
 
 // Returns the index of a live tab in |tab_strip| that already materializes
@@ -49,14 +50,19 @@ void PinAndCreatePinnedItem(TabStripModel* tab_strip,
 
 // The inverse: unpins |contents| in |tab_strip| if pinned there, and
 // independently removes any kPinned persistence it carries -- the
-// SidebarItemStore record via |pinned_items_manager| and the WebContents
-// marker -- so an unpinned item does not silently return after a restart.
-// The two halves are independent because a tab can carry either, both, or
-// (after this call) neither. Never closes or navigates |contents|: the live
-// page stays open as an ordinary tab, which is the whole point of Pinned
-// being persistence-backed rather than a property of the tab itself.
+// SidebarItemStore record via |pinned_items_manager|, its membership in
+// whatever folder (if any) via |pinned_folders_manager|, and the WebContents
+// marker -- so an unpinned item does not silently return after a restart and
+// never leaves a dangling id behind in a folder. |pinned_folders_manager|
+// may be null (e.g. a call site with no folder concept in scope); the
+// folder-membership scrub is simply skipped in that case. The other halves
+// are independent because a tab can carry either, both, or (after this
+// call) neither. Never closes or navigates |contents|: the live page stays
+// open as an ordinary tab, which is the whole point of Pinned being
+// persistence-backed rather than a property of the tab itself.
 void UnpinAndRemovePinnedItem(TabStripModel* tab_strip,
                               PinnedItemsManager* pinned_items_manager,
+                              PinnedFoldersManager* pinned_folders_manager,
                               content::WebContents* contents);
 
 }  // namespace avora

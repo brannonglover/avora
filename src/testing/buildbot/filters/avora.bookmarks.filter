@@ -1,0 +1,45 @@
+# Avora: bookmark-feature test suites.
+#
+# Avora disables bookmarks browser-wide via
+# browser_defaults::bookmarks_enabled = false (chrome/browser/defaults.cc).
+# The suites below exist to test that feature -- the bookmark bar, the
+# bookmark bubble and editor, the star, the bookmark menu delegate.  With the
+# feature off they have nothing to exercise.
+#
+# These are excluded rather than rewritten on purpose.  Editing ~40 upstream
+# tests to assert "disabled" would delete upstream's coverage and create a
+# merge conflict in every one of them on each Chromium roll; excluding them
+# leaves the files untouched, so a roll applies cleanly and the suites come
+# back for free if bookmarks are ever re-enabled.
+#
+# Tests broken by the same flag but NOT about bookmarks are fixed in place
+# instead -- see BrowserViewTest (fullscreen), ToolbarViewTest (focus cycling)
+# and BrowserCommandControllerBrowserTest.BookmarkCommandsAreDisabled, which
+# now guards the kill switch itself.
+#
+# Usage:
+#   browser_tests --test-launcher-filter-file=\
+#       ../../testing/buildbot/filters/avora.bookmarks.filter
+
+-BookmarkAccountStorageMoveDialogInteractiveTest.*
+-BookmarkAccountStorageMoveDialogPixelTest.*
+-BookmarkBarDragAndDropInteractiveTest.*
+-BookmarkBarNavigationTest.*
+-BookmarkBarSimplifiedIPHInteractiveTest.*
+-BookmarkBarTest.*
+-BookmarkBrowsertest.*
+-BookmarkBubbleViewInteractiveTest.*
+-BookmarkBubbleViewIPHInteractiveTest.*
+-BookmarkBubbleViewMigrationBrowserTest.*
+-BookmarkBubbleViewShoppingCollectionBrowserTest.*
+-BookmarkBubbleViewWithAccountBookmarksBrowserTest.*
+-BookmarkEditorViewBrowserTest.*
+-BookmarkEditorViewBrowserTestMoveDialog.*
+-BookmarkEditorViewBrowserTestWithAccountBookmarks.*
+-BookmarkMenuDelegateTest.*
+-BookmarkPrerenderBrowsertest.*
+-PowerBookmarkBubbleViewBrowserTest.*
+-PrerenderBookmarkBarDisabledNavigationTest.*
+-PrerenderBookmarkBarOnPressedNavigationTest.*
+-PriceTrackingViewFeatureFlagBrowserTest.*
+-SingleBookmarkUploadDialogPixelTest.*

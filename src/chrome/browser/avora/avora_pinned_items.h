@@ -4,6 +4,7 @@
 #define CHROME_BROWSER_AVORA_AVORA_PINNED_ITEMS_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -86,6 +87,11 @@ class PinnedItemsManager : public SidebarItemStore::Observer,
   // The persisted navigation target for |id|, or empty if it is gone.
   std::string GetPinnedItemUrlById(const std::string& id) const;
 
+  // The full entry for |id| in the active Space, or nullopt if it is gone.
+  // Used by folder rendering (PinnedFoldersManager only stores item ids, not
+  // url/title -- the item itself is the single source of truth for those).
+  std::optional<PinnedItemEntry> GetPinnedItemById(const std::string& id) const;
+
   // Returns the new item's id, or empty if |url| is already pinned in the
   // active Space.
   std::string AddPinnedItem(const std::string& url, const std::string& title);
@@ -99,6 +105,13 @@ class PinnedItemsManager : public SidebarItemStore::Observer,
 
   void RemovePinnedItem(const std::string& id);
   void MovePinnedItem(int from_index, int to_index);
+
+  // Assigns order by position for every id listed, in the active Space --
+  // e.g. PinnedFoldersManager::RemoveFolder() uses this to append a
+  // deleted folder's members, in their prior relative order, after the
+  // Space's existing top-level items. Unknown ids are ignored; items not
+  // listed keep their current order.
+  void ReorderAllItems(const std::vector<std::string>& ordered_ids);
 
   // Reassigns a pinned item to a different Space without touching any live
   // tab materialized from it.

@@ -2,6 +2,10 @@ import("//build/config/ui.gni")
 
 source_set("avora") {
   sources = [
+    "avora_downloads_button.cc",
+    "avora_downloads_button.h",
+    "avora_downloads_panel_view.cc",
+    "avora_downloads_panel_view.h",
     "avora_favorite_tab_marker.cc",
     "avora_favorite_tab_marker.h",
     "avora_favorites_view.cc",
@@ -40,6 +44,8 @@ source_set("avora") {
     "avora_space_label_view.h",
     "avora_spaces_bar_view.cc",
     "avora_spaces_bar_view.h",
+    "avora_toast_view.cc",
+    "avora_toast_view.h",
   ]
 
   deps = [
@@ -49,6 +55,7 @@ source_set("avora") {
     "//chrome/browser/favicon",
     "//chrome/browser/profiles:profile",
     "//components/constrained_window",
+    "//components/download/public/common:public",
     "//components/prefs",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/color:color_headers",

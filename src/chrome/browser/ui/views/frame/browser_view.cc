@@ -122,6 +122,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
+#include "chrome/browser/ui/tab_helpers.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
@@ -192,6 +193,7 @@
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+#include "chrome/browser/ui/views/avora/avora_toast_view.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
@@ -209,6 +211,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/url_formatter/url_formatter.h"
+#include "components/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"
 #include "chrome/browser/ui/views/global_media_controls/media_toolbar_button_view.h"
@@ -1110,6 +1113,7 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
     // Observe Space changes so we can persist the active Space to session data.
     avora_window_space_state_->AddObserver(this);
 
+    avora_spaces_bar_->SetBrowser(browser_.get());
     avora_spaces_bar_->SetWindowSpaceState(avora_window_space_state_.get());
 
     std::vector<views::View*> gesture_regions;
@@ -1143,6 +1147,10 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
                                 base::Unretained(this)),
             base::BindRepeating(&BrowserView::HideAvoraLinkPreview,
                                 base::Unretained(this))));
+
+    // Confirmation toast (upper-right of the content area).  Created hidden;
+    // it shows itself for a couple of seconds when a command asks it to.
+    avora_toast_ = AddChildView(std::make_unique<avora::AvoraToastView>());
 
     vertical_tab_strip_top_corner_ =
         AddChildView(std::make_unique<CustomFloatingCorner>(
@@ -4832,6 +4840,20 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
       }
     }
 
+    // The Space bar sits below the tabstrip, whose bounds are inset to make
+    // room for it, so it matches none of the tests above and would otherwise
+    // fall through to HTCAPTION -- which silently swallows every press on its
+    // buttons while still delivering hover.
+    if (avora_spaces_bar_ && avora_spaces_bar_->GetVisible()) {
+      gfx::Point test_point(point);
+      if (ConvertedHitTest(parent(), avora_spaces_bar_, &test_point)) {
+        if (avora_spaces_bar_->IsPositionInWindowCaption(test_point)) {
+          return HTCAPTION;
+        }
+        return HTCLIENT;
+      }
+    }
+
     if (vertical_tab_strip_region_view_ &&
         vertical_tab_strip_region_view_->GetVisible()) {
       gfx::Point test_point(point);
@@ -4939,6 +4961,19 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
     gfx::Point test_point(point);
     if (ConvertedHitTest(parent(), avora_sidebar_header_, &test_point)) {
       if (avora_sidebar_header_->IsPositionInWindowCaption(test_point)) {
+        return HTNOWHERE;
+      }
+      return HTCLIENT;
+    }
+  }
+
+  // Same as in the immersive path above: the Space bar is its own sibling of
+  // the tabstrip region and has to be hit-tested explicitly, or every press
+  // over it becomes a window drag.
+  if (avora_spaces_bar_ && avora_spaces_bar_->GetVisible()) {
+    gfx::Point test_point(point);
+    if (ConvertedHitTest(parent(), avora_spaces_bar_, &test_point)) {
+      if (avora_spaces_bar_->IsPositionInWindowCaption(test_point)) {
         return HTNOWHERE;
       }
       return HTCLIENT;
@@ -5362,6 +5397,7 @@ void BrowserView::AddedToWidget() {
   layout_views.avora_spaces_bar = avora_spaces_bar_;
   layout_views.avora_quick_nav = avora_quick_nav_;
   layout_views.avora_link_preview = avora_link_preview_;
+  layout_views.avora_toast = avora_toast_;
   // LINT.ThenChange(//chrome/browser/ui/views/frame/layout/browser_view_layout.h:BrowserViewLayoutViews)
 
   SetLayoutManager(BrowserViewLayout::CreateLayout(
@@ -6574,6 +6610,21 @@ void BrowserView::NavigateAvoraAddressBar(const std::u16string& text,
   Navigate(&params);
 }
 
+void BrowserView::ShowAvoraToast(const std::u16string& message) {
+  if (!avora_toast_) {
+    return;
+  }
+
+  avora_toast_->Show(message, vector_icons::kLinkIcon);
+
+  // Keep the toast above the content and the overlays it may be shown over.
+  ReorderChildView(avora_toast_, children().size());
+
+  // Give it its authoritative bounds now, so it never paints a frame at a
+  // stale position.
+  DeprecatedLayoutImmediately();
+}
+
 void BrowserView::ShowAvoraQuickNav() {
   if (!avora_quick_nav_) {
     return;
@@ -6644,6 +6695,28 @@ void BrowserView::HideAvoraQuickNav() {
   avora_quick_nav_->Hide();
 }
 
+// A link preview hosts an ordinary page, but its WebContents never enters a
+// TabStripModel, so none of Chromium's usual adoption points (tabs::TabModel,
+// BrowserTabStripModelDelegate) ever run for it. Attaching the tab helpers by
+// hand is what gives the preview a session tab ID and a
+// ChromeExtensionWebContentsObserver -- without the latter,
+// ChromeContentBrowserClient silently skips binding mojom::LocalFrameHost for
+// the preview's frames, so extension content scripts load but can never call
+// back into the browser process.
+//
+// This class exists solely to hold the friendship declared in tab_helpers.h;
+// it keeps that private API reachable from exactly one place rather than from
+// all of BrowserView.
+class AvoraLinkPreviewTabHelperAttacher {
+ public:
+  // Safe to call on contents that were already adopted -- AttachTabHelpers is
+  // idempotent -- which matters for the window.open path, where the contents
+  // arrives from the renderer in an unknown state.
+  static void Attach(content::WebContents* preview) {
+    TabHelpers::AttachTabHelpers(preview);
+  }
+};
+
 void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
   content::WebContents* host_tab = GetActiveWebContents();
   if (!avora_link_preview_ || !host_tab || !url.is_valid()) {
@@ -6655,6 +6728,9 @@ void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
     return;
   }
   content::WebContents* preview = contents.get();
+  // Before the first navigation, so the helpers observe the load from the
+  // start rather than joining a page that is already committed.
+  AvoraLinkPreviewTabHelperAttacher::Attach(preview);
   avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
   UpdateAvoraLinkPreviewForActiveTab();
 
@@ -6680,6 +6756,7 @@ void BrowserView::ShowAvoraLinkPreviewWithContents(
   if (!host_tab) {
     return;
   }
+  AvoraLinkPreviewTabHelperAttacher::Attach(contents.get());
   avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
   UpdateAvoraLinkPreviewForActiveTab();
 }

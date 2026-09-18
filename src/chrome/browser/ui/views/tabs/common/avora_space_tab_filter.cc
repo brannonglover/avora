@@ -8,6 +8,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_prefs.h"
 #include "chrome/browser/avora/avora_tab_guid.h"
@@ -17,6 +18,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -198,6 +200,14 @@ void AvoraSpaceTabFilter::OnTabChangedAt(tabs::TabInterface* tab,
     return;
   }
 
+  // A "Move to Space" elsewhere in the UI arrives here, as a retag of the
+  // tab's WebContents announced through this notification.
+  if (AdoptRetaggedTab(tab)) {
+    SyncTabsToStore();
+    ApplyVisibility();
+    return;
+  }
+
   const tabs::TabHandle handle = tab->GetHandle();
   const bool untagged = tab_space_.find(handle) == tab_space_.end();
   content::WebContents* contents = tab->GetContents();
@@ -209,6 +219,61 @@ void AvoraSpaceTabFilter::OnTabChangedAt(tabs::TabInterface* tab,
 
   ResolvePendingTabAssignments(/*sync_store=*/true);
   ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::OnTabPinnedStateChanged(tabs::TabInterface* tab,
+                                                  int /*index*/) {
+  if (applying_ || !tab) {
+    return;
+  }
+  content::WebContents* contents = tab->GetContents();
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  PrefService* prefs = profile ? profile->GetPrefs() : nullptr;
+  if (!contents || !prefs) {
+    return;
+  }
+
+  const auto space_it = tab_space_.find(tab->GetHandle());
+  const std::string space_id =
+      space_it != tab_space_.end() ? space_it->second : current_space_id_;
+  if (space_id.empty()) {
+    return;
+  }
+
+  // Cheap, self-syncing facades over the same prefs every other manager
+  // writes to -- the same pattern BackfillNativePinnedTabs() uses, and for
+  // the same reason: nothing here needs to outlive this call.
+  PinnedItemsManager items_manager(prefs);
+  items_manager.SetWindowActiveSpaceId(space_id);
+
+  // A null TabStripModel throughout: the native pinned bit is what got us
+  // here, so only the persistence half is owed, and calling SetTabPinned()
+  // back into the model from inside its own notification is not safe.
+  if (tab->IsPinned()) {
+    if (!IsUsableTabUrl(UrlForTab(tab))) {
+      return;
+    }
+    PinAndCreatePinnedItem(/*tab_strip=*/nullptr, &items_manager, contents);
+    return;
+  }
+
+  PinnedFoldersManager folders_manager(prefs);
+  folders_manager.SetWindowActiveSpaceId(space_id);
+
+  if (GetPinnedItemIdForTab(contents).empty()) {
+    // Unpinning a tab that carries no marker -- one pinned before this hook
+    // existed, or restored without AdoptPinnedItemTabs() reaching it.  The
+    // persisted item it stands for still has to go, or the pin the user
+    // just removed silently returns on the next restart.
+    const std::string item_id =
+        items_manager.GetPinnedItemIdForUrl(UrlForTab(tab).spec());
+    if (item_id.empty()) {
+      return;
+    }
+    MarkPinnedItemTab(contents, item_id);
+  }
+  UnpinAndRemovePinnedItem(/*tab_strip=*/nullptr, &items_manager,
+                           &folders_manager, contents);
 }
 
 void AvoraSpaceTabFilter::OnActiveSpaceChanged(const std::string& space_id) {
@@ -977,6 +1042,60 @@ void AvoraSpaceTabFilter::AdoptUntaggedTabs() {
     SetTabSpaceId(tab->GetContents(), current_space_id_);
     GetOrCreateTabGuid(tab->GetContents());
   }
+}
+
+bool AvoraSpaceTabFilter::AdoptRetaggedTab(tabs::TabInterface* tab) {
+  content::WebContents* contents = tab->GetContents();
+  if (!contents) {
+    return false;
+  }
+
+  // An empty tag means "not assigned yet", which is AdoptUntaggedTabs()'
+  // business, not a move.
+  const std::string tagged = GetTabSpaceId(contents);
+  if (tagged.empty()) {
+    return false;
+  }
+
+  const tabs::TabHandle handle = tab->GetHandle();
+  const auto it = tab_space_.find(handle);
+  if (it == tab_space_.end() || it->second == tagged) {
+    return false;
+  }
+  const std::string previous = it->second;
+  it->second = tagged;
+
+  // A pinned tab's persisted kPinned item has to travel with it, or the Space
+  // it left resurrects the item as a tab-less row on the next launch and the
+  // Space it joined has a pinned tab backed by nothing.  Doing it here rather
+  // than at each menu is what lets those call sites express a move as a retag
+  // and nothing more.
+  if (Profile* profile = browser_ ? browser_->GetProfile() : nullptr) {
+    const std::string item_id = GetPinnedItemIdForTab(contents);
+    if (!item_id.empty()) {
+      MovePinnedItemToSpace(profile->GetPrefs(), item_id, previous, tagged);
+    }
+  }
+
+  if (tagged == current_space_id_) {
+    return true;
+  }
+
+  // The tab just left the Space this window is showing.  Drop it as that
+  // Space's remembered tab, and if it is the one on screen, hand focus to a
+  // tab that still belongs here -- otherwise the content area would keep
+  // rendering a page whose row the strip is about to hide.
+  const auto remembered = last_active_tab_.find(current_space_id_);
+  if (remembered != last_active_tab_.end() && remembered->second == handle) {
+    last_active_tab_.erase(remembered);
+  }
+
+  TabStripModel* model = GetModel();
+  const int index = model ? model->GetIndexOfTab(tab) : -1;
+  if (index >= 0 && index == model->active_index()) {
+    RestoreActiveTabFor(current_space_id_);
+  }
+  return true;
 }
 
 void AvoraSpaceTabFilter::PruneClosedTabs() {

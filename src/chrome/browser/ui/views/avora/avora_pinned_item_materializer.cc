@@ -3,6 +3,7 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -70,6 +71,7 @@ void PinAndCreatePinnedItem(TabStripModel* tab_strip,
 
 void UnpinAndRemovePinnedItem(TabStripModel* tab_strip,
                               PinnedItemsManager* pinned_items_manager,
+                              PinnedFoldersManager* pinned_folders_manager,
                               content::WebContents* contents) {
   if (!contents) {
     return;
@@ -82,15 +84,20 @@ void UnpinAndRemovePinnedItem(TabStripModel* tab_strip,
     }
   }
 
-  if (!pinned_items_manager) {
-    return;
-  }
-
   const std::string item_id = GetPinnedItemIdForTab(contents);
   if (item_id.empty()) {
     return;
   }
-  pinned_items_manager->RemovePinnedItem(item_id);
+
+  // Scrub folder membership before removing the record itself, so there is
+  // never a window (even a transient in-memory one) where a folder
+  // references an id that no longer resolves to anything.
+  if (pinned_folders_manager) {
+    pinned_folders_manager->RemoveItemFromAllFolders(item_id);
+  }
+  if (pinned_items_manager) {
+    pinned_items_manager->RemovePinnedItem(item_id);
+  }
   UnmarkPinnedItemTab(contents);
 }
 

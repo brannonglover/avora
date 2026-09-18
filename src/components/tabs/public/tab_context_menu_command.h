@@ -40,6 +40,11 @@ enum TabContextMenuCommand {
   CommandGlicUnshare,
   // Avora: toggle favorite state for the tab.
   CommandToggleFavorited,
+  // Avora: parent of the "Move Tab to Space" submenu.  Never executed --
+  // the submenu owns its own command range and delegate -- but the parent
+  // model still queries the enabled/visible state of the submenu's own item
+  // through this id.
+  CommandMoveToSpace,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/histograms.xml:TabContextMenuCommand)
 

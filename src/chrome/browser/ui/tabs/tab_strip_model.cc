@@ -2691,6 +2691,10 @@ bool TabStripModel::IsContextMenuCommandEnabled(
     // Avora: favorite toggle is always enabled.
     case CommandToggleFavorited:
       return true;
+
+    // Avora: the submenu parent is only ever queried, never executed.
+    case CommandMoveToSpace:
+      return true;
   }
   SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
   NOTREACHED() << "Unsupported command: " << command_id;
@@ -3121,6 +3125,11 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       }
       break;
     }
+    case CommandMoveToSpace:
+      // Avora: nothing to do -- AvoraMoveToSpaceSubMenuModel is its own
+      // delegate and handles the Space rows itself; this id only ever names
+      // the submenu's parent item.
+      break;
     case CommandAddToNewGroupFromMenuItem: {
       base::UmaHistogramCounts1000(
           "Tab.ContextMenu.AddToNewGroupFromMenuItem.SelectedTabsCount",

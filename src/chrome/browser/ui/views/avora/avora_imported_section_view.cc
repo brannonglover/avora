@@ -601,23 +601,11 @@ void AvoraImportedSectionView::Rebuild() {
                        : store_->GetSourcesForSpace(space_id);
 
   if (sources.empty()) {
-    // Show a minimal "Import Bookmarks" link row so the user can
-    // discover the import feature even before any data exists.
-    auto* import_row = AddChildView(std::make_unique<ImportedLinkRow>(
-        /*source_id=*/std::string(), /*item_id=*/std::string(),
-        /*url=*/std::string(), "Import Bookmarks\u2026", /*depth=*/0,
-        base::BindRepeating(
-            [](base::WeakPtr<AvoraImportedSectionView> self,
-               const std::string&, bool) {
-              if (self) self->OnImportClicked();
-            },
-            weak_factory_.GetWeakPtr()),
-        ImportedLinkRow::ContextCallback()));
-
-    // Override the favicon with a "+" indicator.  The row will not
-    // attempt favicon loading because the URL is empty.
-    (void)import_row;
-
+    // Nothing imported into this Space: the section collapses to nothing
+    // rather than parking a permanent "Import Bookmarks..." row directly
+    // under the pinned tabs.  Import stays reachable from the pinned
+    // section's context menu (avora_pinned_section_view.cc) and from the
+    // first-run offer.
     InvalidateLayout();
     return;
   }

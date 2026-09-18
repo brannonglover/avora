@@ -21,6 +21,7 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/view.h"
 
+class BrowserWindowInterface;
 class Profile;
 
 namespace avora {
@@ -71,10 +72,21 @@ class AvoraSpacesBarView : public views::View,
   // BrowserProfileStore for |profile| and rebuilds itself automatically.
   void ConnectToProfile(Profile* profile);
 
+  // The window this bar belongs to.  The downloads button needs it to open
+  // the full download history; set it before or shortly after AddedToWidget().
+  void SetBrowser(BrowserWindowInterface* browser);
+
   // Attach this bar to a per-window active-Space holder.  Once set, space
   // clicks and gesture switches operate on this window's state instead of
   // the global pref.  Must be called before or shortly after AddedToWidget().
   void SetWindowSpaceState(avora::WindowSpaceState* state);
+
+  // True when |point| (in this view's coordinates) is over the bar's own
+  // background rather than one of its buttons.  The window frame asks this so
+  // the empty stretch of the bar still drags the window while the buttons
+  // stay clickable.  Without it every press over the bar is treated as a
+  // title-bar drag and no button in the bar can ever be clicked.
+  bool IsPositionInWindowCaption(const gfx::Point& point) const;
 
   // views::View:
   void AddedToWidget() override;
@@ -97,6 +109,12 @@ class AvoraSpacesBarView : public views::View,
   void OnSpaceClicked(const std::string& id);
   void OnSpaceContextMenu(const std::string& id, const gfx::Point& screen_point);
   void OnCreateSpaceClicked();
+
+  // The "+" menu: what a new thing in this window can be.  Creating a Space
+  // is handled here; a folder is handed to the pinned section, which owns
+  // folders for the active Space.
+  void ShowCreateMenu();
+  void CreatePinnedFolder();
 
   void ShowSpaceContextMenu(const std::string& space_id,
                             const gfx::Point& screen_point);
@@ -123,6 +141,7 @@ class AvoraSpacesBarView : public views::View,
   std::vector<SpaceInfo> legacy_spaces_;
 
   raw_ptr<Profile> profile_ = nullptr;
+  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   std::unique_ptr<avora::SpaceManager> space_manager_;
   std::unique_ptr<avora::BrowserProfileStore> profile_store_;
   raw_ptr<avora::WindowSpaceState> window_space_state_ = nullptr;
@@ -132,8 +151,18 @@ class AvoraSpacesBarView : public views::View,
   std::map<std::string, raw_ptr<views::View>> space_buttons_;
   raw_ptr<views::View> create_button_ = nullptr;
 
+  // Downloads, in the slot opposite the "+".  Null in legacy mode, which has
+  // no Profile to read downloads from.
+  raw_ptr<views::View> downloads_button_ = nullptr;
+
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
   std::unique_ptr<ui::SimpleMenuModel::Delegate> context_menu_delegate_;
+
+  // The "+" menu's model and delegate, kept apart from the Space context
+  // menu's so neither is torn out from under a menu that is still running.
+  std::unique_ptr<ui::SimpleMenuModel> create_menu_model_;
+  std::unique_ptr<ui::SimpleMenuModel::Delegate> create_menu_delegate_;
+
   std::unique_ptr<views::MenuRunner> menu_runner_;
 
   base::WeakPtrFactory<AvoraSpacesBarView> weak_factory_{this};

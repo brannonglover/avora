@@ -103,6 +103,7 @@ class AvoraSpacesBarView;
 namespace avora {
 class AvoraQuickNavView;
 class AvoraLinkPreviewView;
+class AvoraToastView;
 class AvoraSpaceGestureController;
 }  // namespace avora
 class VerticalTabStripRegionView;
@@ -813,6 +814,9 @@ class BrowserView : public BrowserWindow,
   bool IsLockedFullscreen() const;
 #endif
 
+  // Avora transient confirmation toast, upper-right of the content area.
+  void ShowAvoraToast(const std::u16string& message);
+
   // Avora quick-nav overlay (CMD+T / CMD+L).
   void ShowAvoraQuickNav();
   void ShowAvoraQuickNavWithURL();
@@ -1279,6 +1283,9 @@ class BrowserView : public BrowserWindow,
 
   // Avora quick-nav overlay (CMD+T / CMD+L).
   raw_ptr<avora::AvoraQuickNavView> avora_quick_nav_ = nullptr;
+
+  // Avora confirmation toast ("URL copied").
+  raw_ptr<avora::AvoraToastView> avora_toast_ = nullptr;
 
   // Avora link preview overlay (target="_blank" interception).
   raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;

@@ -3,8 +3,11 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 
 #include <algorithm>
+#include <map>
+#include <optional>
 
 #include "base/functional/bind.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -12,6 +15,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
@@ -53,6 +57,13 @@ constexpr int kContextMenuRenameFolderId = 2;
 constexpr int kContextMenuDeleteFolderId = 3;
 constexpr int kContextMenuRemoveFromFolderId = 4;
 constexpr int kContextMenuUnpinTabId = 5;
+constexpr int kContextMenuMoveToSpaceId = 6;
+constexpr int kContextMenuImportBookmarksId = 7;
+
+// Command ids for the "Move to Space" submenu, one per destination Space.
+// Menus dispatch by command id across the whole hierarchy, so this range has
+// to stay clear of the fixed ids above.
+constexpr int kContextMenuFirstSpaceId = 100;
 
 constexpr SkColor kFolderIconColor = SkColorSetRGB(0xF5, 0xBD, 0x4F);
 constexpr SkColor kRowHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
@@ -83,17 +94,22 @@ void PaintFolderIcon(gfx::Canvas* canvas, int x, int y, int size,
 // Context menu delegate for the section-level "Add Folder" action.
 class SectionContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
-  explicit SectionContextMenuDelegate(base::OnceClosure on_add_folder)
-      : on_add_folder_(std::move(on_add_folder)) {}
+  SectionContextMenuDelegate(base::OnceClosure on_add_folder,
+                             base::OnceClosure on_import)
+      : on_add_folder_(std::move(on_add_folder)),
+        on_import_(std::move(on_import)) {}
 
   void ExecuteCommand(int command_id, int event_flags) override {
     if (command_id == kContextMenuAddFolderId && on_add_folder_) {
       std::move(on_add_folder_).Run();
+    } else if (command_id == kContextMenuImportBookmarksId && on_import_) {
+      std::move(on_import_).Run();
     }
   }
 
  private:
   base::OnceClosure on_add_folder_;
+  base::OnceClosure on_import_;
 };
 
 // Context menu delegate for folder header actions.
@@ -138,25 +154,71 @@ class TabRowContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
   base::OnceClosure on_remove_;
 };
 
-// Context menu delegate for standalone pinned tab "Unpin Tab" + "New Folder".
+// Context menu delegate for standalone pinned tab "Unpin Tab" + "New Folder",
+// plus "Remove from Folder" when the tab backs a folder member (the model
+// only ever adds that menu item when relevant; the closure itself is cheap
+// to always bind).
 class PinnedTabContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
   PinnedTabContextMenuDelegate(base::OnceClosure on_unpin,
-                               base::OnceClosure on_add_folder)
+                               base::OnceClosure on_add_folder,
+                               base::OnceClosure on_remove_from_folder)
       : on_unpin_(std::move(on_unpin)),
-        on_add_folder_(std::move(on_add_folder)) {}
+        on_add_folder_(std::move(on_add_folder)),
+        on_remove_from_folder_(std::move(on_remove_from_folder)) {}
 
   void ExecuteCommand(int command_id, int event_flags) override {
     if (command_id == kContextMenuUnpinTabId && on_unpin_) {
       std::move(on_unpin_).Run();
     } else if (command_id == kContextMenuAddFolderId && on_add_folder_) {
       std::move(on_add_folder_).Run();
+    } else if (command_id == kContextMenuRemoveFromFolderId &&
+              on_remove_from_folder_) {
+      std::move(on_remove_from_folder_).Run();
     }
   }
 
  private:
   base::OnceClosure on_unpin_;
   base::OnceClosure on_add_folder_;
+  base::OnceClosure on_remove_from_folder_;
+};
+
+// The "Move to Space" submenu: one row per Space other than the one being
+// shown.  Acts as its own delegate so the parent menu's delegate does not
+// have to know how many Spaces exist when it is built.
+class MoveToSpaceSubMenuModel : public ui::SimpleMenuModel,
+                                public ui::SimpleMenuModel::Delegate {
+ public:
+  MoveToSpaceSubMenuModel(
+      const std::vector<Space>& spaces,
+      const std::string& current_space_id,
+      base::RepeatingCallback<void(const std::string&)> on_pick)
+      : ui::SimpleMenuModel(this), on_pick_(std::move(on_pick)) {
+    for (const Space& space : spaces) {
+      if (space.id == current_space_id) {
+        continue;
+      }
+      AddItem(kContextMenuFirstSpaceId + static_cast<int>(space_ids_.size()),
+              base::UTF8ToUTF16(space.name));
+      space_ids_.push_back(space.id);
+    }
+  }
+
+  bool has_destinations() const { return !space_ids_.empty(); }
+
+  // ui::SimpleMenuModel::Delegate:
+  void ExecuteCommand(int command_id, int event_flags) override {
+    const size_t index =
+        static_cast<size_t>(command_id - kContextMenuFirstSpaceId);
+    if (index < space_ids_.size() && on_pick_) {
+      on_pick_.Run(space_ids_[index]);
+    }
+  }
+
+ private:
+  std::vector<std::string> space_ids_;
+  base::RepeatingCallback<void(const std::string&)> on_pick_;
 };
 
 // A Textfield subclass that calls a callback when it loses focus.
@@ -185,13 +247,15 @@ class RenameTextfield : public views::Textfield {
 // ---------------------------------------------------------------------------
 
 FolderHeaderView::FolderHeaderView(
-    int folder_index,
+    const std::string& folder_id,
     const std::string& name,
     bool expanded,
-    base::RepeatingCallback<void(int)> on_toggle,
-    base::RepeatingCallback<void(int, const gfx::Point&)> on_context,
-    base::RepeatingCallback<void(int, const std::string&)> on_rename)
-    : folder_index_(folder_index),
+    base::RepeatingCallback<void(const std::string&)> on_toggle,
+    base::RepeatingCallback<void(const std::string&, const gfx::Point&)>
+        on_context,
+    base::RepeatingCallback<void(const std::string&, const std::string&)>
+        on_rename)
+    : folder_id_(folder_id),
       on_toggle_(std::move(on_toggle)),
       on_context_(std::move(on_context)),
       on_rename_(std::move(on_rename)) {
@@ -284,7 +348,7 @@ bool FolderHeaderView::OnMousePressed(const ui::MouseEvent& event) {
     gfx::Point screen_point = event.location();
     ConvertPointToScreen(this, &screen_point);
     if (on_context_) {
-      on_context_.Run(folder_index_, screen_point);
+      on_context_.Run(folder_id_, screen_point);
     }
     return true;
   }
@@ -294,7 +358,7 @@ bool FolderHeaderView::OnMousePressed(const ui::MouseEvent& event) {
       return true;
     }
     if (on_toggle_) {
-      on_toggle_.Run(folder_index_);
+      on_toggle_.Run(folder_id_);
     }
     return true;
   }
@@ -346,15 +410,16 @@ void FolderHeaderView::CommitRename() {
   // use-after-free.
   if (!new_name.empty() && on_rename_) {
     auto callback = on_rename_;
-    int idx = folder_index_;
+    std::string id = folder_id_;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
-            [](base::RepeatingCallback<void(int, const std::string&)> cb,
-               int folder_idx, std::string name) {
-              cb.Run(folder_idx, name);
+            [](base::RepeatingCallback<void(const std::string&,
+                                            const std::string&)> cb,
+               std::string folder_id, std::string name) {
+              cb.Run(folder_id, name);
             },
-            callback, idx, new_name));
+            callback, id, new_name));
   }
 }
 
@@ -377,23 +442,31 @@ END_METADATA
 // ---------------------------------------------------------------------------
 
 FolderTabRow::FolderTabRow(
-    int folder_index,
+    const std::string& folder_id,
+    const std::string& item_id,
     const std::string& url,
     const std::string& title,
-    base::RepeatingCallback<void(const std::string&)> on_click,
-    base::RepeatingCallback<void(int, const std::string&,
+    base::RepeatingCallback<void(std::string)> on_click,
+    base::RepeatingCallback<void(const std::string&, const std::string&,
                                  const gfx::Point&)> on_context)
-    : folder_index_(folder_index),
+    : folder_id_(folder_id),
+      item_id_(item_id),
       url_(url),
       title_(title),
       on_click_(std::move(on_click)),
       on_context_(std::move(on_context)) {
   SetPreferredSize(gfx::Size(0, 32));
 
+  // Indent only for a real folder member.  A top-level item with no live
+  // tab is also rendered with this row type (Rebuild() section 1b, folder_id
+  // empty); indenting it too would make it read as a child of whatever row
+  // happens to precede it.
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
       gfx::Insets::VH(0, AvoraPinnedSectionView::kHPadding +
-                             AvoraPinnedSectionView::kIndent),
+                             (folder_id.empty()
+                                  ? 0
+                                  : AvoraPinnedSectionView::kIndent)),
       8));
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
@@ -449,16 +522,26 @@ void FolderTabRow::OnPaintBackground(gfx::Canvas* canvas) {
 }
 
 bool FolderTabRow::OnMousePressed(const ui::MouseEvent& event) {
+  // Both handlers below can destroy this row before they return: the click
+  // handler materializes a tab, and the context handler opens a menu -- each
+  // reaches Rebuild(), which deletes every child row including this one.  So
+  // take a local copy of the callback and of the ids it is handed, and touch
+  // no member after the Run() call.  (FolderHeaderView::CommitRename() posts
+  // its callback for the same reason.)
   if (event.IsRightMouseButton()) {
     gfx::Point screen_point = event.location();
     ConvertPointToScreen(this, &screen_point);
     if (on_context_) {
-      on_context_.Run(folder_index_, url_, screen_point);
+      auto on_context = on_context_;
+      const std::string folder_id = folder_id_;
+      const std::string item_id = item_id_;
+      on_context.Run(folder_id, item_id, screen_point);
     }
     return true;
   }
   if (event.IsLeftMouseButton() && on_click_) {
-    on_click_.Run(url_);
+    auto on_click = on_click_;
+    on_click.Run(item_id_);
     return true;
   }
   return false;
@@ -734,6 +817,10 @@ AvoraPinnedSectionView::AvoraPinnedSectionView(
       std::make_unique<PinnedItemsManager>(profile->GetPrefs());
   pinned_items_manager_->AddObserver(this);
 
+  // Only ever read, to list the destinations of the "Move to Space" submenu,
+  // so there is nothing here to observe.
+  space_manager_ = std::make_unique<SpaceManager>(profile->GetPrefs());
+
   if (window_space_state_) {
     folders_manager_->SetWindowActiveSpaceId(
         window_space_state_->active_space_id());
@@ -814,15 +901,20 @@ void AvoraPinnedSectionView::ShowContextMenuForViewImpl(
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type) {
   context_menu_delegate_ = std::make_unique<SectionContextMenuDelegate>(
-      base::BindOnce(
-          [](PinnedFoldersManager* mgr) {
-            mgr->AddFolder("New Folder");
-          },
-          base::Unretained(folders_manager_.get())));
+      base::BindOnce(&AvoraPinnedSectionView::CreateFolderAndBeginRename,
+                     weak_factory_.GetWeakPtr()),
+      base::BindOnce(&AvoraPinnedSectionView::OnImportBookmarksClicked,
+                     weak_factory_.GetWeakPtr()));
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
   context_menu_model_->AddItem(kContextMenuAddFolderId, u"New Folder");
+  context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+  // The imported section no longer parks a permanent "Import Bookmarks…"
+  // row under the pinned tabs, so this is where import stays reachable once
+  // the first-run offer has been dismissed.
+  context_menu_model_->AddItem(kContextMenuImportBookmarksId,
+                               u"Import Bookmarks…");
 
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
       context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
@@ -830,6 +922,12 @@ void AvoraPinnedSectionView::ShowContextMenuForViewImpl(
                                   gfx::Rect(point, gfx::Size()),
                                   views::MenuAnchorPosition::kTopLeft,
                                   source_type);
+}
+
+void AvoraPinnedSectionView::OnImportBookmarksClicked() {
+  if (browser_) {
+    AvoraImportDialogView::Show(browser_, window_space_state_);
+  }
 }
 
 gfx::Size AvoraPinnedSectionView::CalculatePreferredSize(
@@ -869,18 +967,41 @@ void AvoraPinnedSectionView::Rebuild() {
   RemoveAllChildViews();
 
   const std::string active_space = folders_manager_->GetActiveSpaceId();
+  const std::vector<PinnedFolder> folders = folders_manager_->GetFolders();
+
+  // Which pinned items are folder members, and which folder -- computed once
+  // so sections 1/1b can exclude them (a folder member renders exactly once,
+  // under its folder in section 2, live or not).
+  std::map<std::string, std::string> item_folder_id;
+  for (const auto& folder : folders) {
+    for (const auto& id : folder.ordered_item_ids) {
+      item_folder_id[id] = folder.id;
+    }
+  }
 
   // Pinned-item ids with a live PinnedTabRow rendered in section 1, so
   // section 1b never renders a second, unmaterialized row for the same item.
   std::set<std::string> already_live;
 
-  // 1. Live rows: every tab in this window/Space that is either natively
-  //    pinned (TabStripModel::IsTabPinned, i.e. within
+  // A pinned row's user-chosen name is stored per URL (see
+  // OnPinnedTabRenamed), never on the item, so an unmaterialized row has to
+  // consult it too -- otherwise the same pin shows the name the user gave it
+  // while a live tab exists and reverts to the item's original title once
+  // that tab is gone.
+  auto display_title = [this](const std::string& url,
+                              const std::string& title) {
+    const std::string custom = folders_manager_->GetCustomTabTitle(url);
+    return custom.empty() ? title : custom;
+  };
+
+  // 1. Live, top-level rows: every tab in this window/Space that is either
+  //    natively pinned (TabStripModel::IsTabPinned, i.e. within
   //    IndexOfFirstNonPinnedTab()) or materialized from a persisted kPinned
   //    item (IsPinnedItemTab), or both (a natively pinned tab that a
-  //    kPinned item was backfilled onto). Each gets exactly one
-  //    PinnedTabRow regardless of which of those is true -- there is one
-  //    intentional sidebar representation per tab, never two.
+  //    kPinned item was backfilled onto) -- and not a folder member (folder
+  //    members render under their folder in section 2 instead, live or
+  //    not). Each gets exactly one PinnedTabRow -- one intentional sidebar
+  //    representation per tab, never two.
   //
   //    ApplyVisibility() (avora_space_tab_filter.cc) is the other half of
   //    this: it hides a materialized-but-not-natively-pinned tab's row from
@@ -898,11 +1019,28 @@ void AvoraPinnedSectionView::Rebuild() {
       }
 
       const bool natively_pinned = i < first_unpinned;
-      const std::string pinned_item_id = GetPinnedItemIdForTab(contents);
+      std::string pinned_item_id = GetPinnedItemIdForTab(contents);
       if (!natively_pinned && pinned_item_id.empty()) {
         continue;  // An ordinary daily tab -- not this section's concern.
       }
+      if (pinned_item_id.empty() && pinned_items_manager_) {
+        // A natively pinned tab carrying no marker: pinned before
+        // AvoraSpaceTabFilter::OnTabPinnedStateChanged() began creating
+        // kPinned records, or restored without AdoptPinnedItemTabs()
+        // reaching it. Reconnect it to the persisted item for its URL the
+        // same way that adoption pass does, so the tab and the item it
+        // materializes never render as two separate rows -- the item's own
+        // unmaterialized row in section 1b being the second one.
+        pinned_item_id = pinned_items_manager_->GetPinnedItemIdForUrl(
+            contents->GetLastCommittedURL().spec());
+        if (!pinned_item_id.empty()) {
+          MarkPinnedItemTab(contents, pinned_item_id);
+        }
+      }
       if (!pinned_item_id.empty()) {
+        if (item_folder_id.count(pinned_item_id)) {
+          continue;  // Renders under its folder in section 2 instead.
+        }
         already_live.insert(pinned_item_id);
       }
 
@@ -926,36 +1064,47 @@ void AvoraPinnedSectionView::Rebuild() {
     }
   }
 
-  // 1b. Persisted pinned items (SidebarItemType::kPinned) with no live tab in
-  //     this window yet. Never eagerly materializes anything -- this only
-  //     reads PinnedItemsManager's persisted list and renders a row per
-  //     entry; a live tab is created lazily, on click, in
-  //     OnPersistentPinnedItemClicked(). An item already shown live in
-  //     section 1 above is skipped here so it never renders twice.
+  // 1b. Persisted top-level pinned items with no live tab in this window
+  //     yet. Never eagerly materializes anything -- this only reads
+  //     PinnedItemsManager's persisted list and renders a row per entry; a
+  //     live tab is created lazily, on click, in
+  //     OnPersistentPinnedItemClicked(). Folder members are excluded (they
+  //     belong to section 2) and items already live in section 1 are
+  //     excluded too, so every item renders exactly once.
   if (pinned_items_manager_) {
     for (const auto& item : pinned_items_manager_->GetPinnedItems()) {
-      if (already_live.count(item.id)) {
+      if (already_live.count(item.id) || item_folder_id.count(item.id)) {
         continue;
       }
       auto* row = AddChildView(std::make_unique<FolderTabRow>(
-          /*folder_index=*/-1, item.url, item.title,
+          /*folder_id=*/std::string(), item.id, item.url,
+          display_title(item.url, item.title),
           base::BindRepeating(
               &AvoraPinnedSectionView::OnPersistentPinnedItemClicked,
               base::Unretained(this)),
-          base::RepeatingCallback<void(int, const std::string&,
-                                       const gfx::Point&)>()));
+          base::BindRepeating(
+              [](base::WeakPtr<AvoraPinnedSectionView> view,
+                 const std::string& /*folder_id*/,
+                 const std::string& item_id, const gfx::Point& point) {
+                if (view) {
+                  view->OnPersistentPinnedItemContextMenu(item_id, point);
+                }
+              },
+              weak_factory_.GetWeakPtr())));
       LoadFavicon(row);
     }
   }
 
-  // 2. Folders and their contained tabs below.
-  auto folders = folders_manager_->GetFolders();
-  for (int i = 0; i < static_cast<int>(folders.size()); ++i) {
-    const auto& folder = folders[i];
-
-    // Folder header.
+  // 2. Folders, each rendering its members in ordered_item_ids order: a
+  //    live row (PinnedTabRow, the exact same materialize/activate/
+  //    context-menu handlers as a top-level live item -- no folder-specific
+  //    tab-opening path) if a matching tab already exists in this
+  //    window/Space, else an unmaterialized row (FolderTabRow) that lazily
+  //    materializes one on click via the same OnPersistentPinnedItemClicked
+  //    as every other Pinned item.
+  for (const auto& folder : folders) {
     auto* header = AddChildView(std::make_unique<FolderHeaderView>(
-        i, folder.name, folder.expanded,
+        folder.id, folder.name, folder.expanded,
         base::BindRepeating(&AvoraPinnedSectionView::OnFolderToggle,
                             base::Unretained(this)),
         base::BindRepeating(&AvoraPinnedSectionView::OnFolderContextMenu,
@@ -964,21 +1113,57 @@ void AvoraPinnedSectionView::Rebuild() {
                             base::Unretained(this))));
 
     // Restore highlight if a drag is active.
-    if (highlighted_folder_index_ == i) {
+    if (highlighted_folder_id_ == folder.id) {
       header->SetHighlighted(true);
     }
 
-    // Tab rows (visible only when folder is expanded).
-    if (folder.expanded) {
-      for (const auto& tab : folder.tabs) {
-        auto* row = AddChildView(std::make_unique<FolderTabRow>(
-            i, tab.url, tab.title,
-            base::BindRepeating(&AvoraPinnedSectionView::OnTabClicked,
-                                base::Unretained(this)),
-            base::BindRepeating(&AvoraPinnedSectionView::OnTabContextMenu,
-                                base::Unretained(this))));
-        LoadFavicon(row);
+    // Member rows (visible only when folder is expanded).
+    if (!folder.expanded || !pinned_items_manager_) {
+      continue;
+    }
+
+    for (const auto& item_id : folder.ordered_item_ids) {
+      const std::optional<PinnedItemEntry> entry =
+          pinned_items_manager_->GetPinnedItemById(item_id);
+      if (!entry) {
+        continue;  // Stale reference -- defensive only, should not happen.
       }
+
+      const int live_index =
+          tab_strip_model_ ? FindMaterializedPinnedItemTab(
+                                 tab_strip_model_, item_id, active_space)
+                           : TabStripModel::kNoTab;
+      if (live_index != TabStripModel::kNoTab) {
+        content::WebContents* contents =
+            tab_strip_model_->GetWebContentsAt(live_index);
+        auto* row = AddChildView(std::make_unique<PinnedTabRow>(
+            contents,
+            base::BindRepeating(&AvoraPinnedSectionView::OnPinnedTabClicked,
+                                base::Unretained(this)),
+            base::BindRepeating(
+                &AvoraPinnedSectionView::OnPinnedTabContextMenu,
+                base::Unretained(this)),
+            base::BindRepeating(
+                &AvoraPinnedSectionView::OnPinnedTabRenamed,
+                base::Unretained(this))));
+        std::string url = contents->GetLastCommittedURL().spec();
+        std::string custom = folders_manager_->GetCustomTabTitle(url);
+        if (!custom.empty()) {
+          row->SetCustomTitle(base::UTF8ToUTF16(custom));
+        }
+        LoadPinnedTabFavicon(row);
+        continue;
+      }
+
+      auto* row = AddChildView(std::make_unique<FolderTabRow>(
+          folder.id, item_id, entry->url,
+          display_title(entry->url, entry->title),
+          base::BindRepeating(
+              &AvoraPinnedSectionView::OnPersistentPinnedItemClicked,
+              base::Unretained(this)),
+          base::BindRepeating(&AvoraPinnedSectionView::OnFolderItemContextMenu,
+                              base::Unretained(this))));
+      LoadFavicon(row);
     }
   }
 
@@ -1020,29 +1205,29 @@ void AvoraPinnedSectionView::SetDragActive(bool active) {
   }
 }
 
-int AvoraPinnedSectionView::GetFolderIndexAtScreenPoint(
+std::string AvoraPinnedSectionView::GetFolderIdAtScreenPoint(
     const gfx::Point& screen_point) const {
   for (views::View* child : children()) {
     auto* header = views::AsViewClass<FolderHeaderView>(child);
     if (header && header->GetVisible() &&
         header->GetBoundsInScreen().Contains(screen_point)) {
-      return header->folder_index();
+      return header->folder_id();
     }
   }
-  return -1;
+  return std::string();
 }
 
-void AvoraPinnedSectionView::HighlightFolder(int folder_index) {
-  if (highlighted_folder_index_ == folder_index) {
+void AvoraPinnedSectionView::HighlightFolder(const std::string& folder_id) {
+  if (highlighted_folder_id_ == folder_id) {
     return;
   }
   // Clear previous highlight.
   ClearHighlight();
-  highlighted_folder_index_ = folder_index;
-  if (folder_index >= 0) {
+  highlighted_folder_id_ = folder_id;
+  if (!folder_id.empty()) {
     for (views::View* child : children()) {
       auto* header = views::AsViewClass<FolderHeaderView>(child);
-      if (header && header->folder_index() == folder_index) {
+      if (header && header->folder_id() == folder_id) {
         header->SetHighlighted(true);
         break;
       }
@@ -1051,59 +1236,76 @@ void AvoraPinnedSectionView::HighlightFolder(int folder_index) {
 }
 
 void AvoraPinnedSectionView::ClearHighlight() {
-  if (highlighted_folder_index_ < 0) {
+  if (highlighted_folder_id_.empty()) {
     return;
   }
   for (views::View* child : children()) {
     auto* header = views::AsViewClass<FolderHeaderView>(child);
-    if (header && header->folder_index() == highlighted_folder_index_) {
+    if (header && header->folder_id() == highlighted_folder_id_) {
       header->SetHighlighted(false);
       break;
     }
   }
-  highlighted_folder_index_ = -1;
+  highlighted_folder_id_.clear();
 }
 
-void AvoraPinnedSectionView::OnFolderToggle(int folder_index) {
-  auto folders = folders_manager_->GetFolders();
-  if (folder_index >= 0 &&
-      folder_index < static_cast<int>(folders.size())) {
-    folders_manager_->SetFolderExpanded(folder_index,
-                                        !folders[folder_index].expanded);
+void AvoraPinnedSectionView::CreateFolderAndBeginRename() {
+  if (!folders_manager_) {
+    return;
+  }
+  const std::string folder_id = folders_manager_->AddFolder("New Folder");
+  if (folder_id.empty()) {
+    return;
+  }
+
+  // AddFolder() notifies observers synchronously, so this view has already
+  // rebuilt and the new folder's header row exists by the time we get here.
+  for (views::View* child : children()) {
+    auto* header = views::AsViewClass<FolderHeaderView>(child);
+    if (header && header->folder_id() == folder_id) {
+      header->BeginRename();
+      return;
+    }
   }
 }
 
-void AvoraPinnedSectionView::OnFolderRename(int folder_index,
+void AvoraPinnedSectionView::OnFolderToggle(const std::string& folder_id) {
+  for (const auto& folder : folders_manager_->GetFolders()) {
+    if (folder.id == folder_id) {
+      folders_manager_->SetFolderExpanded(folder_id, !folder.expanded);
+      return;
+    }
+  }
+}
+
+void AvoraPinnedSectionView::OnFolderRename(const std::string& folder_id,
                                             const std::string& new_name) {
-  folders_manager_->RenameFolder(folder_index, new_name);
+  folders_manager_->RenameFolder(folder_id, new_name);
 }
 
 void AvoraPinnedSectionView::OnFolderContextMenu(
-    int folder_index,
+    const std::string& folder_id,
     const gfx::Point& screen_point) {
   context_menu_delegate_ = std::make_unique<FolderContextMenuDelegate>(
       base::BindOnce(
-          [](base::WeakPtr<AvoraPinnedSectionView> view, int idx) {
+          [](base::WeakPtr<AvoraPinnedSectionView> view, std::string id) {
             if (!view) return;
             for (views::View* child : view->children()) {
               auto* header = views::AsViewClass<FolderHeaderView>(child);
-              if (header && header->folder_index() == idx) {
+              if (header && header->folder_id() == id) {
                 header->BeginRename();
                 break;
               }
             }
           },
-          weak_factory_.GetWeakPtr(), folder_index),
+          weak_factory_.GetWeakPtr(), folder_id),
       base::BindOnce(
-          [](PinnedFoldersManager* mgr, int idx) {
-            mgr->RemoveFolder(idx);
+          [](PinnedFoldersManager* mgr, std::string id) {
+            mgr->RemoveFolder(id);
           },
-          base::Unretained(folders_manager_.get()), folder_index),
-      base::BindOnce(
-          [](PinnedFoldersManager* mgr) {
-            mgr->AddFolder("New Folder");
-          },
-          base::Unretained(folders_manager_.get())));
+          base::Unretained(folders_manager_.get()), folder_id),
+      base::BindOnce(&AvoraPinnedSectionView::CreateFolderAndBeginRename,
+                     weak_factory_.GetWeakPtr()));
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
@@ -1120,46 +1322,10 @@ void AvoraPinnedSectionView::OnFolderContextMenu(
                                   ui::mojom::MenuSourceType::kMouse);
 }
 
-void AvoraPinnedSectionView::OnTabClicked(const std::string& url) {
-  if (!browser_) {
-    return;
-  }
-
-  TabStripModel* tab_strip = browser_->GetTabStripModel();
-  if (!tab_strip) {
-    return;
-  }
-
-  // Find and activate existing tab with this URL in the active Space.
-  const std::string active_space = folders_manager_->GetActiveSpaceId();
-  for (int i = 0; i < tab_strip->count(); ++i) {
-    content::WebContents* contents = tab_strip->GetWebContentsAt(i);
-    if (contents && contents->GetLastCommittedURL().spec() == url &&
-        TabBelongsToSpace(contents, active_space)) {
-      tab_strip->ActivateTabAt(i);
-      return;
-    }
-  }
-
-  // Tab not open — open it.
-  NavigateParams params(browser_, GURL(url),
-                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  Navigate(&params);
-}
-
 void AvoraPinnedSectionView::OnPersistentPinnedItemClicked(
-    const std::string& url) {
-  if (!browser_ || !tab_strip_model_ || !pinned_items_manager_) {
-    return;
-  }
-
-  // Resolve the click to the pinned item's identity rather than comparing
-  // URLs from here on, mirroring AvoraFavoritesView::OnFavoriteClicked: a
-  // tab that has navigated away from the item's persisted target is still
-  // recognised as belonging to it.
-  const std::string item_id = pinned_items_manager_->GetPinnedItemIdForUrl(url);
-  if (item_id.empty()) {
+    std::string item_id) {
+  if (!browser_ || !tab_strip_model_ || !pinned_items_manager_ ||
+      item_id.empty()) {
     return;
   }
 
@@ -1175,14 +1341,18 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemClicked(
   }
 
   // No live tab for this item in this window/Space yet -- materialize one
-  // from the item's persisted target, not from |url| (they are the same
-  // value today, but the persisted target is the source of truth).
+  // from the item's persisted target, looked up fresh here rather than
+  // trusting whatever url the row happened to display.
   const std::string target_url =
       pinned_items_manager_->GetPinnedItemUrlById(item_id);
   if (target_url.empty()) {
     return;
   }
 
+  // Reentrant: inserting the tab runs OnTabStripModelChanged(kInserted) ->
+  // Rebuild() synchronously, which deletes every row in this section --
+  // including the one that was just clicked.  Nothing owned by a row may be
+  // read after this point, which is why |item_id| is a by-value copy.
   NavigateParams params(browser_, GURL(target_url),
                         ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
@@ -1196,21 +1366,40 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemClicked(
   }
 }
 
-void AvoraPinnedSectionView::OnTabContextMenu(
-    int folder_index,
-    const std::string& url,
+void AvoraPinnedSectionView::OnFolderItemContextMenu(
+    const std::string& folder_id,
+    const std::string& item_id,
     const gfx::Point& screen_point) {
   context_menu_delegate_ = std::make_unique<TabRowContextMenuDelegate>(
       base::BindOnce(
-          [](PinnedFoldersManager* mgr, int idx, const std::string& url) {
-            mgr->RemoveTabFromFolder(idx, url);
+          [](PinnedFoldersManager* mgr, std::string item) {
+            // Empty destination = top-level, per MoveItemToFolder's
+            // convention -- this is what "Remove from Folder" means now
+            // that Pinned is persistent: the item survives, just no longer
+            // organized under this folder.
+            mgr->MoveItemToFolder(item, std::string());
           },
-          base::Unretained(folders_manager_.get()), folder_index, url));
+          base::Unretained(folders_manager_.get()), item_id));
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
   context_menu_model_->AddItem(kContextMenuRemoveFromFolderId,
                                u"Remove from Folder");
+
+  // A folder member is a pinned tab like any other, so it gets the same
+  // destination list.  Picking one takes it out of this folder on the way
+  // out -- folders belong to a single Space, so membership cannot follow it
+  // (see avora::MovePinnedItemToSpace).
+  move_to_space_submenu_ = BuildMoveToSpaceSubMenu(
+      pinned_items_manager_ ? pinned_items_manager_->GetActiveSpaceId()
+                            : std::string(),
+      base::BindRepeating(&AvoraPinnedSectionView::MovePinnedItemToSpace,
+                          weak_factory_.GetWeakPtr(), item_id));
+  if (move_to_space_submenu_) {
+    context_menu_model_->AddSubMenu(kContextMenuMoveToSpaceId,
+                                    u"Move to Space",
+                                    move_to_space_submenu_.get());
+  }
 
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
       context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
@@ -1247,6 +1436,17 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
   if (!tab_strip_model_ || !contents) {
     return;
   }
+
+  // Live rows in section 2 (folder members) and section 1 (top-level) both
+  // reach this same handler -- see Rebuild() -- so whether "Remove from
+  // Folder" belongs on this menu is a live lookup, not something the row
+  // itself knows.
+  const std::string item_id = GetPinnedItemIdForTab(contents);
+  const std::string folder_id =
+      (!item_id.empty() && folders_manager_)
+          ? folders_manager_->GetFolderIdForItem(item_id)
+          : std::string();
+
   context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
       base::BindOnce(
           [](base::WeakPtr<AvoraPinnedSectionView> view,
@@ -1255,23 +1455,41 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
               return;
             }
             // Clears the native pinned bit if set and independently removes
-            // any kPinned persistence -- one "Unpin Tab" action fully
-            // unpins the tab in every sense, rather than leaving it
-            // half-unpinned depending on how it came to be pinned. The live
-            // page is never closed.
+            // any kPinned persistence (including its folder membership) --
+            // one "Unpin Tab" action fully unpins the tab in every sense,
+            // rather than leaving it half-unpinned depending on how it came
+            // to be pinned. The live page is never closed.
             UnpinAndRemovePinnedItem(view->tab_strip_model_,
-                                     view->pinned_items_manager_.get(), wc);
+                                     view->pinned_items_manager_.get(),
+                                     view->folders_manager_.get(), wc);
           },
           weak_factory_.GetWeakPtr(), contents),
+      base::BindOnce(&AvoraPinnedSectionView::CreateFolderAndBeginRename,
+                     weak_factory_.GetWeakPtr()),
       base::BindOnce(
-          [](PinnedFoldersManager* mgr) {
-            mgr->AddFolder("New Folder");
+          [](PinnedFoldersManager* mgr, std::string item) {
+            mgr->MoveItemToFolder(item, std::string());
           },
-          base::Unretained(folders_manager_.get())));
+          base::Unretained(folders_manager_.get()), item_id));
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
   context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin Tab");
+  if (!folder_id.empty()) {
+    context_menu_model_->AddItem(kContextMenuRemoveFromFolderId,
+                                 u"Remove from Folder");
+  }
+
+  move_to_space_submenu_ = BuildMoveToSpaceSubMenu(
+      GetTabSpaceId(contents),
+      base::BindRepeating(&AvoraPinnedSectionView::MovePinnedTabToSpace,
+                          weak_factory_.GetWeakPtr(), contents));
+  if (move_to_space_submenu_) {
+    context_menu_model_->AddSubMenu(kContextMenuMoveToSpaceId,
+                                    u"Move to Space",
+                                    move_to_space_submenu_.get());
+  }
+
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   context_menu_model_->AddItem(kContextMenuAddFolderId, u"New Folder");
 
@@ -1281,6 +1499,102 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
                                   gfx::Rect(screen_point, gfx::Size()),
                                   views::MenuAnchorPosition::kTopLeft,
                                   ui::mojom::MenuSourceType::kMouse);
+}
+
+void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
+    const std::string& item_id,
+    const gfx::Point& screen_point) {
+  if (!pinned_items_manager_ || item_id.empty()) {
+    return;
+  }
+
+  // No live tab exists for this row, so the item's own Space is the only
+  // "current" there is.
+  move_to_space_submenu_ = BuildMoveToSpaceSubMenu(
+      pinned_items_manager_->GetActiveSpaceId(),
+      base::BindRepeating(&AvoraPinnedSectionView::MovePinnedItemToSpace,
+                          weak_factory_.GetWeakPtr(), item_id));
+  if (!move_to_space_submenu_) {
+    return;
+  }
+
+  context_menu_delegate_.reset();
+  context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(nullptr);
+  context_menu_model_->AddSubMenu(kContextMenuMoveToSpaceId,
+                                  u"Move to Space",
+                                  move_to_space_submenu_.get());
+
+  context_menu_runner_ = std::make_unique<views::MenuRunner>(
+      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+  context_menu_runner_->RunMenuAt(GetWidget(), nullptr,
+                                  gfx::Rect(screen_point, gfx::Size()),
+                                  views::MenuAnchorPosition::kTopLeft,
+                                  ui::mojom::MenuSourceType::kMouse);
+}
+
+std::unique_ptr<ui::SimpleMenuModel>
+AvoraPinnedSectionView::BuildMoveToSpaceSubMenu(
+    const std::string& current_space_id,
+    base::RepeatingCallback<void(const std::string&)> on_pick) {
+  if (!space_manager_) {
+    return nullptr;
+  }
+  auto submenu = std::make_unique<MoveToSpaceSubMenuModel>(
+      space_manager_->GetSpaces(), current_space_id, std::move(on_pick));
+  // A single-Space install has nowhere to move to; show no entry at all
+  // rather than an empty submenu.
+  if (!submenu->has_destinations()) {
+    return nullptr;
+  }
+  return submenu;
+}
+
+void AvoraPinnedSectionView::MovePinnedTabToSpace(
+    content::WebContents* contents,
+    const std::string& space_id) {
+  if (!tab_strip_model_ || !browser_ || space_id.empty()) {
+    return;
+  }
+  // The menu is asynchronous, so the tab may already be gone by the time a
+  // Space is picked.  This only compares pointers, never dereferences the
+  // captured one, so a closed tab resolves to kNoTab instead of a use-after-
+  // free.
+  if (tab_strip_model_->GetIndexOfWebContents(contents) ==
+      TabStripModel::kNoTab) {
+    return;
+  }
+
+  // Move the persisted record first: it is what makes the row survive a
+  // restart, so leaving it behind would resurrect the item in the old Space
+  // on the next launch.  AvoraSpaceTabFilter does this too when it sees the
+  // retag below, and both are idempotent -- this call site keeps its own so
+  // the record never depends on a notification arriving.
+  if (pinned_items_manager_) {
+    const std::string item_id = GetPinnedItemIdForTab(contents);
+    if (!item_id.empty()) {
+      avora::MovePinnedItemToSpace(browser_->GetProfile()->GetPrefs(), item_id,
+                                   GetTabSpaceId(contents), space_id);
+    }
+  }
+
+  // Retagging the WebContents is the whole move for the live tab.  The
+  // change notification is what carries it to AvoraSpaceTabFilter, which
+  // owns tab visibility for this window; see AdoptRetaggedTab() there.
+  SetTabSpaceId(contents, space_id);
+  tab_strip_model_->UpdateWebContentsState(contents, TabChangeType::kAll);
+}
+
+void AvoraPinnedSectionView::MovePinnedItemToSpace(
+    const std::string& item_id,
+    const std::string& space_id) {
+  if (!pinned_items_manager_ || !browser_ || space_id.empty()) {
+    return;
+  }
+  // No live tab means no retag, so nothing else will reconcile this item --
+  // the shared helper is the whole move here, folder scrub included.
+  avora::MovePinnedItemToSpace(browser_->GetProfile()->GetPrefs(), item_id,
+                               pinned_items_manager_->GetActiveSpaceId(),
+                               space_id);
 }
 
 void AvoraPinnedSectionView::LoadPinnedTabFavicon(PinnedTabRow* row) {

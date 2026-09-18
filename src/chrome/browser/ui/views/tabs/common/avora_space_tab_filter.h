@@ -64,6 +64,16 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   void OnTabChangedAt(tabs::TabInterface* tab,
                       TabChangeType change_type) override;
 
+  // Gives Avora's native pin gesture -- the tab context menu's "Pin Tab",
+  // its keyboard shortcut, anything else that ends in
+  // TabStripModel::SetTabsPinned() -- the same persistence the drag gesture
+  // already gets (see tab_drag_handler.cc): a backing kPinned item on pin,
+  // and its removal on unpin.  Without this, a natively pinned tab is
+  // nothing but a bit on the tab strip: it vanishes on restart, and
+  // AvoraPinnedSectionView renders it beside, rather than instead of, the
+  // persisted item for the same URL.
+  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+
   // SpaceManagerObserver:
   void OnSpacesChanged() override;
   void OnActiveSpaceChanged(const std::string& space_id) override;
@@ -106,6 +116,16 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // change rather than only on insertion, so tabs that arrive by drag, restore,
   // or undo are covered too.
   void AdoptUntaggedTabs();
+
+  // Picks up a Space reassignment made outside this class.  "Move to Space"
+  // (the tab context menu, a pinned row's menu) is expressed purely as a
+  // retag of the WebContents plus a tab-change notification, which keeps
+  // those call sites free of any dependency on the window's filter; this is
+  // where that retag lands in |tab_space_|, and where a pinned tab's backing
+  // kPinned item is carried across with it.  Returns true when |tab| had in
+  // fact moved, in which case the caller owes a store sync and a visibility
+  // pass.
+  bool AdoptRetaggedTab(tabs::TabInterface* tab);
 
   // Drops entries whose tab has gone away.
   void PruneClosedTabs();

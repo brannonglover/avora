@@ -13,9 +13,13 @@
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
 #include "base/metrics/user_metrics.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/avora/avora_favorites.h"
+#include "chrome/browser/avora/avora_space.h"
+#include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -38,6 +42,7 @@
 #include "chrome/browser/ui/tabs/split_tab_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_swap_menu_model.h"
 #include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -76,7 +81,62 @@ using base::UserMetricsAction;
 
 namespace {
 constexpr int kTabMenuIconSize = 16;
-}
+
+// Avora: the "Move Tab to Space" submenu, one row per Space other than the
+// one the tab currently belongs to.  Acts as its own delegate, in the same
+// shape as ExistingWindowSubMenuModel and friends.
+class AvoraMoveToSpaceSubMenuModel : public ui::SimpleMenuModel,
+                                     public ui::SimpleMenuModel::Delegate {
+ public:
+  // Menus dispatch by command id across the whole hierarchy, so this range
+  // must not overlap the dynamic ranges listed in tab_menu_model.h.  It sits
+  // above all of them.
+  static constexpr int kMinCommandId = 2001;
+
+  AvoraMoveToSpaceSubMenuModel(TabStripModel* tab_strip,
+                               base::WeakPtr<tabs::TabInterface> tab,
+                               const std::vector<avora::Space>& spaces,
+                               const std::string& current_space_id)
+      : ui::SimpleMenuModel(this),
+        tab_strip_(tab_strip),
+        tab_(std::move(tab)) {
+    for (const avora::Space& space : spaces) {
+      if (space.id == current_space_id) {
+        continue;
+      }
+      AddItem(kMinCommandId + static_cast<int>(space_ids_.size()),
+              base::UTF8ToUTF16(space.name));
+      space_ids_.push_back(space.id);
+    }
+  }
+
+  bool has_destinations() const { return !space_ids_.empty(); }
+
+  // ui::SimpleMenuModel::Delegate:
+  void ExecuteCommand(int command_id, int event_flags) override {
+    const size_t index = static_cast<size_t>(command_id - kMinCommandId);
+    if (index >= space_ids_.size() || !tab_strip_ || !tab_) {
+      return;
+    }
+    content::WebContents* contents = tab_->GetContents();
+    if (!contents) {
+      return;
+    }
+    // Retagging the WebContents is the entire move.  AvoraSpaceTabFilter
+    // owns which tabs a window draws, and picks the new tag up from the
+    // change notification below (see AdoptRetaggedTab there), so this call
+    // site needs no handle on the window's view hierarchy.
+    avora::SetTabSpaceId(contents, space_ids_[index]);
+    tab_strip_->UpdateWebContentsState(contents, TabChangeType::kAll);
+  }
+
+ private:
+  raw_ptr<TabStripModel> tab_strip_;
+  base::WeakPtr<tabs::TabInterface> tab_;
+  std::vector<std::string> space_ids_;
+};
+
+}  // namespace
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kAddANoteTabMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kSplitTabsMenuItem);
@@ -476,6 +536,24 @@ void TabMenuModel::Build(int index) {
               features::IsRoundedIconsEnabled() ? kOpenInNewIcon
                                                 : kOpenInNewOldIcon,
               ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
+    }
+  }
+
+  // Avora: "Move Tab to Space", alongside the move-to-window entries above.
+  // Deliberately acts on the context tab alone rather than the selection:
+  // Space membership is per-tab state, not a strip operation.
+  if (Profile* profile = tab_strip_->profile()) {
+    content::WebContents* contents = tab_strip_->GetWebContentsAt(index);
+    avora::SpaceManager space_manager(profile->GetPrefs());
+    auto submenu = std::make_unique<AvoraMoveToSpaceSubMenuModel>(
+        tab_strip_, tab_interface_, space_manager.GetSpaces(),
+        contents ? avora::GetTabSpaceId(contents) : std::string());
+    // A single-Space install has nowhere to move to; show nothing rather
+    // than an empty submenu.
+    if (submenu->has_destinations()) {
+      avora_move_to_space_submenu_ = std::move(submenu);
+      AddSubMenu(TabStripModel::CommandMoveToSpace, u"Move Tab to Space",
+                 avora_move_to_space_submenu_.get());
     }
   }
 

@@ -21,6 +21,7 @@
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/ui/views/avora/avora_favorites_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -437,9 +438,9 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
 
         pinned_section->SetDropHighlighted(over_pinned);
         if (over_pinned) {
-          int folder_idx =
-              pinned_section->GetFolderIndexAtScreenPoint(screen_location);
-          pinned_section->HighlightFolder(folder_idx);
+          std::string folder_id =
+              pinned_section->GetFolderIdAtScreenPoint(screen_location);
+          pinned_section->HighlightFolder(folder_id);
         } else {
           pinned_section->ClearHighlight();
         }
@@ -995,56 +996,32 @@ void TabDragHandlerImpl::StoppedDragging() {
           }
         }
         if (in_pinned_zone && pinned_section) {
-          int folder_idx =
-              pinned_section->GetFolderIndexAtScreenPoint(drop_point);
-          if (folder_idx >= 0) {
-            // Dropped on a folder header — add to that folder and close.
+          std::string folder_id =
+              pinned_section->GetFolderIdAtScreenPoint(drop_point);
+          if (!folder_id.empty()) {
+            // Dropped on a folder header. The tab becomes a persistent
+            // Pinned item filed in that folder -- resolving or creating the
+            // kPinned record and marking the tab as its live materialization
+            // (PinAndCreatePinnedItem with a null TabStripModel does only
+            // that half: folder membership is independent of
+            // TabStripModel's native pinned bit, so this never calls
+            // SetTabPinned). The tab is never closed: organizing a Pinned
+            // item must never touch its live page, the same principle as
+            // MoveItemToFolder() itself.
             drop_on_folder = true;
             auto* mgr = pinned_section->GetFoldersManager();
-            std::vector<base::WeakPtr<content::WebContents>>
-                folder_contents_to_close;
+            auto* items_manager = pinned_section->GetPinnedItemsManager();
             for (const auto& tab_data : drag_data.tab_drag_data_) {
-              if (tab_data.contents) {
-                std::string url =
-                    tab_data.contents->GetLastCommittedURL().spec();
-                std::string title =
-                    base::UTF16ToUTF8(tab_data.contents->GetTitle());
-                mgr->MoveTabToFolder(url, title, folder_idx);
-                folder_contents_to_close.push_back(
-                    tab_data.contents->GetWeakPtr());
+              if (!tab_data.contents) {
+                continue;
               }
-            }
-            // Defer tab closure to avoid model mutations during drag
-            // teardown (same reason as deferred SetTabPinned above).
-            if (!folder_contents_to_close.empty()) {
-              TabStripModel* model_ptr = &*tab_strip_model_;
-              base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                  FROM_HERE,
-                  base::BindOnce(
-                      [](TabStripModel* model,
-                         std::vector<base::WeakPtr<content::WebContents>>
-                             to_close) {
-                        std::vector<int> indices;
-                        for (auto& wc : to_close) {
-                          if (!wc) {
-                            continue;
-                          }
-                          int idx =
-                              model->GetIndexOfWebContents(wc.get());
-                          if (idx != TabStripModel::kNoTab) {
-                            indices.push_back(idx);
-                          }
-                        }
-                        std::sort(indices.rbegin(), indices.rend());
-                        for (int idx : indices) {
-                          model->CloseWebContentsAt(
-                              idx,
-                              TabCloseTypes::CLOSE_USER_GESTURE |
-                                  TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
-                        }
-                      },
-                      base::Unretained(model_ptr),
-                      std::move(folder_contents_to_close)));
+              avora::PinAndCreatePinnedItem(/*tab_strip=*/nullptr,
+                                            items_manager, tab_data.contents);
+              const std::string item_id =
+                  avora::GetPinnedItemIdForTab(tab_data.contents);
+              if (!item_id.empty() && mgr) {
+                mgr->MoveItemToFolder(item_id, folder_id);
+              }
             }
           } else {
             // Dropped on the pinned section but not on a folder — pin the tab.
@@ -1154,11 +1131,14 @@ void TabDragHandlerImpl::StoppedDragging() {
         avora::PinnedItemsManager* pinned_items_manager_ptr =
             pinned_section ? pinned_section->GetPinnedItemsManager()
                            : nullptr;
+        avora::PinnedFoldersManager* pinned_folders_manager_ptr =
+            pinned_section ? pinned_section->GetFoldersManager() : nullptr;
         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
             FROM_HERE,
             base::BindOnce(
                 [](TabStripModel* model,
                    avora::PinnedItemsManager* pinned_items_manager,
+                   avora::PinnedFoldersManager* pinned_folders_manager,
                    std::vector<base::WeakPtr<content::WebContents>> to_pin,
                    std::vector<base::WeakPtr<content::WebContents>> to_unpin) {
                   // Avora's pin gesture creates real kPinned persistence
@@ -1168,8 +1148,10 @@ void TabDragHandlerImpl::StoppedDragging() {
                   // BackfillNativePinnedTabs(), which remains a
                   // migration/reconciliation mechanism for pre-existing
                   // state only. Unpinning is the mirror: it removes that
-                  // persistence (and the tab's marker) independently of the
-                  // native pinned bit, and never closes the tab.
+                  // persistence (including folder membership, so no
+                  // dangling id is left behind) and the tab's marker,
+                  // independently of the native pinned bit, and never
+                  // closes the tab.
                   for (auto& weak_contents : to_pin) {
                     if (weak_contents) {
                       avora::PinAndCreatePinnedItem(model,
@@ -1179,14 +1161,15 @@ void TabDragHandlerImpl::StoppedDragging() {
                   }
                   for (auto& weak_contents : to_unpin) {
                     if (weak_contents) {
-                      avora::UnpinAndRemovePinnedItem(model,
-                                                      pinned_items_manager,
-                                                      weak_contents.get());
+                      avora::UnpinAndRemovePinnedItem(
+                          model, pinned_items_manager, pinned_folders_manager,
+                          weak_contents.get());
                     }
                   }
                 },
                 base::Unretained(model_ptr),
                 base::Unretained(pinned_items_manager_ptr),
+                base::Unretained(pinned_folders_manager_ptr),
                 std::move(contents_to_pin), std::move(contents_to_unpin)));
       }
     }

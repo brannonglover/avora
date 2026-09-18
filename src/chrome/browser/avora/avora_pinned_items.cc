@@ -98,6 +98,18 @@ std::string PinnedItemsManager::GetPinnedItemUrlById(
   return std::string();
 }
 
+std::optional<PinnedItemEntry> PinnedItemsManager::GetPinnedItemById(
+    const std::string& id) const {
+  if (!item_store_) {
+    return std::nullopt;
+  }
+  const SidebarItem* item = item_store_->GetItemById(id);
+  if (!item || item->type != SidebarItemType::kPinned) {
+    return std::nullopt;
+  }
+  return PinnedItemEntry{item->url, item->title, item->id};
+}
+
 bool PinnedItemsManager::IsPinned(const std::string& url) const {
   for (const auto& item : ActivePinnedItems()) {
     if (item.url == url) {
@@ -168,6 +180,14 @@ void PinnedItemsManager::MovePinnedItem(int from_index, int to_index) {
   ids.erase(ids.begin() + from_index);
   ids.insert(ids.begin() + to_index, moved);
   item_store_->ReorderItems(ids);
+}
+
+void PinnedItemsManager::ReorderAllItems(
+    const std::vector<std::string>& ordered_ids) {
+  if (!item_store_) {
+    return;
+  }
+  item_store_->ReorderItems(ordered_ids);
 }
 
 void PinnedItemsManager::MoveItemToSpace(

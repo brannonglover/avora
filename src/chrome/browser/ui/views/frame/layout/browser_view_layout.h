@@ -97,6 +97,9 @@ struct BrowserViewLayoutViews {
   // Avora link preview overlay (target="_blank").
   raw_ptr<views::View> avora_link_preview = nullptr;
 
+  // Avora confirmation toast, pinned to the top-right of the content area.
+  raw_ptr<views::View> avora_toast = nullptr;
+
   // LINT.ThenChange(//chrome/browser/ui/views/frame/browser_view.cc:BrowserViewLayoutViews)
 
   // These views are dynamically set.
