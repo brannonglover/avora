@@ -1,0 +1,154 @@
+/*
+ * Copyright 2026 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
+
+.style-intelligence {
+  box-sizing: border-box;
+  color: var(--sys-color-on-surface);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  font-size: var(--sys-typescale-body4-size);
+  gap: 10px;
+  height: auto;
+  line-height: 1.35;
+  min-height: min-content;
+  padding: 8px 12px 12px;
+}
+
+.style-intelligence > section,
+.style-intelligence > header,
+.row,
+.diagnostic {
+  flex: none;
+  min-height: min-content;
+}
+
+.style-intelligence.empty,
+.status,
+.note,
+.token-label,
+.token-resolved,
+.diagnostic-category {
+  color: var(--sys-color-on-surface-subtle);
+}
+
+.identity,
+.size {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.identity {
+  font-family: var(--monospace-font-family);
+}
+
+.size {
+  font-size: var(--sys-typescale-body3-size);
+  margin-top: 2px;
+}
+
+h2,
+h3 {
+  color: var(--sys-color-on-surface-subtle);
+  font-size: var(--sys-typescale-body5-size);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+h3 {
+  margin-top: 6px;
+}
+
+p {
+  margin: 0;
+}
+
+.primary {
+  margin-top: 1px;
+}
+
+.row + .row {
+  margin-top: 2px;
+}
+
+.control {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+  min-width: 0;
+}
+
+.control-text,
+.token-name,
+.declaration {
+  font-family: var(--monospace-font-family);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-row {
+  column-gap: 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-top: 2px;
+}
+
+.token-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.actions button,
+summary {
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  color: var(--sys-color-primary);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.actions button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--sys-color-primary);
+  outline-offset: 1px;
+}
+
+.actions button:hover,
+summary:hover {
+  text-decoration: underline;
+}
+
+details {
+  margin-top: 2px;
+}
+
+details:not([open]) > :not(summary) {
+  display: none;
+}
+
+.diagnostic {
+  margin-top: 4px;
+}
+
+.diagnostic-category {
+  font-size: var(--sys-typescale-body5-size);
+  text-transform: uppercase;
+}

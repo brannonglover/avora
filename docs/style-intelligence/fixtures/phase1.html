@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<!--
+  Phase 1 live fixture for Style Intelligence.
+  Open this file in Avora, then Elements → Intelligence.
+  Ids correspond to the correctness contract in ../correctness.md.
+  Unit coverage lives in panels/style_intelligence/*.test.ts.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Style Intelligence Phase 1</title>
+  <style>
+    body { margin: 0; font: 14px sans-serif; }
+    .case { margin: 16px; }
+    .swatch { background: #d0d7de; }
+
+    #collapse-a { height: 20px; margin-bottom: 20px; }
+    #collapse-b { height: 20px; margin-top: 30px; }
+
+    #flex-gap { display: flex; flex-direction: column; row-gap: 16px; }
+    #flex-gap-a, #flex-gap-b { height: 20px; width: 80px; }
+    #flex-gap-b { margin-top: 8px; }
+
+    #grid { display: grid; grid-template-columns: 100px 100px; column-gap: 20px; row-gap: 12px; width: 220px; }
+    #grid > div { height: 20px; }
+
+    #grid-order { display: grid; grid-template-columns: 80px 80px; column-gap: 10px; }
+    #go-a { grid-column: 2; height: 20px; width: 80px; }
+    #go-b { grid-column: 1; height: 20px; width: 80px; }
+
+    #flex-order { display: flex; column-gap: 8px; }
+    #fo-a { order: 2; width: 40px; height: 20px; }
+    #fo-b { order: 1; width: 40px; height: 20px; }
+
+    #pad { padding: 16px; width: 120px; }
+    #pad-child { height: 20px; }
+
+    #neg { display: flex; }
+    #neg-a { width: 100px; height: 20px; }
+    #neg-b { width: 40px; height: 20px; margin-left: -8px; }
+
+    #ib-a { display: inline-block; width: 40px; height: 20px; margin-right: 10px; }
+    #ib-b { display: inline-block; width: 40px; height: 20px; margin-left: 6px; }
+
+    #rel-parent { display: flex; flex-direction: column; row-gap: 16px; }
+    #rel-a, #rel-b { height: 20px; width: 80px; }
+    #rel-b { position: relative; top: 8px; }
+
+    #abs-parent { display: flex; position: relative; height: 30px; }
+    #abs-a { width: 40px; height: 20px; }
+    #abs-mid { position: absolute; left: 50px; top: 0; width: 20px; height: 20px; background: #f0a; }
+    #abs-b { width: 40px; height: 20px; margin-left: 40px; }
+
+    #xf-parent { display: flex; column-gap: 16px; }
+    #xf-a { width: 40px; height: 20px; transform: translateX(4px); }
+    #xf-b { width: 40px; height: 20px; }
+
+    #contents-parent { display: flex; column-gap: 12px; }
+    #contents-wrap { display: contents; }
+    #contents-a, #contents-b { width: 40px; height: 20px; }
+
+    #indefinite { width: 200px; }
+    #pct-bad { height: 100%; }
+    #definite { height: 200px; width: 200px; }
+    #pct-ok { height: 100%; }
+
+    #packed, #loose { display: flex; width: 200px; height: 40px; justify-content: center; }
+    #packed > div { width: 100px; height: 20px; }
+    #loose > div { width: 40px; height: 20px; }
+
+    #inline-size { display: inline; width: 40px; }
+    #static-inset { position: static; top: 10px; height: 20px; width: 40px; }
+    #static-z { position: static; z-index: 5; height: 20px; width: 40px; }
+    #block-flex { display: block; flex-grow: 1; height: 20px; width: 40px; }
+
+    #cascade { width: 100px; height: 20px; }
+    #cascade.extra { width: 140px; }
+
+    @keyframes pulse {
+      from { width: 40px; }
+      to { width: 90px; }
+    }
+    #animated { width: 80px; height: 20px; animation: pulse 1s linear infinite alternate; }
+
+    #nosource-parent { display: flex; }
+    #inline-decl { width: 70px; height: 20px; }
+  </style>
+</head>
+<body>
+  <div class="case" id="collapse"><div class="swatch" id="collapse-a"></div><div class="swatch" id="collapse-b"></div></div>
+  <div class="case" id="flex-gap"><div class="swatch" id="flex-gap-a"></div><div class="swatch" id="flex-gap-b"></div></div>
+  <div class="case" id="grid"><div class="swatch" id="g1"></div><div class="swatch" id="g2"></div><div class="swatch" id="g3"></div><div class="swatch" id="g4"></div></div>
+  <div class="case" id="grid-order"><div class="swatch" id="go-a"></div><div class="swatch" id="go-b"></div></div>
+  <div class="case" id="flex-order"><div class="swatch" id="fo-a"></div><div class="swatch" id="fo-b"></div></div>
+  <div class="case" id="pad"><div class="swatch" id="pad-child"></div></div>
+  <div class="case" id="neg"><div class="swatch" id="neg-a"></div><div class="swatch" id="neg-b"></div></div>
+  <div class="case" id="ib"><span class="swatch" id="ib-a"></span><span class="swatch" id="ib-b"></span></div>
+  <div class="case" id="rel-parent"><div class="swatch" id="rel-a"></div><div class="swatch" id="rel-b"></div></div>
+  <div class="case" id="abs-parent"><div class="swatch" id="abs-a"></div><div id="abs-mid"></div><div class="swatch" id="abs-b"></div></div>
+  <div class="case" id="xf-parent"><div class="swatch" id="xf-a"></div><div class="swatch" id="xf-b"></div></div>
+  <div class="case" id="contents-parent"><div id="contents-wrap"><div class="swatch" id="contents-a"></div><div class="swatch" id="contents-b"></div></div></div>
+  <div class="case" id="indefinite"><div class="swatch" id="pct-bad">Hi</div></div>
+  <div class="case swatch" id="definite"><div id="pct-ok"></div></div>
+  <div class="case" id="packed"><div class="swatch"></div><div class="swatch"></div></div>
+  <div class="case" id="loose"><div class="swatch"></div><div class="swatch"></div></div>
+  <div class="case"><span id="inline-size">inline</span></div>
+  <div class="case swatch" id="static-inset"></div>
+  <div class="case swatch" id="static-z"></div>
+  <div class="case swatch" id="block-flex"></div>
+  <div class="case swatch extra" id="cascade"></div>
+  <div class="case swatch" id="animated"></div>
+  <div class="case" id="nosource-parent"><div id="nosource"></div></div>
+  <div id="inline-decl"></div>
+  <script>
+    const inlineDecl = document.getElementById('inline-decl');
+    inlineDecl.style.width = '70px';
+    inlineDecl.style.height = '20px';
+    inlineDecl.style.marginLeft = '14px';
+  </script>
+  <script>
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync('#nosource { width: 80px; height: 20px; margin-left: 12px; background: #cde; }');
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  </script>
+</body>
+</html>
