@@ -164,3 +164,21 @@ There is no separate Style Intelligence cache. Reads go through `CSSModel.cached
 A class change, parent class change, inline style edit, stylesheet edit, flex or grid property change, pseudo-state change, or removal of the selected node arrives as one of those existing events and schedules a new `describe`. Node-scoped invalidation is sufficient. Phase 1 does not invalidate the whole document to refresh one element.
 
 The live page used to verify this behavior is `docs/style-intelligence/fixtures/phase1.html`. The regression suite is the `*.test.ts` files in the module.
+
+## Layering
+
+Layering is a separate lazy entry point. `StyleIntelligenceModel.describe()` stays the node-scoped Phase 1 path and does not call `DOMSnapshot.captureSnapshot`.
+
+Opening the Layering section runs three steps:
+
+1. `explainStackingContext` records every CSS-visible reason the selected node or an ancestor creates a stacking context. There is no primary reason. The shown value prefers the matched authored declaration; the computed value stays on the reason.
+2. `buildStackingChain` walks `parentLayoutNodeId`, the same layout parent Phase 1 uses, so `display: contents` is skipped. The chain keeps ancestors that create a stacking context. `position: relative` with `z-index: auto` can be stacked in paint and is not recorded as a context.
+3. A snapshot is captured only while Layering is open and only when an ancestor context is not the document root. The section stays on its loading line until that snapshot is applied, so a CSS context is not shown and then withdrawn. A failed capture keeps the CSS chain because Blink’s bit was not observed.
+
+The snapshot is cached per target while Layering stays open. Selection does not drop it. It is dropped on a stylesheet or inline style change, DOM mutation, detach, navigation, document replacement, and top-layer changes. A closed section does not recapture. Stale responses are dropped with the pane’s request id.
+
+`applySnapshot` treats Blink’s stacking bit as authoritative. A set bit with no CSS reason becomes `internal` at limited confidence. A clear bit drops the CSS reasons for that node.
+
+`explainStackingBoundary` returns a trapping context and one later sibling context, or nothing. `order` is either `{kind: 'z-index', value}` or `{kind: 'paint-order'}`. The z-index kind is a strictly greater effective z-index. The paint-order kind is same-level sibling order from `DOMSnapshot` paint order. Neither kind is an overlap or covering fact.
+
+`presentLayering` words those facts. A z-index boundary says the selected element cannot leave the trap by increasing its own z-index. A paint-order boundary says the element is confined to the trap and the sibling context is ordered later. Top layer is a separate explanation and is not compared as a sibling. Highlight and Inspect target the trap, not the selected node. Source uses the trap’s author declaration when it has a range.

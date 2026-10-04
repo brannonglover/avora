@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Layering boundary order</title>
+  <style>
+    section { position: relative; margin: 12px; }
+    .box { width: 80px; height: 24px; }
+  </style>
+</head>
+<body>
+  <section id="both-auto">
+    <div id="auto-a" class="box" style="opacity:0.9">auto a</div>
+    <div id="auto-b" class="box" style="opacity:0.9">auto b</div>
+  </section>
+  <section id="both-zero">
+    <div id="zero-a" class="box" style="position:relative;z-index:0">zero a</div>
+    <div id="zero-b" class="box" style="position:relative;z-index:0">zero b</div>
+  </section>
+  <section id="equal-positive">
+    <div id="pos-a" class="box" style="position:relative;z-index:2">pos a</div>
+    <div id="pos-b" class="box" style="position:relative;z-index:2">pos b</div>
+  </section>
+  <section id="negative">
+    <div id="neg-a" class="box" style="position:relative;z-index:-1">neg -1 first</div>
+    <div id="neg-b" class="box" style="position:relative;z-index:-5">neg -5</div>
+    <div id="neg-c" class="box" style="position:relative;z-index:-1">neg -1 second</div>
+  </section>
+  <section id="auto-then-zero">
+    <div id="az-auto" class="box" style="opacity:0.8">auto then</div>
+    <div id="az-zero" class="box" style="position:relative;z-index:0">zero</div>
+  </section>
+  <section id="zero-then-auto">
+    <div id="za-zero" class="box" style="position:relative;z-index:0">zero then</div>
+    <div id="za-auto" class="box" style="opacity:0.8">auto</div>
+  </section>
+  <section id="opacity-then-transform">
+    <div id="op-a" class="box" style="opacity:0.5">opacity</div>
+    <div id="tr-b" class="box" style="transform:translateZ(0)">transform</div>
+  </section>
+  <section id="transform-then-opacity">
+    <div id="tr-c" class="box" style="transform:translateZ(0)">transform</div>
+    <div id="op-d" class="box" style="opacity:0.5">opacity</div>
+  </section>
+  <section id="tree-order">
+    <div id="tree-first" class="box" style="position:relative;z-index:1">first</div>
+    <div id="tree-second" class="box" style="position:relative;z-index:1">second</div>
+  </section>
+  <section id="mixed">
+    <div id="mix-rel" class="box" style="position:relative;z-index:auto">relative auto</div>
+    <div id="mix-op" class="box" style="opacity:0.9">opacity</div>
+    <div id="mix-z" class="box" style="position:relative;z-index:1">z 1</div>
+    <div id="mix-tr" class="box" style="transform:translateZ(0)">transform</div>
+  </section>
+  <section id="flex-order" style="display:flex">
+    <div id="flex-dom-first" class="box" style="order:2;opacity:0.9">dom first, order 2</div>
+    <div id="flex-dom-second" class="box" style="order:1;opacity:0.9">dom second, order 1</div>
+  </section>
+  <section id="trapped">
+    <div id="trap-early" class="box" style="opacity:0.9">
+      early
+      <div id="trap-child" style="position:relative;z-index:50">child</div>
+    </div>
+    <div id="trap-later" class="box" style="opacity:0.9">later</div>
+  </section>
+  <section id="greater">
+    <div id="gt-auto" class="box" style="opacity:0.9">auto</div>
+    <div id="gt-pos" class="box" style="position:relative;z-index:3">positive</div>
+    <div id="gt-neg" class="box" style="position:relative;z-index:-2">negative</div>
+  </section>
+  <div id="tl-huge" class="box" style="position:relative;z-index:999999">huge</div>
+  <div id="tl-neg" class="box" style="position:relative;z-index:-5">neg</div>
+  <div id="tl-tr" class="box" style="transform:translateZ(0)">transform</div>
+  <div id="tl-fixed" class="box" style="position:fixed;top:0;right:0;z-index:100">fixed</div>
+  <dialog id="tl-dialog">dialog</dialog>
+  <div id="island" style="opacity:0.95">
+    <div id="island-early" style="opacity:0.9">
+      early
+      <div id="island-child" style="position:relative;z-index:4">child</div>
+    </div>
+    <div id="island-later" style="opacity:0.9">later</div>
+  </div>
+  <div id="multi" style="opacity:0.9;transform:translateZ(0)">
+    <div id="multi-child">multi child</div>
+  </div>
+  <script>
+    document.getElementById('tl-dialog').showModal();
+  </script>
+</body>
+</html>

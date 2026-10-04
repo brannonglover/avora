@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<!--
+  Style Intelligence Phase 2 investigation fixture.
+  Not a product test. Used to compare DOMSnapshot stacking bits, paint order,
+  and computed styles against Blink's stacking-context rules.
+  Canonical failure: #modal cannot rise above #header by increasing z-index,
+  because #content creates a stacking context.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Style Intelligence Phase 2 investigation</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  section { margin: 16px; padding: 8px; border: 1px solid #ccc; }
+  h2 { margin: 0 0 8px; font-size: 14px; }
+
+  /* Canonical cross-context failure. */
+  #header {
+    position: relative;
+    z-index: 10;
+    height: 40px;
+    background: #246;
+    color: white;
+  }
+  #content {
+    transform: translateZ(0);
+    position: relative;
+    height: 120px;
+    background: #ddd;
+  }
+  #modal {
+    position: absolute;
+    z-index: 9999;
+    top: -20px;
+    left: 8px;
+    width: 160px;
+    height: 48px;
+    background: #c33;
+    color: white;
+  }
+
+  #flow-child { margin: 4px; }
+
+  #pos-auto { position: relative; z-index: auto; background: #eef; }
+  #pos-z { position: relative; z-index: 2; background: #efe; }
+
+  #opacity-host { opacity: 0.99; }
+  #opacity-child { position: relative; z-index: 50; }
+
+  #transform-host { transform: translateZ(0); }
+  #isolation-host { isolation: isolate; }
+  #filter-host { filter: blur(0); }
+  #blend-host { mix-blend-mode: multiply; background: #ccc; }
+  #will-change-host { will-change: opacity; }
+  #contain-host { contain: paint; }
+  #clip-path-host { clip-path: inset(0); }
+  #mask-host { -webkit-mask-image: linear-gradient(#000, #000); }
+
+  #fixed-el { position: fixed; top: 4px; right: 4px; width: 40px; height: 20px; background: #393; }
+  #sticky-scroll { height: 80px; overflow: auto; }
+  #sticky-el { position: sticky; top: 0; background: #fc6; }
+
+  #flex-host { display: flex; }
+  #flex-item { z-index: 3; background: #9cf; }
+  #grid-host { display: grid; }
+  #grid-item { z-index: 4; background: #f9c; }
+
+  #clipper { overflow: hidden; width: 80px; height: 40px; }
+  #clipped { width: 120px; height: 20px; background: #69c; }
+
+  #outer-scroll { height: 70px; overflow: auto; }
+  #inner-scroll { height: 120px; overflow: auto; }
+  #scroll-child { height: 200px; background: #eee; }
+
+  #abs-host { position: relative; height: 60px; }
+  #abs-child { position: absolute; top: 8px; left: 8px; width: 40px; height: 20px; background: #c96; }
+
+  #cb-transform { transform: translateX(0); position: relative; height: 50px; }
+  #fixed-in-transform { position: fixed; top: 8px; left: 8px; width: 30px; height: 16px; background: #636; }
+
+  #sibling-a { position: relative; z-index: 1; height: 24px; background: #48a; }
+  #sibling-b { position: relative; z-index: 2; height: 24px; margin-top: -12px; background: #a48; }
+</style>
+</head>
+<body>
+  <section id="canonical">
+    <h2>Canonical stacking boundary</h2>
+    <div id="header">header z-index 10</div>
+    <div id="content">
+      content transform
+      <div id="modal">modal z-index 9999</div>
+    </div>
+  </section>
+
+  <section id="flow">
+    <h2>Normal flow</h2>
+    <div id="flow-child">flow</div>
+  </section>
+
+  <section id="positioned">
+    <h2>Positioned</h2>
+    <div id="pos-auto">relative auto</div>
+    <div id="pos-z">relative z-index 2</div>
+  </section>
+
+  <section id="nested">
+    <h2>Nested contexts</h2>
+    <div id="opacity-host">opacity
+      <div id="opacity-child">child z-index</div>
+    </div>
+    <div id="transform-host">transform</div>
+    <div id="isolation-host">isolation</div>
+    <div id="filter-host">filter</div>
+    <div id="blend-host">blend</div>
+    <div id="will-change-host">will-change</div>
+    <div id="contain-host">contain paint</div>
+    <div id="clip-path-host">clip-path</div>
+    <div id="mask-host">mask</div>
+  </section>
+
+  <section id="fixed-sticky">
+    <h2>Fixed and sticky</h2>
+    <div id="fixed-el"></div>
+    <div id="sticky-scroll"><div id="sticky-el">sticky</div><div style="height:160px"></div></div>
+  </section>
+
+  <section id="flex-grid">
+    <h2>Flex and grid items</h2>
+    <div id="flex-host"><div id="flex-item">flex item</div></div>
+    <div id="grid-host"><div id="grid-item">grid item</div></div>
+  </section>
+
+  <section id="clip-scroll">
+    <h2>Clip and scroll</h2>
+    <div id="clipper"><div id="clipped">clipped</div></div>
+    <div id="outer-scroll">
+      <div id="inner-scroll"><div id="scroll-child">scroll</div></div>
+    </div>
+  </section>
+
+  <section id="absolute">
+    <h2>Absolute and transformed containing block</h2>
+    <div id="abs-host"><div id="abs-child">abs</div></div>
+    <div id="cb-transform"><div id="fixed-in-transform">fixed in transform</div></div>
+  </section>
+
+  <section id="siblings">
+    <h2>Sibling stacking contexts</h2>
+    <div id="sibling-a">a</div>
+    <div id="sibling-b">b</div>
+  </section>
+
+  <section id="top-layer">
+    <h2>Top layer</h2>
+    <button id="open-dialog" type="button">open</button>
+    <dialog id="dlg"><p id="dlg-body">dialog</p></dialog>
+    <button id="pop" type="button" popovertarget="pop-el">popover</button>
+    <div id="pop-el" popover>popover</div>
+  </section>
+
+  <section id="shadow-frame">
+    <h2>Shadow and frame</h2>
+    <div id="shadow-host"></div>
+    <iframe id="frame-host" title="inner" srcdoc="<div id='frame-card' style='position:relative;z-index:5'>frame</div>"></iframe>
+  </section>
+  <script>
+    const host = document.getElementById('shadow-host');
+    const root = host.attachShadow({mode: 'open'});
+    root.innerHTML = '<div id="shadow-card" style="opacity:0.8">shadow</div>';
+  </script>
+</body>
+</html>

@@ -16,9 +16,15 @@ devtools_ui_module("style_intelligence") {
   sources = [
     "Diagnostics.ts",
     "ElementSummary.ts",
+    "LayeringPresentation.ts",
     "LayoutExplanation.ts",
     "Presentation.ts",
     "SpacingExplanation.ts",
+    "StackingBoundary.ts",
+    "StackingChain.ts",
+    "StackingChainLoader.ts",
+    "StackingReasons.ts",
+    "StackingSnapshot.ts",
     "StyleIntelligenceModel.ts",
     "StyleIntelligencePane.ts",
   ]
@@ -70,9 +76,13 @@ devtools_ui_module("unittests") {
   sources = [
     "Diagnostics.test.ts",
     "ElementSummary.test.ts",
+    "LayeringPresentation.test.ts",
     "LayoutExplanation.test.ts",
     "Presentation.test.ts",
     "SpacingExplanation.test.ts",
+    "StackingBoundary.test.ts",
+    "StackingChain.test.ts",
+    "StackingReasons.test.ts",
   ]
 
   deps = [ ":bundle" ]

@@ -28,6 +28,14 @@ When a longhand is implicit in a shorthand, Source opens the shorthand. A longha
 
 Highlight and Inspect resolve the target with `nodeForId` on the selected node’s `DOMModel`. A node id that belongs to another document is not highlighted. The action hides the overlay instead of pointing at the wrong box.
 
+## Layering
+
+Layering explains the selected element’s stacking context, why that context exists, and when a sibling context is ordered later. It does not detect overlap, hit-test the point under the cursor, or say which element covers the selected box.
+
+An internal context is one Blink reports and the CSS predicate cannot name. The section says so and does not guess a property. The live fixture did not contain one of these; the unit test covers the contract.
+
+Highlight draws the existing overlay on the boundary node. There are no connector lines. Iframe and shadow chains are covered by unit tests. The Phase 1 live pass did not establish those rows as selectable, and the Phase 2A live pass selected elements in the main document.
+
 ## Shadow and iframe selection
 
 The model follows whatever element DevTools has selected, including a node whose `DOMModel` is an iframe or a shadow tree, once that node is the selection.

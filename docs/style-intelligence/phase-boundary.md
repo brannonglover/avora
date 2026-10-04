@@ -2,20 +2,24 @@
 
 Phase 1 is the explanation layer: inspect a selected element, read measured layout, and say why that box looks the way it does when the evidence is deterministic.
 
-Phase 1 is complete. The documents next to this file are the foundation for later work:
+Phase 1 is complete at the foundation commit for this work. Phase 2A adds Layering for the selected element: the CSS reason list, the ancestor context chain, a lazy document snapshot, and a sibling-order boundary. Phase 2B, visual constraints, is not part of that work and has not been started.
+
+The documents next to this file are the foundation for later work:
 
 - `architecture.md` — ownership, data flow, models, presentation, and invalidation
 - `correctness.md` — declines that later work must not weaken
 - `limitations.md` — current limits that are not those declines
-- `fixtures/phase1.html` — the live page
+- `fixtures/phase1.html` — the Phase 1 live page
+- `fixtures/phase2-investigation.html` — the Layering live page
+- `fixtures/phase2a-boundary-order.html` — sibling paint-order measurements
 - `panels/style_intelligence/*.test.ts` — the regression suite
 
 ## Outside Phase 1
 
 The following are not part of Phase 1 and are not implied by the current pane:
 
-- stacking-context explorer
-- visual constraint connectors
+- a page-wide stacking explorer
+- visual constraint connectors, containing-block inference, clipping parents, and scroll containers
 - responsive intelligence
 - page-wide token discovery
 - AI

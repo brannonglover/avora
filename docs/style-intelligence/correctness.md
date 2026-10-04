@@ -63,6 +63,20 @@ A flex formatting context can be what sets the used size. `flex`, `flex-grow`, `
 
 ## Stacking context
 
-Phase 1 does not explain stacking contexts, paint order, or which element created a stacking context.
+Phase 1 does not explain stacking contexts, paint order, or which element created a stacking context. The Layering section below is additional analysis. It does not change Phase 1’s layout, spacing, or diagnostic results.
 
 `z-index` may be reported as having no effect when the existing `CSSRuleValidator` already says so, for example on a `position: static` box. That sentence is the validator hint. It is not a stacking analysis.
+
+## Layering
+
+These declines belong to the Layering section. They were checked against Blink’s paint-layer walk and `docs/style-intelligence/fixtures/phase2a-boundary-order.html`.
+
+A boundary names a sibling stacking context only when the selected element is inside a confirmed non-root stacking context and that sibling belongs to the same parent context in the same document. The sentence describes stacking order. It does not say the sibling covers the selected box.
+
+Effective z-index is used when one sibling is strictly greater. `auto` compares as 0 where z-index applies. Several greater siblings resolve to the greatest value. A tie at that value declines, even when paint order could sequence those siblings.
+
+Paint order is the enclosing PaintLayer’s index from a pre-order walk of negative z-order, then in-flow layers, then positive z-order. Equal effective z-index keeps tree order, and flex or grid `order` is part of that walk. On the fixture, both `auto`, both `0`, equal positive values, `auto` beside `0`, opacity beside `transform`, and a flex `order` swap all followed that index. A descendant’s index sits between its trapping context and the next sibling context.
+
+Paint order may say a same-level sibling context is ordered later only when both indexes are non-zero and different. Index 0 is also what the snapshot stores when a layer is missing, so it is not “painted first.” A shared index is one layer, not an order between two contexts. A higher index on a lower z-index sibling does not promote that sibling. A top-layer box (`overlay: auto`) is excluded from this comparison. On the fixture an open dialog’s index was after `z-index: 999999`, a fixed box, a transform context, and a negative z-index.
+
+`position: relative` with `z-index: auto` is stacked and is not a stacking context. `display: contents` and `display: none` do not create one. Containing block, clipping parent, scroll container, and occlusion stay out of this explanation.
