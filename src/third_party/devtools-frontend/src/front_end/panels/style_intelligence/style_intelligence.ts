@@ -6,6 +6,9 @@ import './Diagnostics.js';
 import './ElementSummary.js';
 import './LayeringPresentation.js';
 import './LayoutExplanation.js';
+import './LayoutRelationships.js';
+import './LayoutRelationshipsLoader.js';
+import './LayoutRelationshipsPresentation.js';
 import './Presentation.js';
 import './SpacingExplanation.js';
 import './StackingBoundary.js';
@@ -20,6 +23,8 @@ import * as Diagnostics from './Diagnostics.js';
 import * as ElementSummary from './ElementSummary.js';
 import * as LayeringPresentation from './LayeringPresentation.js';
 import * as LayoutExplanation from './LayoutExplanation.js';
+import * as LayoutRelationships from './LayoutRelationships.js';
+import * as LayoutRelationshipsPresentation from './LayoutRelationshipsPresentation.js';
 import * as SpacingExplanation from './SpacingExplanation.js';
 import * as StackingBoundary from './StackingBoundary.js';
 import * as StackingChain from './StackingChain.js';
@@ -33,6 +38,8 @@ export {
   ElementSummary,
   LayeringPresentation,
   LayoutExplanation,
+  LayoutRelationships,
+  LayoutRelationshipsPresentation,
   SpacingExplanation,
   StackingBoundary,
   StackingChain,

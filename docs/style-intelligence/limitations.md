@@ -8,7 +8,7 @@ Style Intelligence explains CSS. An HTML attribute such as the `width` on Hacker
 
 ## Unnamed containing blocks
 
-Absolute and fixed boxes do not get a named containing block, because `parentLayoutNodeId` is not that block. The root element’s containing block is likewise unnamed. Insets can still be listed when they participate. See the corresponding guarantee in `correctness.md`.
+Phase 1 still does not treat `parentLayoutNodeId` as a containing block. When `CSS.getLayoutRelationshipsForNode` returns a relationship, the Position section names an element, the viewport, or an anonymous layout container. A missing command leaves the Phase 1 caveat. Insets can still be listed when they participate. See `correctness.md`.
 
 ## Non-horizontal writing modes
 
@@ -35,6 +35,10 @@ Layering explains the selected element’s stacking context, why that context ex
 An internal context is one Blink reports and the CSS predicate cannot name. The section says so and does not guess a property. The live fixture did not contain one of these; the unit test covers the contract.
 
 Highlight draws the existing overlay on the boundary node. There are no connector lines. Iframe and shadow chains are covered by unit tests. The Phase 1 live pass did not establish those rows as selectable, and the Phase 2A live pass selected elements in the main document.
+
+## Inferred scrollport row identification
+
+When Blink names the sticky scroll containers, presentation drops Phase 1's inferred nearest-scrollport row. `isInferredScrollportControl` identifies that row by its label text, because the Phase 1 control no longer carries a node id once Highlight has been consumed. This is string-based coupling to Phase 1 copy and is known technical debt. It is covered by unit tests. Changing it means changing Phase 1 presentation or model contracts, which is outside the Phase 2B scope that closed this work.
 
 ## Shadow and iframe selection
 

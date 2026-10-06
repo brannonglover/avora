@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Phase 2B relationship investigation</title>
+  <style>
+    section { margin: 16px; padding: 8px; border: 1px solid #ccc; }
+    .box { width: 120px; height: 40px; }
+  </style>
+</head>
+<body>
+  <section id="abs-simple">
+    <div id="abs-relative" style="position:relative">
+      <div id="abs-static" style="position:static">
+        <div id="abs-child" class="box" style="position:absolute;top:4px;left:4px">absolute</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="abs-nested">
+    <div id="abs-outer" style="position:relative">
+      <div id="abs-inner" style="position:absolute;top:0;left:0">
+        <div id="abs-nested-child" class="box" style="position:absolute;top:8px;left:8px">nested</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="fixed-plain">
+    <div id="fixed-relative" style="position:relative">
+      <div id="fixed-child" class="box" style="position:fixed;top:8px;right:8px">fixed</div>
+    </div>
+  </section>
+
+  <section id="fixed-transform">
+    <div id="fixed-transformed" style="transform:translateZ(0);position:relative">
+      <div id="fixed-in-transform" class="box" style="position:fixed;top:4px;left:4px">fixed in transform</div>
+    </div>
+  </section>
+
+  <section id="filter-perspective">
+    <div id="filter-host" style="filter:blur(0)">
+      <div id="abs-in-filter" class="box" style="position:absolute;top:0;left:0">in filter</div>
+    </div>
+    <div id="perspective-host" style="perspective:100px">
+      <div id="fixed-in-perspective" class="box" style="position:fixed;top:0;left:0">in perspective</div>
+    </div>
+  </section>
+
+  <section id="containment">
+    <div id="contain-paint" style="contain:paint">
+      <div id="abs-in-contain" class="box" style="position:absolute;top:0;left:0">in contain</div>
+    </div>
+    <div id="will-change-transform" style="will-change:transform">
+      <div id="fixed-in-will-change" class="box" style="position:fixed;top:0;left:0">will-change</div>
+    </div>
+  </section>
+
+  <section id="contents">
+    <div id="contents-relative" style="position:relative">
+      <div id="contents-skip" style="display:contents">
+        <div id="abs-through-contents" class="box" style="position:absolute;top:0;left:0">through contents</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="shadow-frame">
+    <div id="shadow-host"></div>
+    <iframe id="frame-host" title="inner" srcdoc="
+      <div id='frame-transform' style='transform:translateZ(0)'>
+        <div id='frame-fixed' style='position:fixed;top:0;left:0'>frame fixed</div>
+      </div>
+    "></iframe>
+  </section>
+
+  <section id="scroll-nested" style="height:80px;overflow:auto">
+    <div id="scroll-outer" style="height:70px;overflow:auto">
+      <div id="scroll-inner" style="height:60px;overflow:auto">
+        <div id="scroll-child" style="height:120px">scroll child</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="scroll-empty">
+    <div id="overflow-auto-empty" style="overflow:auto;height:40px">
+      <div id="empty-child">no overflow</div>
+    </div>
+    <div id="overflow-clip" style="overflow:clip;height:40px">
+      <div id="clip-child" style="position:sticky;top:0">clip sticky</div>
+    </div>
+  </section>
+
+  <section id="sticky-axes">
+    <div id="axis-outer-y" style="overflow-x:clip;overflow-y:scroll;width:160px;height:80px">
+      <div id="axis-inner-x" style="overflow-x:scroll;overflow-y:clip;width:140px;height:200px">
+        <div id="sticky-both" style="position:sticky;top:8px;left:8px">both</div>
+        <div id="sticky-top" style="position:sticky;top:8px">top</div>
+        <div id="sticky-left" style="position:sticky;left:8px">left</div>
+        <div style="width:400px;height:400px"></div>
+      </div>
+    </div>
+    <div id="axis-vertical-wm" style="writing-mode:vertical-rl;overflow-inline:clip;overflow-block:scroll;width:80px;height:80px">
+      <div id="sticky-wm" style="position:sticky;top:4px;left:4px">wm</div>
+      <div style="width:40px;height:200px"></div>
+    </div>
+  </section>
+
+  <section id="sticky-nested">
+    <div id="sticky-outer" style="height:80px;overflow:auto">
+      <div id="sticky-inner" style="height:160px;overflow:auto">
+        <div id="sticky-el" style="position:sticky;top:8px">sticky</div>
+        <div style="height:200px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="scroll-transform">
+    <div id="scroll-transformed" style="transform:translateZ(0);height:50px;overflow:auto">
+      <div id="transformed-scroll-child" style="height:100px">transformed scroller child</div>
+    </div>
+  </section>
+
+  <section id="clips">
+    <div id="overflow-hidden" style="overflow:hidden;height:30px">
+      <div id="hidden-child" style="height:80px">hidden</div>
+    </div>
+    <div id="radius-clip" style="overflow:hidden;border-radius:12px;height:40px">
+      <div id="radius-child">radius</div>
+    </div>
+    <div id="clip-path-host" style="clip-path:circle(40%)">
+      <div id="clip-path-child">clip path</div>
+    </div>
+    <div id="contain-clip" style="contain:paint;height:30px">
+      <div id="contain-clip-child" style="height:80px">contain paint</div>
+    </div>
+    <div id="nested-clip-outer" style="overflow:hidden;height:50px">
+      <div id="nested-clip-inner" style="overflow:hidden;height:40px;border-radius:8px">
+        <div id="nested-clip-child" style="height:90px">nested</div>
+      </div>
+    </div>
+    <div id="transformed-clip" style="transform:rotate(2deg);overflow:hidden;height:40px">
+      <div id="transformed-clip-child" style="height:80px">transformed clip</div>
+    </div>
+  </section>
+
+  <dialog id="top-dialog">dialog</dialog>
+  <script>
+    const host = document.getElementById('shadow-host');
+    const root = host.attachShadow({mode: 'open'});
+    root.innerHTML = '<div id="shadow-transform" style="transform:translateZ(0)"><div id="shadow-abs" style="position:absolute;top:0;left:0">shadow abs</div></div>';
+    document.getElementById('top-dialog').showModal();
+  </script>
+</body>
+</html>

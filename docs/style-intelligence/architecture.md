@@ -182,3 +182,33 @@ The snapshot is cached per target while Layering stays open. Selection does not 
 `explainStackingBoundary` returns a trapping context and one later sibling context, or nothing. `order` is either `{kind: 'z-index', value}` or `{kind: 'paint-order'}`. The z-index kind is a strictly greater effective z-index. The paint-order kind is same-level sibling order from `DOMSnapshot` paint order. Neither kind is an overlap or covering fact.
 
 `presentLayering` words those facts. A z-index boundary says the selected element cannot leave the trap by increasing its own z-index. A paint-order boundary says the element is confined to the trap and the sibling context is ordered later. Top layer is a separate explanation and is not compared as a sibling. Highlight and Inspect target the trap, not the selected node. Source uses the trap’s author declaration when it has a range.
+
+## Layout relationships
+
+`CSS.getLayoutRelationshipsForNode` is a separate node-scoped command. `StyleIntelligenceModel.describe()` does not call it, and it is not a field on `getMatchedStylesForNode`. The agent updates style and layout for the node and does not force pre-paint. It then calls:
+
+- absolute: `ContainerForAbsolutePosition()`, then `InclusiveContainingBlock()`
+- fixed: `ContainerForFixedPosition()`, then `InclusiveContainingBlock()`
+- scroll container: `ContainingScrollContainer()`
+- sticky axes: `StickyConstrainedAxes()`, then `ContainingScrollContainerLayer(PhysicalAxis)`
+
+`ContainingBlockForAbsolutePosition()` and `ContainingBlockForFixedPosition()` are protected on `LayoutObject`. The agent calls the public container accessor and then `InclusiveContainingBlock()`, which is what those two methods do. The containing-block walk is still Blink's.
+
+Blink returns a layer for the scroll relationships and does not return the `fixedToViewport` bit at the `LayoutObject` level. The agent reads the same walk twice, once with `ignore_layout_view_for_fixed_pos`, which drops a root-layer answer only when Blink set that bit. The difference is the bit. The walk is not repeated in the agent.
+
+`loadLayoutRelationships` runs only after `describe()` for `position: absolute`, `fixed`, or `sticky`. The same node and style generation is not queried again. Selection, style invalidation, removal of a reported node, and document replacement drop the result. Stale responses are ignored.
+
+`presentLayoutRelationships` adds Position rows from that result. An element containing block is “Positioned relative to” that element, with Highlight and Inspect, and without Source on the relationship node. The initial containing block is the viewport. An anonymous box is an anonymous layout container. Sticky insets that share one element are one row. Different physical axes are separate rows. An unconstrained axis is omitted. A document scroll relationship uses document or viewport wording and no invented element. `scrollContainer` stays on the model when it names the same node as a sticky axis; the extra action row is omitted so the element is not highlighted twice.
+
+## Protocol generation
+
+The command has two PDL inputs, and both are carried in the Avora overlay:
+
+- `third_party/blink/public/devtools_protocol/domains/CSS.pdl` drives Blink's own bindings.
+- `third_party/devtools-frontend/src/third_party/blink/public/devtools_protocol/domains/CSS.pdl` is the DevTools frontend's vendored copy and is what `scripts/deps/generate_protocol_resources.py` reads.
+
+The frontend's generated files are produced by that generator and are deliberately not overlay copies, so they stay reproducible from the PDL and cannot overwrite unrelated upstream protocol changes after a roll. The vendored PDL must stay patched across Chromium and DevTools upgrades: running the generator against an unpatched copy removes the command and its types from the generated output.
+
+`LayoutRelationshipsLoader` calls the generated typed agent. There is no cast, so losing the patch is a build failure rather than an empty section.
+
+The Chromium patch is `docs/style-intelligence/chromium-layout-relationships.md`.

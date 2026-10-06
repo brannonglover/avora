@@ -15,6 +15,9 @@ import {type Diagnostic} from './Diagnostics.js';
 import {type StyleIntelligenceSummary} from './ElementSummary.js';
 import {presentLayering, type LayeringView} from './LayeringPresentation.js';
 import {type LayoutExplanation} from './LayoutExplanation.js';
+import {positionNeedsLayoutRelationships, type LayoutRelationships} from './LayoutRelationships.js';
+import {loadLayoutRelationships} from './LayoutRelationshipsLoader.js';
+import {insetsFromExplanation, mergePositionRelationships} from './LayoutRelationshipsPresentation.js';
 import {type PaneAction, type PaneControl, type PaneDiagnostic, type PaneRow, type PaneSection, presentPane} from './Presentation.js';
 import {type SpacingExplanation} from './SpacingExplanation.js';
 import {explainStackingBoundary, type StackingBoundary} from './StackingBoundary.js';
@@ -107,6 +110,8 @@ interface ViewInput {
   layeringOpen: boolean;
   layeringPhase: LayeringPhase;
   layering: LayeringView|null;
+  relationships: LayoutRelationships|null;
+  relationshipLabels: ReadonlyMap<number, string>;
 }
 
 interface ViewOutput {
@@ -142,7 +147,13 @@ export const DEFAULT_VIEW: View = (input, output, target) => {
     return;
   }
 
-  const pane = presentPane(input.summary, input.explanation, input.spacing, input.diagnostics, input.selectedNodeId);
+  const presented = presentPane(input.summary, input.explanation, input.spacing, input.diagnostics, input.selectedNodeId);
+  const pane = {
+    ...presented,
+    sections: mergePositionRelationships(
+        presented.sections, input.relationships, input.relationshipLabels,
+        insetsFromExplanation(input.explanation), input.selectedNodeId),
+  };
   // clang-format off
   render(html`
     <div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence').track({resize: true})} aria-busy=${input.phase === 'loading'}>
@@ -298,6 +309,11 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #layeringTimer = 0;
   #snapshotRecords: SnapshotNodeRecord[]|null = null;
   #snapshotTargetId: string|null = null;
+  #relationships: LayoutRelationships|null = null;
+  #relationshipLabels = new Map<number, string>();
+  #relationshipGeneration = 0;
+  #relationshipKey: string|null = null;
+  #relationshipRequest = 0;
   #domModel: SDK.DOMModel.DOMModel|null = null;
   #applyingSelection = false;
 
@@ -351,6 +367,8 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       layeringOpen: this.#layeringOpen,
       layeringPhase: this.#layeringPhase,
       layering: this.#layeringChain ? presentLayering(this.#layeringChain, this.#layeringBoundary, node?.id ?? null) : null,
+      relationships: this.#relationships,
+      relationshipLabels: this.#relationshipLabels,
     }, {
       highlightNode: this.#highlightNode,
       hideHighlight: this.#hideHighlight,
@@ -364,6 +382,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #onSelectedNodeChanged(): void {
     window.clearTimeout(this.#refreshTimer);
     this.#hideHighlight();
+    this.#clearRelationships();
     this.#applyingSelection = true;
     this.#computedStyleModel.node = UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode);
     this.#applyingSelection = false;
@@ -377,6 +396,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
 
   #onStyleChanged = (_event?: Common.EventTarget.EventTargetEvent<unknown>): void => {
     window.clearTimeout(this.#refreshTimer);
+    this.#relationshipGeneration++;
     this.#refreshTimer = window.setTimeout(() => this.#scheduleLoad(), 50);
     if (!this.#applyingSelection) {
       this.#invalidateLayeringDocument();
@@ -398,6 +418,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       this.#declarations.clear();
       this.#loadedNodeId = null;
       this.#phase = 'empty';
+      this.#clearRelationships();
       this.requestUpdate();
       return;
     }
@@ -435,6 +456,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       }
       if (result.status === 'ok') {
         apply(result, true);
+        this.#loadRelationships(node, requestId);
         return;
       }
       this.#phase = 'unavailable';
@@ -456,6 +478,51 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       this.requestUpdate();
     });
   };
+
+  #clearRelationships(): void {
+    this.#relationshipRequest++;
+    this.#relationships = null;
+    this.#relationshipLabels = new Map();
+    this.#relationshipKey = null;
+  }
+
+  #loadRelationships(node: SDK.DOMModel.DOMNode, styleRequestId: number): void {
+    const position = nodePosition(this.#summary);
+    if (!positionNeedsLayoutRelationships(position)) {
+      this.#clearRelationships();
+      return;
+    }
+    const key = `${node.id}:${this.#relationshipGeneration}`;
+    if (this.#relationshipKey === key && this.#relationships) {
+      return;
+    }
+    const request = ++this.#relationshipRequest;
+    const generation = this.#relationshipGeneration;
+    void loadLayoutRelationships(node).then(relationships => {
+      if (request !== this.#relationshipRequest || styleRequestId !== this.#requestId) {
+        return;
+      }
+      if (this.#computedStyleModel.node?.id !== node.id || generation !== this.#relationshipGeneration) {
+        return;
+      }
+      this.#relationships = relationships;
+      this.#relationshipKey = key;
+      this.#relationshipLabels = relationshipLabels(node, relationships);
+      if (this.#highlightedNodeId !== null && !this.#nodeById(this.#highlightedNodeId)) {
+        this.#hideHighlight();
+      } else if (this.#highlightedNodeId !== null) {
+        this.#highlightNode(this.#highlightedNodeId);
+      }
+      this.requestUpdate();
+    }).catch(() => {
+      if (request !== this.#relationshipRequest) {
+        return;
+      }
+      this.#relationships = null;
+      this.#relationshipKey = null;
+      this.requestUpdate();
+    });
+  }
 
   #nodeById(nodeId: number): SDK.DOMModel.DOMNode|null {
     return this.#computedStyleModel.node?.domModel().nodeForId(nodeId) ?? null;
@@ -613,8 +680,10 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       return;
     }
     model.addEventListener(SDK.DOMModel.Events.DocumentUpdated, this.#invalidateLayeringDocument, this);
+    model.addEventListener(SDK.DOMModel.Events.DocumentUpdated, this.#onRelationshipDomChanged, this);
     model.addEventListener(SDK.DOMModel.Events.NodeInserted, this.#invalidateLayeringDocument, this);
     model.addEventListener(SDK.DOMModel.Events.NodeRemoved, this.#invalidateLayeringDocument, this);
+    model.addEventListener(SDK.DOMModel.Events.NodeRemoved, this.#onRelationshipDomChanged, this);
     model.addEventListener(SDK.DOMModel.Events.AttrModified, this.#invalidateLayeringDocument, this);
     model.addEventListener(SDK.DOMModel.Events.AttrRemoved, this.#invalidateLayeringDocument, this);
     model.addEventListener(SDK.DOMModel.Events.TopLayerElementsChanged, this.#invalidateLayeringDocument, this);
@@ -625,13 +694,34 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       return;
     }
     this.#domModel.removeEventListener(SDK.DOMModel.Events.DocumentUpdated, this.#invalidateLayeringDocument, this);
+    this.#domModel.removeEventListener(SDK.DOMModel.Events.DocumentUpdated, this.#onRelationshipDomChanged, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.NodeInserted, this.#invalidateLayeringDocument, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.NodeRemoved, this.#invalidateLayeringDocument, this);
+    this.#domModel.removeEventListener(SDK.DOMModel.Events.NodeRemoved, this.#onRelationshipDomChanged, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.AttrModified, this.#invalidateLayeringDocument, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.AttrRemoved, this.#invalidateLayeringDocument, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.TopLayerElementsChanged, this.#invalidateLayeringDocument, this);
     this.#domModel = null;
   }
+
+  #onRelationshipDomChanged = (): void => {
+    if (this.#highlightedNodeId !== null && !this.#nodeById(this.#highlightedNodeId)) {
+      this.#hideHighlight();
+    }
+    if (!this.#relationships) {
+      return;
+    }
+    const missing = relationshipNodeIds(this.#relationships).some(nodeId => !this.#nodeById(nodeId));
+    if (!missing) {
+      return;
+    }
+    this.#relationshipGeneration++;
+    this.#relationships = null;
+    this.#relationshipLabels = new Map();
+    this.#relationshipKey = null;
+    this.#relationshipRequest++;
+    this.#scheduleLoad();
+  };
 
   #revealDeclaration = (declarationId: number): void => {
     const property = this.#declarations.get(declarationId) ?? this.#layeringDeclarations.get(declarationId);
@@ -643,6 +733,39 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       void Common.Revealer.reveal(location);
     }
   };
+}
+
+function nodePosition(summary: StyleIntelligenceSummary|null): string|null {
+  const statement = summary?.layout.find(item => item.type === 'position');
+  return statement && statement.type === 'position' ? statement.value : null;
+}
+
+function relationshipLabels(node: SDK.DOMModel.DOMNode, relationships: LayoutRelationships|null): Map<number, string> {
+  const labels = new Map<number, string>();
+  if (!relationships) {
+    return labels;
+  }
+  for (const nodeId of relationshipNodeIds(relationships)) {
+    const related = node.domModel().nodeForId(nodeId);
+    if (related) {
+      labels.set(nodeId, identityForNode(related));
+    }
+  }
+  return labels;
+}
+
+function relationshipNodeIds(relationships: LayoutRelationships): number[] {
+  const ids: number[] = [];
+  const add = (relationship: {nodeId: number|null}|null|undefined): void => {
+    if (relationship?.nodeId) {
+      ids.push(relationship.nodeId);
+    }
+  };
+  add(relationships.containingBlock);
+  add(relationships.scrollContainer);
+  add(relationships.stickyScrollContainers?.horizontal);
+  add(relationships.stickyScrollContainers?.vertical);
+  return ids;
 }
 
 let paneInstance: StyleIntelligencePane|null = null;
