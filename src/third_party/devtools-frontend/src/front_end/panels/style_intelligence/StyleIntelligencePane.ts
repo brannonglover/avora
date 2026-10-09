@@ -12,16 +12,22 @@ import {html, nothing, render, type TemplateResult} from '../../ui/lit/lit.js';
 import * as VisualLogging from '../../ui/visual_logging/visual_logging.js';
 
 import {type Diagnostic} from './Diagnostics.js';
-import {type StyleIntelligenceSummary} from './ElementSummary.js';
-import {presentLayering, type LayeringView} from './LayeringPresentation.js';
+import {
+  buildElementChain,
+  type ChainRung,
+  type ChainStacking,
+  chainRungLabel,
+} from './ElementChain.js';
+import {buildElementFacts, type ElementFact, factCount, type FactsLayering} from './ElementFacts.js';
+import {formatLayoutStatement, type StyleIntelligenceSummary} from './ElementSummary.js';
 import {type LayoutExplanation} from './LayoutExplanation.js';
 import {positionNeedsLayoutRelationships, type LayoutRelationships} from './LayoutRelationships.js';
 import {loadLayoutRelationships} from './LayoutRelationshipsLoader.js';
-import {insetsFromExplanation, mergePositionRelationships} from './LayoutRelationshipsPresentation.js';
-import {type PaneAction, type PaneControl, type PaneDiagnostic, type PaneRow, type PaneSection, presentPane} from './Presentation.js';
+import {insetsFromExplanation} from './LayoutRelationshipsPresentation.js';
+import {buildPlate, type PlateView} from './Plate.js';
 import {type SpacingExplanation} from './SpacingExplanation.js';
 import {explainStackingBoundary, type StackingBoundary} from './StackingBoundary.js';
-import {needsStackingSnapshot, type StackingChain} from './StackingChain.js';
+import {isDocumentRootContext, needsStackingSnapshot, type StackingChain} from './StackingChain.js';
 import {captureStackingSnapshot, loadStackingChain} from './StackingChainLoader.js';
 import {applySnapshot, type SnapshotNodeRecord} from './StackingSnapshot.js';
 import styleIntelligencePaneStyles from './styleIntelligencePane.css.js';
@@ -33,29 +39,17 @@ const UIStrings = {
    */
   selectAnElement: 'Select an element.',
   /**
-   * @description Section heading for the selected element's layout system.
+   * @description Section heading for the ancestors that decide the selected element's layout.
    */
-  layout: 'Layout',
+  decidedForYou: 'Decided for you',
   /**
-   * @description Section heading for width and height.
+   * @description Section heading for the properties the selected element decides itself.
    */
-  size: 'Size',
-  /**
-   * @description Section heading for horizontal and vertical position.
-   */
-  position: 'Position',
-  /**
-   * @description Section heading for measured gaps around the selected element.
-   */
-  spacing: 'Spacing',
+  yours: 'Yours',
   /**
    * @description Section heading for CSS custom properties used by the selected element.
    */
   tokens: 'Tokens',
-  /**
-   * @description Button that highlights a layout ancestor without selecting it.
-   */
-  highlight: 'Highlight',
   /**
    * @description Button that selects a layout ancestor in the Elements panel.
    */
@@ -65,10 +59,6 @@ const UIStrings = {
    */
   source: 'Source',
   /**
-   * @description Section heading for diagnostics that do not belong to a measured section.
-   */
-  potentialIssues: 'Potential issues',
-  /**
    * @description Shown when styles for the selected element could not be read.
    */
   stylesFailed: 'Styles for this element could not be loaded.',
@@ -77,21 +67,29 @@ const UIStrings = {
    */
   stylesUnavailable: 'Styles are not available for this element.',
   /**
-   * @description Disclosure for secondary measurements and caveats.
+   * @description Shown while the ancestor chain is still being read.
    */
-  details: 'Details',
+  readingAncestors: 'Reading ancestors…',
   /**
-   * @description Disclosure for stacking-context explanation. Collapsed until opened.
+   * @description Shown when the ancestor stacking context could not be read.
    */
-  layering: 'Layering',
+  ancestorsFailed: 'Ancestor stacking context could not be loaded.',
   /**
-   * @description Shown while the Layering section is reading ancestor context.
+   * @description Caption on the element diagram stating that it is not drawn to scale.
    */
-  layeringLoading: 'Reading stacking context…',
+  notToScale: 'not to scale',
   /**
-   * @description Shown when the Layering section could not be read.
+   * @description Legend entry for the element's border box on the diagram.
    */
-  layeringFailed: 'Stacking context could not be loaded.',
+  borderBox: 'border box',
+  /**
+   * @description Legend entry for the element's margin on the diagram.
+   */
+  margin: 'margin',
+  /**
+   * @description Accessible name for the element diagram.
+   */
+  diagramLabel: 'Element nesting diagram',
 } as const;
 const str_ = i18n.i18n.registerUIStrings('panels/style_intelligence/StyleIntelligencePane.ts', UIStrings);
 const i18nString = i18n.i18n.getLocalizedString.bind(undefined, str_);
@@ -99,19 +97,27 @@ const i18nString = i18n.i18n.getLocalizedString.bind(undefined, str_);
 type PanePhase = 'empty'|'loading'|'ready'|'failed'|'unavailable';
 type LayeringPhase = 'idle'|'loading'|'ready'|'failed';
 
+/** Delay before the ancestor walk starts, so fast reselection does not thrash it. */
+const LAYERING_START_DELAY = 120;
+
+interface PaneToken {
+  name: string;
+  value: string|null;
+  use: string;
+  title: string;
+}
+
 interface ViewInput {
   phase: PanePhase;
   identity: string|null;
-  summary: StyleIntelligenceSummary|null;
-  explanation: LayoutExplanation|null;
-  spacing: SpacingExplanation|null;
-  diagnostics: Diagnostic[];
-  selectedNodeId: number|null;
-  layeringOpen: boolean;
+  subtitle: string|null;
+  plate: PlateView|null;
+  rungs: ChainRung[];
+  facts: ElementFact[];
+  tokens: PaneToken[];
+  issues: number;
   layeringPhase: LayeringPhase;
-  layering: LayeringView|null;
-  relationships: LayoutRelationships|null;
-  relationshipLabels: ReadonlyMap<number, string>;
+  hasSummary: boolean;
 }
 
 interface ViewOutput {
@@ -119,7 +125,6 @@ interface ViewOutput {
   hideHighlight: () => void;
   inspectNode: (nodeId: number) => void;
   revealDeclaration: (declarationId: number) => void;
-  onLayeringToggle: (event: Event) => void;
 }
 
 type View = (input: ViewInput, output: ViewOutput, target: HTMLElement) => void;
@@ -133,157 +138,211 @@ export const DEFAULT_VIEW: View = (input, output, target) => {
         target);
     return;
   }
-  if (!input.summary) {
+  if (!input.hasSummary) {
     const status = input.phase === 'failed' ? i18nString(UIStrings.stylesFailed) :
         input.phase === 'unavailable'       ? i18nString(UIStrings.stylesUnavailable) :
-                                               nothing;
+                                              nothing;
     render(
-        html`<div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence')} aria-busy=${input.phase === 'loading'}>
+        html`<div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence')}
+            aria-busy=${input.phase === 'loading'}>
           <div class="identity">${input.identity}</div>
           ${status ? html`<p class="status">${status}</p>` : nothing}
-          ${renderLayering(input, output)}
         </div>`,
         target);
     return;
   }
 
-  const presented = presentPane(input.summary, input.explanation, input.spacing, input.diagnostics, input.selectedNodeId);
-  const pane = {
-    ...presented,
-    sections: mergePositionRelationships(
-        presented.sections, input.relationships, input.relationshipLabels,
-        insetsFromExplanation(input.explanation), input.selectedNodeId),
-  };
   // clang-format off
   render(html`
-    <div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence').track({resize: true})} aria-busy=${input.phase === 'loading'}>
+    <div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence').track({resize: true})}
+        aria-busy=${input.phase === 'loading'}>
       <header>
-        <div class="identity" title=${pane.identity}>${pane.identity}</div>
-        ${pane.size ? html`<div class="size">${pane.size}</div>` : nothing}
+        <div class="identity" title=${input.identity}>${input.identity}</div>
+        ${input.subtitle ? html`<div class="size">${input.subtitle}</div>` : nothing}
       </header>
-      ${pane.sections.map(section => renderSection(section, output))}
-      ${renderLayering(input, output)}
+      ${input.plate ? renderPlate(input.plate, output) : nothing}
+      ${renderChain(input, output)}
+      ${input.facts.length ? html`
+        <section>
+          <h2>${i18nString(UIStrings.yours)}${input.issues ?
+            html`<span class="count"> · ${issueText(input.issues)}</span>` : nothing}</h2>
+          <div class="facts">
+            ${input.facts.map(fact => renderFact(fact, output))}
+          </div>
+        </section>` : nothing}
+      ${input.tokens.length ? html`
+        <section>
+          <h2>${i18nString(UIStrings.tokens)}</h2>
+          <div class="tokens">
+            ${input.tokens.map(token => html`
+              <div class="cell token-name">${token.name}</div>
+              <div class="cell token-resolved">${token.value ?? ''}</div>
+              <div class="cell token-use" title=${token.title}>${token.use}</div>`)}
+          </div>
+        </section>` : nothing}
     </div>`, target);
   // clang-format on
 };
 
-function renderLayering(input: ViewInput, output: ViewOutput): TemplateResult {
-  const body = input.layeringPhase === 'loading' ? html`<p class="status">${i18nString(UIStrings.layeringLoading)}</p>` :
-      input.layeringPhase === 'failed'           ? html`<p class="status">${i18nString(UIStrings.layeringFailed)}</p>` :
-      input.layering                            ? html`
-        ${input.layering.lines.map(line => html`<p class="line">${line}</p>`)}
-        ${input.layering.actions.map(action => html`
-          <div class="control">
-            ${action.nodeId !== null ? html`<div class="control-text" title=${action.text}>${action.text}</div>` : nothing}
-            ${renderActions({nodeId: action.nodeId, declarationId: action.declarationId}, action.text, output)}
-          </div>`)}
-      `                                             : nothing;
-  return html`
-    <section class="layering">
-      <details ?open=${input.layeringOpen} @toggle=${output.onLayeringToggle}>
-        <summary>${i18nString(UIStrings.layering)}</summary>
-        ${body}
-      </details>
-    </section>`;
+function issueText(count: number): string {
+  return count === 1 ? '1 issue' : `${count} issues`;
 }
 
-function sectionTitle(title: string): string {
-  switch (title) {
-    case 'Layout':
-      return i18nString(UIStrings.layout);
-    case 'Size':
-      return i18nString(UIStrings.size);
-    case 'Position':
-      return i18nString(UIStrings.position);
-    case 'Spacing':
-      return i18nString(UIStrings.spacing);
-    case 'Tokens':
-      return i18nString(UIStrings.tokens);
-    case 'Potential issues':
-      return i18nString(UIStrings.potentialIssues);
-    default:
-      return title;
-  }
-}
-
-function renderSection(section: PaneSection, output: ViewOutput): TemplateResult {
+/**
+ * The diagram is the affordance: frames and the element box highlight on hover
+ * and on focus, which is what lets every row below drop its inline links.
+ */
+function renderPlate(plate: PlateView, output: ViewOutput): TemplateResult {
+  const gap = plate.gapAbove;
+  const neighborId = gap?.neighborNodeId ?? null;
+  const neighborLabel = gap?.neighborLabel ?? null;
+  // clang-format off
   return html`
     <section>
-      <h2>${sectionTitle(section.title)}</h2>
-      ${section.lines.map(line => html`<p class="line">${line}</p>`)}
-      ${section.rows.map(row => renderRow(row, output))}
-      ${section.tokens.map(token => html`
-        <div class="token-row">
-          <span class="token-label">${token.label}</span>
-          <span class="token-value" title=${token.title}>
-            <span class="token-name">${token.name}</span>
-            ${token.value ? html`<span class="token-resolved"> → ${token.value}</span>` : nothing}
-          </span>
-        </div>`)}
-      ${section.diagnostics.map(diagnostic => renderDiagnostic(diagnostic, output))}
+      <div class="plate" role="group" aria-label=${i18nString(UIStrings.diagramLabel)}>
+        ${plate.frames.map((frame, index) => renderFrame(frame, index, output))}
+        ${gap?.sibling && neighborLabel ? html`
+          <div class="plate-sibling">
+            ${neighborId !== null ? html`
+              <button title=${neighborLabel}
+                  @mouseenter=${() => output.highlightNode(neighborId)}
+                  @mouseleave=${() => output.hideHighlight()}
+                  @focus=${() => output.highlightNode(neighborId)}
+                  @blur=${() => output.hideHighlight()}
+                  @click=${() => output.inspectNode(neighborId)}>
+                ${neighborLabel}
+              </button>` : html`<span>${neighborLabel}</span>`}
+          </div>` : nothing}
+        ${gap ? html`
+          <div class="plate-gap">
+            <span>${gap.value}${gap.detail ? ` · ${gap.detail}` : ''}</span>
+          </div>` : nothing}
+        <div class="plate-margin"></div>
+        <div class="plate-box">
+          <div class="plate-padding">
+            ${plate.sizeLabel ? html`<span class="plate-size">${plate.sizeLabel}</span>` : nothing}
+          </div>
+        </div>
+        ${plate.widthLabel ? html`
+          <div class="plate-width"></div>
+          <span class="plate-width-label">${plate.widthLabel}</span>` : nothing}
+      </div>
+      <div class="plate-legend">
+        <span><i class="swatch border"></i>${i18nString(UIStrings.borderBox)}</span>
+        <span><i class="swatch margin"></i>${i18nString(UIStrings.margin)}</span>
+        ${plate.paddingLabel ? html`<span><i class="swatch padding"></i>${plate.paddingLabel}</span>` : nothing}
+        <span>${i18nString(UIStrings.notToScale)}</span>
+      </div>
+      ${plate.elidedFrames > 0 ? html`
+        <p class="elided">+${plate.elidedFrames} more ancestors with a role</p>` : nothing}
     </section>`;
+  // clang-format on
 }
 
-function renderRow(row: PaneRow, output: ViewOutput): TemplateResult {
-  const visibleControls = row.controls.filter(control => control.text);
+function renderFrame(
+    frame: PlateView['frames'][number], depth: number, output: ViewOutput): TemplateResult {
+  const nodeId = frame.nodeId;
+  const text = `${frame.label} · ${frame.role}`;
+  // clang-format off
   return html`
-    <div class="row">
-      <h3>${row.label}</h3>
-      <p class="primary">${row.primary}</p>
-      ${row.note ? html`<p class="note">${row.note}</p>` : nothing}
-      ${visibleControls.map(control => renderControl(control, output))}
-      ${row.diagnostics.map(diagnostic => renderDiagnostic(diagnostic, output))}
-      ${row.details.length ? html`
-        <details>
-          <summary>${i18nString(UIStrings.details)}</summary>
-          ${row.details.map(detail => html`<p class="note">${detail}</p>`)}
-        </details>` : nothing}
+    <div class="plate-frame depth-${depth} ${frame.warn ? 'warn' : ''}">
+      ${nodeId !== null ? html`
+        <button class="plate-label" title=${text}
+            @mouseenter=${() => output.highlightNode(nodeId)}
+            @mouseleave=${() => output.hideHighlight()}
+            @focus=${() => output.highlightNode(nodeId)}
+            @blur=${() => output.hideHighlight()}
+            @click=${() => output.inspectNode(nodeId)}>${text}</button>` : html`
+        <span class="plate-label" title=${text}>${text}</span>`}
     </div>`;
+  // clang-format on
 }
 
-function renderControl(control: PaneControl, output: ViewOutput): TemplateResult {
-  return html`
-    <div class="control">
-      <div class="control-text" title=${control.title}>${control.text}</div>
-      ${renderActions(control.actions, control.title, output)}
-    </div>`;
-}
-
-function renderDiagnostic(diagnostic: PaneDiagnostic, output: ViewOutput): TemplateResult {
-  return html`
-    <div class="diagnostic">
-      <div class="diagnostic-category">${diagnostic.category}</div>
-      ${diagnostic.headline ? html`<p>${diagnostic.headline}</p>` : nothing}
-      ${diagnostic.detail ? html`<p class="note">${diagnostic.detail}</p>` : nothing}
-      ${renderActions({nodeId: null, declarationId: diagnostic.declarationId}, diagnostic.headline, output)}
-    </div>`;
-}
-
-function renderActions(actions: PaneAction, name: string, output: ViewOutput): TemplateResult|typeof nothing {
-  if (actions.nodeId === null && actions.declarationId === null) {
+function renderChain(input: ViewInput, output: ViewOutput): TemplateResult|typeof nothing {
+  const status = input.layeringPhase === 'loading' ? i18nString(UIStrings.readingAncestors) :
+      input.layeringPhase === 'failed'             ? i18nString(UIStrings.ancestorsFailed) :
+                                                     null;
+  if (!input.rungs.length && !status) {
     return nothing;
   }
-  const targetName = name.length > 80 ? `${name.slice(0, 77)}…` : (name || i18nString(UIStrings.highlight));
+  // clang-format off
   return html`
-    <div class="actions">
-      ${actions.nodeId !== null ? html`
-        <button type="button" aria-label="${i18nString(UIStrings.highlight)} ${targetName}"
-            @mouseenter=${() => output.highlightNode(actions.nodeId!)}
-            @mouseleave=${() => output.hideHighlight()}
-            @focus=${() => output.highlightNode(actions.nodeId!)}
-            @blur=${() => output.hideHighlight()}>
-          ${i18nString(UIStrings.highlight)}
-        </button>
-        <button type="button" aria-label="${i18nString(UIStrings.inspect)} ${targetName}"
-            @click=${() => output.inspectNode(actions.nodeId!)}>${i18nString(UIStrings.inspect)}</button>
-      ` : nothing}
-      ${actions.declarationId !== null ? html`
-        <button type="button" aria-label="${i18nString(UIStrings.source)} ${targetName}"
-            @click=${() => output.revealDeclaration(actions.declarationId!)}>${i18nString(UIStrings.source)}</button>
-      ` : nothing}
-    </div>`;
+    <section>
+      <h2>${i18nString(UIStrings.decidedForYou)}</h2>
+      ${input.rungs.length ? html`
+        <div class="chain">
+          ${input.rungs.map(rung => renderRung(rung, output))}
+        </div>` : nothing}
+      ${status ? html`<p class="status">${status}</p>` : nothing}
+    </section>`;
+  // clang-format on
 }
 
+function renderRung(rung: ChainRung, output: ViewOutput): TemplateResult {
+  const roleLabel = chainRungLabel(rung);
+  const measurement = rung.roles.map(role => role.measurement).find(value => Boolean(value)) ?? null;
+  const effect = rung.roles.map(role => role.effect).join(' · ');
+  const declaration = rung.roles.map(role => role.declaration).find(value => Boolean(value)) ?? null;
+  const sourceId = rung.roles.map(role => role.declarationId).find(value => value !== null) ?? null;
+  const nodeId = rung.nodeId;
+  // clang-format off
+  return html`
+    <div class="rung actionable ${rung.warn ? 'warn' : ''}">
+      ${nodeId !== null ? html`
+        <button class="rung-main" aria-label="${i18nString(UIStrings.inspect)} ${rung.label}"
+            @mouseenter=${() => output.highlightNode(nodeId)}
+            @mouseleave=${() => output.hideHighlight()}
+            @focus=${() => output.highlightNode(nodeId)}
+            @blur=${() => output.hideHighlight()}
+            @click=${() => output.inspectNode(nodeId)}>
+          ${rungBody(roleLabel, rung.label, measurement, effect, declaration)}
+        </button>` : html`
+        <div class="rung-main">
+          ${rungBody(roleLabel, rung.label, measurement, effect, declaration)}
+        </div>`}
+      ${sourceId !== null ? html`
+        <div class="gutter">
+          <button aria-label="${i18nString(UIStrings.source)} ${rung.label}"
+              @click=${() => output.revealDeclaration(sourceId)}>${i18nString(UIStrings.source)}</button>
+        </div>` : nothing}
+    </div>`;
+  // clang-format on
+}
+
+function rungBody(
+    roleLabel: string, label: string, measurement: string|null, effect: string,
+    declaration: string|null): TemplateResult {
+  // clang-format off
+  return html`
+    <p class="rung-role">${roleLabel}</p>
+    <p class="rung-who">
+      <span class="name" title=${label}>${label}</span>
+      ${measurement ? html`<span class="measurement">${measurement}</span>` : nothing}
+    </p>
+    <p class="rung-effect">
+      ${effect}${declaration ? html` · <span class="declaration">${declaration}</span>` : nothing}
+    </p>`;
+  // clang-format on
+}
+
+function renderFact(fact: ElementFact, output: ViewOutput): TemplateResult {
+  const declarationId = fact.declarationId;
+  // clang-format off
+  return html`
+    <div class="cell property">${fact.property}</div>
+    <div class="cell used">${fact.used}</div>
+    <div class="cell actionable">
+      <span class="origin severity-${fact.severity}" title=${fact.title}>${fact.source}</span>
+      ${declarationId !== null ? html`
+        <div class="gutter">
+          <button aria-label="${i18nString(UIStrings.source)} ${fact.property}"
+              @click=${() => output.revealDeclaration(declarationId)}>
+            ${i18nString(UIStrings.source)}
+          </button>
+        </div>` : nothing}
+    </div>`;
+  // clang-format on
+}
 
 export class StyleIntelligencePane extends UI.Widget.VBox {
   #view: View;
@@ -300,7 +359,6 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #loadedNodeId: number|null = null;
   #refreshTimer = 0;
   #highlightedNodeId: number|null = null;
-  #layeringOpen = false;
   #layeringPhase: LayeringPhase = 'idle';
   #layeringChain: StackingChain|null = null;
   #layeringBoundary: StackingBoundary|null = null;
@@ -356,27 +414,141 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
 
   override performUpdate(): Promise<void> {
     const node = this.#computedStyleModel.node;
-    this.#view({
-      phase: this.#phase,
-      identity: this.#identity,
-      summary: this.#summary,
-      explanation: this.#explanation,
-      spacing: this.#spacing,
-      diagnostics: this.#diagnostics,
-      selectedNodeId: node?.id ?? null,
-      layeringOpen: this.#layeringOpen,
-      layeringPhase: this.#layeringPhase,
-      layering: this.#layeringChain ? presentLayering(this.#layeringChain, this.#layeringBoundary, node?.id ?? null) : null,
+    const selectedNodeId = node?.id ?? null;
+    const axes = this.#explanation?.axes ?? [];
+    const relationships = this.#spacing?.relationships ?? [];
+    const rungs = this.#summary ? buildElementChain({
+      selectedNodeId,
       relationships: this.#relationships,
-      relationshipLabels: this.#relationshipLabels,
-    }, {
-      highlightNode: this.#highlightNode,
-      hideHighlight: this.#hideHighlight,
-      inspectNode: this.#inspectNode,
-      revealDeclaration: this.#revealDeclaration,
-      onLayeringToggle: this.#onLayeringToggle,
-    }, this.contentElement);
+      labels: this.#relationshipLabels,
+      insets: insetsFromExplanation(this.#explanation),
+      axes,
+      spacing: relationships,
+      stacking: this.#chainStacking(selectedNodeId),
+    }) : [];
+    const facts = this.#summary ? buildElementFacts({
+      selectedNodeId,
+      axes,
+      spacing: relationships,
+      diagnostics: this.#diagnostics,
+      layering: this.#factsLayering(),
+    }) : [];
+    const plate = this.#summary ? buildPlate({
+      selectedNodeId,
+      rungs,
+      geometry: this.#summary.geometry ? {width: this.#summary.geometry.width, height: this.#summary.geometry.height} :
+                                        null,
+      axes,
+      spacing: relationships,
+    }) : null;
+
+    this.#view(
+        {
+          phase: this.#phase,
+          identity: this.#identity,
+          subtitle: this.#subtitle(rungs.length),
+          plate,
+          rungs,
+          facts,
+          tokens: this.#tokens(),
+          issues: factCount(facts).issues,
+          layeringPhase: this.#layeringPhase,
+          hasSummary: this.#summary !== null,
+        },
+        {
+          highlightNode: this.#highlightNode,
+          hideHighlight: this.#hideHighlight,
+          inspectNode: this.#inspectNode,
+          revealDeclaration: this.#revealDeclaration,
+        },
+        this.contentElement);
     return Promise.resolve();
+  }
+
+  /**
+   * The Layout section folded into the header, because at 266px a one-line
+   * subtitle says what three stacked prose lines said.
+   */
+  #subtitle(rungCount: number): string|null {
+    if (!this.#summary) {
+      return null;
+    }
+    const parts: string[] = [];
+    if (this.#summary.geometry) {
+      parts.push(`${this.#summary.geometry.width} × ${this.#summary.geometry.height}`);
+    }
+    for (const statement of this.#summary.layout.slice(0, 2)) {
+      parts.push(formatLayoutStatement(statement).toLocaleLowerCase());
+    }
+    if (rungCount > 0) {
+      parts.push(rungCount === 1 ? '1 ancestor' : `${rungCount} ancestors`);
+    }
+    return parts.length ? parts.join(' · ') : null;
+  }
+
+  /**
+   * Tokens keep their list but gain the use column. The existing label already
+   * names what the token is doing here, so this is a reorder, not new data.
+   */
+  #tokens(): PaneToken[] {
+    return (this.#summary?.tokens ?? []).map(token => ({
+                                              name: token.customProperty,
+                                              value: token.resolvedValue ? displayValue(token.resolvedValue) : null,
+                                              use: token.label,
+                                              title: token.resolvedValue ?? token.customProperty,
+                                            }));
+  }
+
+  /**
+   * The stacking context reduced to a rung. The CSS predicate alone supports
+   * "this ancestor is painted as one unit"; only a confirmed boundary supports
+   * the stronger claim that the element's own z-index cannot escape it.
+   */
+  #chainStacking(selectedNodeId: number|null): ChainStacking|null {
+    const chain = this.#layeringChain;
+    if (!chain || chain.selected.topLayer) {
+      return null;
+    }
+    const boundary = this.#layeringBoundary;
+    if (boundary && boundary.trapNodeId !== selectedNodeId) {
+      return {
+        nodeId: boundary.trapNodeId,
+        label: boundary.trapLabel,
+        declaration: boundary.trapText || null,
+        declarationId: boundary.trapDeclarationId,
+        hasSource: boundary.trapHasSource,
+        trapped: true,
+        trappedZIndex: effectiveZIndexText(chain),
+      };
+    }
+    const ancestor = chain.ancestorContexts.find(node => !isDocumentRootContext(node));
+    if (!ancestor || ancestor.nodeId === selectedNodeId) {
+      return null;
+    }
+    const reason = ancestor.reasons.find(item => item.property !== 'root' && item.property !== 'internal');
+    const value = reason ? reason.authoredValue ?? reason.computedValue : null;
+    return {
+      nodeId: ancestor.nodeId,
+      label: ancestor.label,
+      declaration: reason && value ? `${reason.property}: ${value}` : null,
+      declarationId: reason?.declarationId ?? null,
+      hasSource: reason?.hasSource ?? false,
+      trapped: false,
+      trappedZIndex: null,
+    };
+  }
+
+  #factsLayering(): FactsLayering|null {
+    const chain = this.#layeringChain;
+    const boundary = this.#layeringBoundary;
+    if (!chain || !boundary) {
+      return null;
+    }
+    return {
+      zIndex: effectiveZIndexText(chain),
+      trapped: true,
+      trapLabel: boundary.trapLabel,
+    };
   }
 
   #onSelectedNodeChanged(): void {
@@ -389,9 +561,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#bindDomModel(this.#computedStyleModel.node?.domModel() ?? null);
     this.#scheduleLoad();
     this.#clearLayeringNode();
-    if (this.#layeringOpen) {
-      this.#scheduleLayering(0);
-    }
+    this.#scheduleLayering(LAYERING_START_DELAY);
   }
 
   #onStyleChanged = (_event?: Common.EventTarget.EventTargetEvent<unknown>): void => {
@@ -556,40 +726,23 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     }
   };
 
-  #onLayeringToggle = (event: Event): void => {
-    const open = event.target instanceof HTMLDetailsElement && event.target.open;
-    if (open === this.#layeringOpen) {
-      return;
-    }
-    this.#layeringOpen = open;
-    if (open) {
-      this.#scheduleLayering(0);
-      return;
-    }
-    this.#hideHighlight();
-  };
-
   #clearLayeringNode(): void {
     this.#layeringRequest++;
     this.#layeringChain = null;
     this.#layeringBoundary = null;
     this.#layeringDeclarations.clear();
-    this.#layeringPhase = this.#layeringOpen ? 'loading' : 'idle';
+    this.#layeringPhase = 'loading';
   }
 
   #invalidateLayeringDocument = (): void => {
-    const hadAnalysis = this.#snapshotRecords !== null || this.#layeringChain !== null || this.#layeringOpen;
+    const hadAnalysis = this.#snapshotRecords !== null || this.#layeringChain !== null;
     this.#snapshotRecords = null;
     this.#snapshotTargetId = null;
     if (!hadAnalysis) {
       return;
     }
     this.#clearLayeringNode();
-    if (this.#layeringOpen) {
-      this.#scheduleLayering(50);
-    } else {
-      this.requestUpdate();
-    }
+    this.#scheduleLayering(LAYERING_START_DELAY);
   };
 
   #scheduleLayering(delay: number): void {
@@ -597,10 +750,14 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#layeringTimer = window.setTimeout(() => void this.#loadLayering(), delay);
   }
 
+  /**
+   * The ancestor walk now starts on its own instead of waiting for a
+   * disclosure, because a trapped z-index is the reason most people open this
+   * pane and it should not take a click to see. The walk is still deferred and
+   * the document snapshot is still gated on needsStackingSnapshot, so the
+   * first paint does not wait on either.
+   */
   #loadLayering = async (): Promise<void> => {
-    if (!this.#layeringOpen) {
-      return;
-    }
     const request = ++this.#layeringRequest;
     const node = this.#computedStyleModel.node;
     if (!node || node.nodeType() !== Node.ELEMENT_NODE) {
@@ -613,7 +770,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.requestUpdate();
     try {
       const loaded = await loadStackingChain(node);
-      if (request !== this.#layeringRequest || !this.#layeringOpen) {
+      if (request !== this.#layeringRequest) {
         return;
       }
       if (!loaded) {
@@ -630,21 +787,21 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
         this.requestUpdate();
         return;
       }
-      // Stay on the loading line until the snapshot confirms the CSS predicate.
-      // A ready paint here would show a CSS context that the bit may reject.
-      this.#layeringPhase = 'loading';
+      // The CSS predicate alone would paint a context the Blink bit may reject,
+      // so the rung stays on its weaker claim until the snapshot confirms.
+      this.#layeringPhase = 'ready';
       this.requestUpdate();
       const targetId = node.domModel().target().id();
       let records = this.#snapshotTargetId === targetId ? this.#snapshotRecords : null;
       if (!records) {
         records = await captureStackingSnapshot(node);
-        if (request !== this.#layeringRequest || !this.#layeringOpen) {
+        if (request !== this.#layeringRequest) {
           return;
         }
         this.#snapshotRecords = records;
         this.#snapshotTargetId = targetId;
       }
-      if (request !== this.#layeringRequest || !this.#layeringOpen) {
+      if (request !== this.#layeringRequest) {
         return;
       }
       if (!records) {
@@ -700,7 +857,8 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#domModel.removeEventListener(SDK.DOMModel.Events.NodeRemoved, this.#onRelationshipDomChanged, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.AttrModified, this.#invalidateLayeringDocument, this);
     this.#domModel.removeEventListener(SDK.DOMModel.Events.AttrRemoved, this.#invalidateLayeringDocument, this);
-    this.#domModel.removeEventListener(SDK.DOMModel.Events.TopLayerElementsChanged, this.#invalidateLayeringDocument, this);
+    this.#domModel.removeEventListener(
+        SDK.DOMModel.Events.TopLayerElementsChanged, this.#invalidateLayeringDocument, this);
     this.#domModel = null;
   }
 
@@ -733,6 +891,21 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       void Common.Revealer.reveal(location);
     }
   };
+}
+
+function effectiveZIndexText(chain: StackingChain): string|null {
+  const zIndex = chain.selected.zIndex;
+  if (!zIndex || zIndex === 'auto') {
+    return null;
+  }
+  return zIndex;
+}
+
+function displayValue(value: string): string {
+  if (value.length <= 48) {
+    return value;
+  }
+  return `${value.slice(0, 45)}…`;
 }
 
 function nodePosition(summary: StyleIntelligenceSummary|null): string|null {

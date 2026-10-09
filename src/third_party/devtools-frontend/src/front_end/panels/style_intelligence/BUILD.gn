@@ -15,12 +15,15 @@ generate_css("css_files") {
 devtools_ui_module("style_intelligence") {
   sources = [
     "Diagnostics.ts",
+    "ElementChain.ts",
+    "ElementFacts.ts",
     "ElementSummary.ts",
     "LayeringPresentation.ts",
     "LayoutExplanation.ts",
     "LayoutRelationships.ts",
     "LayoutRelationshipsLoader.ts",
     "LayoutRelationshipsPresentation.ts",
+    "Plate.ts",
     "Presentation.ts",
     "SpacingExplanation.ts",
     "StackingBoundary.ts",
@@ -78,11 +81,14 @@ devtools_ui_module("unittests") {
 
   sources = [
     "Diagnostics.test.ts",
+    "ElementChain.test.ts",
+    "ElementFacts.test.ts",
     "ElementSummary.test.ts",
     "LayeringPresentation.test.ts",
     "LayoutExplanation.test.ts",
     "LayoutRelationships.test.ts",
     "LayoutRelationshipsPresentation.test.ts",
+    "Plate.test.ts",
     "Presentation.test.ts",
     "SpacingExplanation.test.ts",
     "StackingBoundary.test.ts",

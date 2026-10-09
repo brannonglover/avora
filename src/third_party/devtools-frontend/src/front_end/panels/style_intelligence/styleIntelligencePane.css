@@ -19,19 +19,13 @@
 }
 
 .style-intelligence > section,
-.style-intelligence > header,
-.row,
-.diagnostic {
+.style-intelligence > header {
   flex: none;
   min-height: min-content;
 }
 
 .style-intelligence.empty,
-.status,
-.note,
-.token-label,
-.token-resolved,
-.diagnostic-category {
+.status {
   color: var(--sys-color-on-surface-subtle);
 }
 
@@ -46,47 +40,357 @@
 }
 
 .size {
-  font-size: var(--sys-typescale-body3-size);
+  color: var(--sys-color-on-surface-subtle);
+  font-size: var(--sys-typescale-body4-size);
   margin-top: 2px;
 }
 
-h2,
-h3 {
-  color: var(--sys-color-on-surface-subtle);
+/*
+ * Section headings carry weight and colour that row labels do not. The old
+ * pane gave both the same 10px subtle treatment, which left the eye no entry
+ * point.
+ */
+h2 {
+  color: var(--sys-color-on-surface);
   font-size: var(--sys-typescale-body5-size);
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  margin: 0 0 3px;
   text-transform: uppercase;
 }
 
-h3 {
-  margin-top: 6px;
+h2 .count {
+  color: var(--sys-color-on-surface-subtle);
+  font-weight: 400;
+  letter-spacing: 0.02em;
 }
 
 p {
   margin: 0;
 }
 
-.primary {
-  margin-top: 1px;
+/* ===================== the plate ===================== */
+
+.plate {
+  background: var(--sys-color-surface2);
+  border: 1px solid var(--sys-color-divider);
+  border-radius: 4px;
+  box-sizing: border-box;
+  height: 230px;
+  overflow: hidden;
+  position: relative;
 }
 
-.row + .row {
-  margin-top: 2px;
+.plate-frame {
+  border: 1px dashed var(--sys-color-neutral-outline);
+  border-radius: 2px;
+  position: absolute;
 }
 
-.control {
+.plate-frame.warn {
+  border-color: var(--sys-color-orange-bright);
+}
+
+.plate-frame > .plate-label {
+  background: var(--sys-color-surface2);
+  color: var(--sys-color-on-surface-subtle);
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  left: 8px;
+  letter-spacing: 0.04em;
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  padding: 0 4px;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.plate-frame.warn > .plate-label {
+  color: var(--sys-color-orange-bright);
+}
+
+/* Depth is capped at MAX_FRAMES in Plate.ts, so three insets is the whole set. */
+.plate-frame.depth-0 { bottom: 6px; left: 4px; right: 4px; top: 10px; }
+.plate-frame.depth-1 { bottom: 18px; left: 14px; right: 14px; top: 26px; }
+.plate-frame.depth-2 { bottom: 32px; left: 24px; right: 24px; top: 42px; }
+
+.plate-sibling {
+  align-items: center;
+  background: var(--sys-color-surface3);
+  border: 1px solid var(--sys-color-neutral-outline);
+  border-radius: 2px;
+  color: var(--sys-color-on-surface-subtle);
+  display: flex;
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  height: 20px;
+  left: 34px;
+  overflow: hidden;
+  padding: 0 6px;
+  position: absolute;
+  right: 34px;
+  top: 56px;
+  white-space: nowrap;
+}
+
+/* Measured gap: two tick lines with the number between them. */
+.plate-gap {
+  height: 20px;
+  left: 34px;
+  position: absolute;
+  right: 34px;
+  top: 76px;
+}
+
+.plate-gap::before,
+.plate-gap::after {
+  background: var(--sys-color-primary);
+  content: "";
+  height: 1px;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.plate-gap::before { top: 0; }
+.plate-gap::after { bottom: 0; }
+
+.plate-gap > span {
+  background: var(--sys-color-surface2);
+  color: var(--sys-color-primary);
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  left: 50%;
+  padding: 0 4px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+
+.plate-margin {
+  border: 1px dashed var(--sys-color-purple-bright);
+  border-radius: 2px;
+  height: 74px;
+  left: 34px;
+  position: absolute;
+  right: 34px;
+  top: 96px;
+}
+
+.plate-box {
+  background: var(--sys-color-tonal-container);
+  border: 1px solid var(--sys-color-primary);
+  border-radius: 2px;
+  height: 62px;
+  left: 40px;
+  position: absolute;
+  right: 40px;
+  top: 102px;
+}
+
+.plate-padding {
+  align-items: center;
+  border: 1px dashed var(--sys-color-primary);
+  border-radius: 1px;
+  display: flex;
+  inset: 8px;
+  justify-content: center;
+  position: absolute;
+}
+
+.plate-size {
+  color: var(--sys-color-on-surface);
+  font-family: var(--monospace-font-family);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plate-width {
+  background: var(--sys-color-primary);
+  height: 1px;
+  left: 40px;
+  position: absolute;
+  right: 40px;
+  top: 176px;
+}
+
+.plate-width::before,
+.plate-width::after {
+  background: var(--sys-color-primary);
+  content: "";
+  height: 9px;
+  position: absolute;
+  top: -4px;
+  width: 1px;
+}
+
+.plate-width::before { left: 0; }
+.plate-width::after { right: 0; }
+
+.plate-width-label {
+  background: var(--sys-color-surface2);
+  color: var(--sys-color-primary);
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  left: 50%;
+  padding: 0 4px;
+  position: absolute;
+  top: 180px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/*
+ * Frames and the element are the hover targets, which is what lets the pane
+ * drop every inline Highlight link. Buttons so the keyboard reaches them.
+ */
+.plate button {
+  background: inherit;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.plate button:hover,
+.plate button:focus-visible {
+  text-decoration: underline;
+}
+
+.plate button:focus-visible {
+  outline: 2px solid var(--sys-color-primary);
+  outline-offset: 1px;
+}
+
+.plate-sibling button {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plate-legend {
+  color: var(--sys-color-on-surface-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  gap: 4px 12px;
+  letter-spacing: 0.03em;
+  margin-top: 4px;
+}
+
+.plate-legend .swatch {
+  border-radius: 1px;
+  display: inline-block;
+  height: 7px;
+  margin-right: 3px;
+  vertical-align: -1px;
+  width: 7px;
+}
+
+.plate-legend .swatch.border { background: var(--sys-color-primary); }
+.plate-legend .swatch.margin { border: 1px dashed var(--sys-color-purple-bright); }
+.plate-legend .swatch.padding { border: 1px dashed var(--sys-color-primary); }
+
+/* ===================== the chain ===================== */
+
+.chain {
+  display: flex;
+  flex-direction: column;
+  padding-left: 15px;
+  position: relative;
+}
+
+.chain::before {
+  background: var(--sys-color-neutral-outline);
+  bottom: 14px;
+  content: "";
+  left: 3px;
+  position: absolute;
+  top: 10px;
+  width: 1px;
+}
+
+.rung {
+  border-radius: 2px;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 2px;
+  position: relative;
+}
+
+.rung-main {
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+div.rung-main {
+  cursor: default;
+}
+
+.rung + .rung {
+  border-top: 1px solid var(--sys-color-divider);
+}
+
+.rung::before {
+  background: var(--sys-color-cdt-base-container);
+  border: 1.5px solid var(--sys-color-neutral-outline);
+  border-radius: 50%;
+  content: "";
+  height: 7px;
+  left: -15px;
+  position: absolute;
+  top: 10px;
+  width: 7px;
+}
+
+.rung.warn::before {
+  background: var(--sys-color-orange-bright);
+  border-color: var(--sys-color-orange-bright);
+}
+
+.rung-role {
+  color: var(--sys-color-primary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.rung.warn .rung-role {
+  color: var(--sys-color-orange-bright);
+}
+
+.rung-who {
   align-items: baseline;
   display: flex;
   gap: 8px;
-  margin-top: 2px;
+  justify-content: space-between;
+  margin-top: 1px;
   min-width: 0;
 }
 
-.control-text,
-.token-name,
-.declaration {
+.rung-who .name {
+  color: var(--sys-color-on-surface);
   font-family: var(--monospace-font-family);
   min-width: 0;
   overflow: hidden;
@@ -94,28 +398,128 @@ p {
   white-space: nowrap;
 }
 
-.token-row {
-  column-gap: 8px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  margin-top: 2px;
+.rung-who .measurement {
+  color: var(--sys-color-on-surface-subtle);
+  flex: none;
+  font-family: var(--monospace-font-family);
+  font-variant-numeric: tabular-nums;
 }
 
-.token-value {
+.rung-effect {
+  color: var(--sys-color-on-surface-subtle);
+  margin-top: 1px;
+}
+
+.rung-effect .declaration {
+  color: var(--sys-color-on-surface);
+  font-family: var(--monospace-font-family);
+}
+
+/* ===================== fact rows ===================== */
+
+.facts {
+  column-gap: 9px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.facts > .cell {
+  border-top: 1px solid var(--sys-color-divider);
   min-width: 0;
+  padding: 3px 0;
+}
+
+.facts .property {
+  color: var(--sys-color-on-surface-subtle);
+  font-family: var(--monospace-font-family);
+}
+
+.facts .used {
+  color: var(--sys-color-on-surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.facts > .cell.actionable {
+  justify-content: flex-end;
+}
+
+.facts .origin {
+  font-family: var(--monospace-font-family);
+  max-width: 120px;
   overflow: hidden;
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.actions {
-  display: flex;
-  flex: none;
-  gap: 8px;
+/*
+ * The source column doubles as the severity column, so a diagnostic reads at a
+ * glance without opening a separate issues section.
+ */
+.facts .origin.severity-none { color: var(--sys-color-on-surface-subtle); }
+.facts .origin.severity-warning { color: var(--sys-color-orange-bright); }
+.facts .origin.severity-critical { color: var(--sys-color-error); }
+
+/* ===================== tokens ===================== */
+
+.tokens {
+  column-gap: 9px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
 }
 
-.actions button,
-summary {
+.tokens > .cell {
+  border-top: 1px solid var(--sys-color-divider);
+  min-width: 0;
+  padding: 3px 0;
+}
+
+.tokens .token-name {
+  color: var(--sys-color-purple-bright);
+  font-family: var(--monospace-font-family);
+  white-space: nowrap;
+}
+
+.tokens .token-resolved {
+  color: var(--sys-color-on-surface);
+  font-family: var(--monospace-font-family);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tokens .token-use {
+  color: var(--sys-color-on-surface-subtle);
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===================== action gutter ===================== */
+
+/*
+ * Actions leave the reading flow. They appear on hover and on keyboard focus;
+ * hover alone would make them unreachable.
+ */
+.actionable {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.actionable > .gutter {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  opacity: 0;
+}
+
+.actionable:hover > .gutter,
+.actionable:focus-within > .gutter {
+  opacity: 1;
+}
+
+.gutter button {
   background: none;
   border: 0;
   border-radius: 2px;
@@ -125,38 +529,28 @@ summary {
   padding: 0;
 }
 
-.actions button:focus-visible,
-summary:focus-visible {
+.gutter button:hover {
+  text-decoration: underline;
+}
+
+.gutter button:focus-visible {
   outline: 2px solid var(--sys-color-primary);
   outline-offset: 1px;
 }
 
-.actions button:hover,
-summary:hover {
-  text-decoration: underline;
+.rung:hover,
+.rung:focus-within {
+  background: var(--sys-color-state-hover-on-subtle);
 }
 
-details {
-  margin-top: 2px;
+.rung-main:focus-visible {
+  outline: 2px solid var(--sys-color-primary);
+  outline-offset: 1px;
 }
 
-details:not([open]) > :not(summary) {
-  display: none;
-}
-
-.layering summary {
+.elided {
   color: var(--sys-color-on-surface-subtle);
-  font-size: var(--sys-typescale-body5-size);
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.diagnostic {
-  margin-top: 4px;
-}
-
-.diagnostic-category {
-  font-size: var(--sys-typescale-body5-size);
-  text-transform: uppercase;
+  font-family: var(--monospace-font-family);
+  font-size: 9px;
+  margin-top: 3px;
 }
