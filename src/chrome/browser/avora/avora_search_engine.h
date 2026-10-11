@@ -4,8 +4,10 @@
 #define CHROME_BROWSER_AVORA_AVORA_SEARCH_ENGINE_H_
 
 #include <string>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "url/gurl.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -27,6 +29,15 @@ class SearchEngineManager {
  private:
   raw_ptr<PrefService> prefs_;
 };
+
+// Resolves what the user typed into an Avora address field -- the sidebar
+// chip, the mini window's address bar -- into a destination.  Input that looks
+// like a URL is fixed up into one; anything else becomes a search on the
+// profile's search engine, so the two surfaces can never disagree about
+// whether "localhost:8080" is a place or a query.
+//
+// Returns an invalid GURL only for empty input.
+GURL ResolveAddressInput(PrefService* prefs, std::u16string_view text);
 
 }  // namespace avora
 

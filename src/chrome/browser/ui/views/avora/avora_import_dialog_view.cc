@@ -1,6 +1,10 @@
 // Copyright 2026 Avora. All rights reserved.
 
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
+#include "chrome/browser/avora/avora_import_provenance.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_pinned_items.h"
+#include "chrome/browser/avora/import/arc_sidebar_parser.h"
 
 #include <memory>
 #include <utility>
@@ -29,6 +33,8 @@ namespace avora {
 namespace {
 
 constexpr int kDialogWidth = 400;
+// Space between the dialog title and the first row of content.
+constexpr int kDialogTopInset = 14;
 constexpr int kRowHeight = 40;
 constexpr int kRowHPadding = 16;
 constexpr int kRowVPadding = 6;
@@ -122,12 +128,20 @@ class SpaceComboboxModel : public ui::ComboboxModel {
 }  // namespace
 
 // static
+namespace {
+// Synthetic browser id for Arc's Spaces/pinned-tabs import.  Distinct from
+// "arc", which is Arc's (largely vestigial) Chromium bookmark store.
+constexpr char kArcSpacesBrowserId[] = "arc_spaces";
+}  // namespace
+
 std::u16string AvoraImportDialogView::BrowserDisplayName(
     const std::string& browser) {
   if (browser == "chrome") return u"Chrome";
   if (browser == "edge") return u"Microsoft Edge";
   if (browser == "firefox") return u"Firefox";
   if (browser == "safari") return u"Safari";
+  if (browser == "arc") return u"Arc";
+  if (browser == kArcSpacesBrowserId) return u"Arc — Spaces and Pinned Tabs";
   return base::UTF8ToUTF16(browser);
 }
 
@@ -171,8 +185,35 @@ AvoraImportDialogView::AvoraImportDialogView(
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical));
 
+  // Avora: breathing room under the dialog title, which otherwise sits hard
+  // against the first label.
+  SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::TLBR(kDialogTopInset, 0, 0, 0)));
+
   // Detect all supported browsers.
   browsers_ = AvoraImportCoordinator::DetectAllBrowsers();
+
+  // Avora: Arc's Spaces and pinned tabs are offered here alongside the
+  // bookmark sources, so one dialog covers every browser.  It is presented as
+  // a synthetic DetectedBrowser so it reuses the same selection UI, but it is
+  // a different kind of import: it creates Avora Spaces and pinned items
+  // rather than an ImportedSource, and so ignores the destination-Space
+  // picker below.  See OnImportClicked().
+  if (auto arc = ArcSidebarParser::ParseSidebarFile(
+          ArcSidebarParser::DefaultSidebarPath())) {
+    if (!arc->spaces.empty()) {
+      DetectedBrowser arc_browser;
+      arc_browser.browser = kArcSpacesBrowserId;
+      DetectedProfile all_spaces;
+      all_spaces.directory_name = "all";
+      all_spaces.display_name = base::StringPrintf(
+          "%d Spaces, %d pinned tabs", arc->stats.spaces_imported,
+          arc->stats.tabs_imported);
+      all_spaces.bookmark_count = arc->stats.tabs_imported;
+      arc_browser.profiles.push_back(std::move(all_spaces));
+      browsers_.push_back(std::move(arc_browser));
+    }
+  }
 
   // Load available Spaces.
   Profile* profile = browser_->GetProfile();
@@ -409,9 +450,13 @@ void AvoraImportDialogView::BuildSelectionUI() {
                           sel.profile_index == selected_.profile_index);
 
       std::u16string name = base::UTF8ToUTF16(prof.display_name);
-      std::u16string detail =
-          base::UTF8ToUTF16(base::NumberToString(prof.bookmark_count) +
-                            " bookmarks");
+      // The Arc Spaces source counts pinned tabs; every other source counts
+      // bookmarks.  Saying "bookmarks" for Arc was actively misleading, since
+      // Arc's actual bookmark store is listed separately above.
+      const bool counts_pinned_tabs = (browser.browser == kArcSpacesBrowserId);
+      std::u16string detail = base::UTF8ToUTF16(
+          base::NumberToString(prof.bookmark_count) +
+          (counts_pinned_tabs ? " pinned tabs" : " bookmarks"));
 
       auto* row = AddChildView(std::make_unique<ProfileRow>(
           name, detail, is_selected,
@@ -733,6 +778,44 @@ void AvoraImportDialogView::OnImportClicked() {
   const size_t space_index =
       space_combobox_ ? space_combobox_->GetSelectedIndex().value_or(0) : 0;
   if (space_index >= spaces_.size()) return;
+
+  // Arc Spaces import creates Avora Spaces itself, so it neither needs nor
+  // honours the destination-Space picker.
+  if (browser_data.browser == kArcSpacesBrowserId) {
+    PrefService* prefs = browser_->GetProfile()->GetPrefs();
+    SpaceManager arc_space_manager(prefs);
+    PinnedItemsManager arc_pinned_items(prefs);
+    PinnedFoldersManager arc_pinned_folders(prefs);
+    ImportProvenanceStore arc_provenance(prefs);
+    const ArcImportResult arc_result =
+        AvoraImportCoordinator::ImportArcSidebar(
+            ArcSidebarParser::DefaultSidebarPath(), &arc_space_manager,
+            &arc_pinned_items, &arc_pinned_folders, &arc_provenance);
+    if (!arc_result.success) {
+      BuildErrorUI(base::UTF8ToUTF16(arc_result.error_message));
+    } else {
+      // Reuse the bookmark result UI by mapping Arc's counts onto it: pinned
+      // tabs read as links, Arc folders as folders.
+      ImportResult shown;
+      shown.success = true;
+      shown.stats.links_seen = arc_result.stats.tabs_seen;
+      // Created plus merged: a pin or folder that landed in an existing
+      // Avora one was still imported, and reporting only the fresh records
+      // would tell a re-importing user nothing came across.
+      shown.stats.links_imported =
+          arc_result.items_created + arc_result.items_updated;
+      shown.stats.folders_seen = arc_result.stats.folders_seen;
+      shown.stats.folders_imported =
+          arc_result.folders_created + arc_result.folders_updated;
+      shown.stats.items_skipped = arc_result.stats.items_skipped;
+      const std::string spaces_desc = base::StringPrintf(
+          "%d created, %d updated", arc_result.spaces_created,
+          arc_result.spaces_updated);
+      BuildResultUI(shown, kArcSpacesBrowserId, "Spaces & Pins", spaces_desc);
+    }
+    ResizeToPreferredSize();
+    return;
+  }
 
   const DetectedProfile& profile =
       browser_data.profiles[selected_.profile_index];

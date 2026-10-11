@@ -81,6 +81,18 @@ NSMenuItem* BuildAppMenu(NSApplication* nsapp,
               Item(IDS_PREFERENCES)
                   .command_id(IDC_WEB_APP_SETTINGS)
                   .remove_if(!is_pwa),
+              // Avora: taking over as the system default browser.  Shares the
+              // Preferences group so that hiding it (see
+              // -avoraRefreshSetDefaultBrowserMenuItem in
+              // app_controller_mac.mm) never strands a separator.  It is built
+              // hidden and only revealed once the asynchronous check reports
+              // that Avora is not already the default, so a user who is
+              // already set up never sees it.
+              Item(IDS_AVORA_SET_DEFAULT_BROWSER_MAC)
+                  .string_format_1(product_name)
+                  .command_id(IDC_SET_BROWSER_AS_DEFAULT)
+                  .set_hidden(true)
+                  .remove_if(is_pwa),
               Item().is_separator(),
               Item(IDS_CLEAR_BROWSING_DATA_MAC)
                   .command_id(IDC_CLEAR_BROWSING_DATA)
@@ -156,6 +168,12 @@ NSMenuItem* BuildFileMenu(NSApplication* nsapp,
               Item(IDS_OPEN_LOCATION_MAC)
                   .command_id(IDC_FOCUS_LOCATION)
                   .remove_if(is_pwa),
+              // Avora: one-time migration from Arc.  Lives in the File
+              // menu rather than a sidebar context menu so it is reachable
+              // without hunting for empty space to right-click.
+              Item().is_separator(),
+              Item(IDS_AVORA_IMPORT_ARC_MAC)
+                  .command_id(IDC_AVORA_IMPORT_ARC),
               Item().is_separator(),
               Item(IDS_CLOSE_WINDOW_MAC)
                   .tag(IDC_CLOSE_WINDOW)
@@ -334,6 +352,12 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
               Item(IDS_VERTICAL_TABS_VIEW_MENU_TOGGLE_COLLAPSE)
                   .command_id(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE)
                   .key_equivalent(@"L", NSEventModifierFlagCommand),
+              // Avora: Cmd-S slides the side nav out of the window and the
+              // page across to fill it.  The key equivalent comes from the
+              // accelerator table (see accelerators_cocoa.mm), which is also
+              // where Cmd-S was taken away from "Save Page As...".
+              Item(IDS_AVORA_TOGGLE_SIDEBAR_MAC)
+                  .command_id(IDC_AVORA_TOGGLE_SIDEBAR),
               Item(IDS_CUSTOMIZE_TOUCH_BAR)
                   .tag(IDC_CUSTOMIZE_TOUCH_BAR)
                   .action(@selector(toggleTouchBarCustomizationPalette:))

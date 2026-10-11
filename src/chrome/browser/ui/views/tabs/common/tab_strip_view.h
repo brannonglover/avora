@@ -37,6 +37,7 @@ class UnpinnedTabScrollableStateRecorder;
 }  // namespace tabs
 
 namespace views {
+class Label;
 class ScrollView;
 class Separator;
 }  // namespace views
@@ -69,6 +70,19 @@ class TabStripView final : public views::View,
     return unpinned_tabs_scroll_view_;
   }
 
+  // Avora: screen bounds of the daily tab list itself, or an empty rect when
+  // there is no visible list.
+  //
+  // Drag code must ask this rather than measuring
+  // `unpinned_tabs_scroll_view()`.  The scroll view used to wrap only the
+  // daily list, so its bounds doubled as the list's, but it now spans the
+  // whole side nav -- every section scrolls inside it (see
+  // TabStripViewLayout::CalculateVerticalLayout).  Geometry tests written
+  // against it therefore match anywhere in the nav, including over favorites
+  // and the pinned section, which is exactly where the drag needs to know it
+  // has *left* the daily list.
+  gfx::Rect GetDailyListBoundsInScreen() const;
+
   // Avora: The New Tab button view, positioned between pinned and unpinned
   // sections in the vertical tab strip layout.
   views::View* GetNewTabButtonView() const { return new_tab_button_view_; }
@@ -81,6 +95,12 @@ class TabStripView final : public views::View,
   // Avora: The Pinned section view with folder support.
   avora::AvoraPinnedSectionView* GetPinnedSectionView() const {
     return pinned_section_view_;
+  }
+  // Avora: The Space filter driving daily-list visibility.  Exposed so code
+  // that changes a tab's kPinned marker without going through the tab strip
+  // can ask for the visibility rules to be re-applied.
+  avora::AvoraSpaceTabFilter* GetSpaceTabFilter() const {
+    return space_tab_filter_.get();
   }
   // Avora: The Live Folders section (GitHub pull requests and future
   // provider-backed folders), below the pinned section.
@@ -103,6 +123,20 @@ class TabStripView final : public views::View,
   views::View* GetSpaceNameView() const { return space_name_view_; }
   // Avora: Fading separator between pinned section and daily section.
   views::Separator* GetPinnedSeparator() const { return pinned_separator_; }
+
+  // Avora: the single scrolling surface of the side nav.  Every section lives
+  // in here -- Favorites, Live Folders, the pinned and imported sections, the
+  // Space label, the new-tab button and the daily tab list -- so the nav
+  // scrolls as one rather than the tab list scrolling under a fixed header.
+  // It is the unpinned ScrollView's contents, and exists only in the vertical
+  // orientation; horizontal keeps Chromium's arrangement.
+  views::View* GetSideNavContents() const { return side_nav_contents_; }
+
+  // Adds |view| to the side nav's scrolling surface, so callers outside this
+  // class do not have to know that the sections are no longer direct children
+  // of the tab strip.  Falls back to an ordinary child in the horizontal
+  // orientation, where there is no such surface.
+  views::View* AddSideNavView(std::unique_ptr<views::View> view);
   void SetBrowser(BrowserWindowInterface* browser,
                   avora::WindowSpaceState* window_space_state);
   
@@ -210,9 +244,13 @@ class TabStripView final : public views::View,
   raw_ptr<views::Separator> pinned_separator_ = nullptr;
   raw_ptr<views::View> new_tab_button_view_ = nullptr;
   raw_ptr<views::ScrollView> unpinned_tabs_scroll_view_ = nullptr;
+
+  // Avora: contents of `unpinned_tabs_scroll_view_`; see GetSideNavContents().
+  raw_ptr<views::View> side_nav_contents_ = nullptr;
   raw_ptr<UnpinnedTabContainerView> unpinned_tabs_container_view_ = nullptr;
   raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
   raw_ptr<views::View> drag_ghost_view_ = nullptr;
+  raw_ptr<views::Label> drag_ghost_label_ = nullptr;
   bool is_collapsed_ = false;
 
   // Used for seek time metrics from the time the mouse enters the tabstrip.

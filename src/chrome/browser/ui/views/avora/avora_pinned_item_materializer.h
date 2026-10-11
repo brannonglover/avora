@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include "url/gurl.h"
+
 class TabStripModel;
 
 namespace content {
@@ -64,6 +66,45 @@ void UnpinAndRemovePinnedItem(TabStripModel* tab_strip,
                               PinnedItemsManager* pinned_items_manager,
                               PinnedFoldersManager* pinned_folders_manager,
                               content::WebContents* contents);
+
+// ---------------------------------------------------------------------------
+// Target drift
+//
+// A pinned item's persisted URL is its *target*, and browsing inside the tab
+// that materializes it never rewrites that target (see PinnedItemEntry::url).
+// The two are therefore free to disagree, which is the whole point: the pin
+// stays the destination the user chose while its tab goes wherever they take
+// it.  These are the three questions the sidebar asks about that gap -- where
+// is the target, has the tab left it, and take the tab back.
+// ---------------------------------------------------------------------------
+
+// Whether |current| still shows what |target| names.  Compared loosely: a
+// fragment, and an http -> https upgrade the site performed on its own, are
+// not the user navigating anywhere, and a row that treated them as such
+// would claim the tab had left a page it never left.  A tab with nothing
+// committed yet counts as arrived -- it is still on its way to the target,
+// not away from it.
+bool IsAtPinnedTarget(const GURL& target, const GURL& current);
+
+// The persisted navigation target of the pinned item |contents|
+// materializes, or an invalid GURL when it materializes none: an ordinary
+// tab, one whose item has since been unpinned, or one belonging to a Space
+// other than the active one (PinnedItemsManager is scoped to that Space).
+GURL GetPinnedTargetForTab(PinnedItemsManager* pinned_items_manager,
+                           content::WebContents* contents);
+
+// True when |contents| materializes a pinned item and has since been
+// navigated off that item's target.
+bool HasLeftPinnedTarget(PinnedItemsManager* pinned_items_manager,
+                         content::WebContents* contents);
+
+// Navigates |contents| back to its pinned item's target.  Deliberately an
+// ordinary navigation rather than a history traversal: the pages visited in
+// between stay in session history, so this is undone with Back and nothing
+// the user was reading is thrown away.  A no-op when |contents| materializes
+// no pinned item, or is already on its target.
+void ReturnTabToPinnedTarget(PinnedItemsManager* pinned_items_manager,
+                             content::WebContents* contents);
 
 }  // namespace avora
 

@@ -91,6 +91,9 @@ struct BrowserViewLayoutViews {
   raw_ptr<views::View> avora_sidebar_header = nullptr;
   raw_ptr<views::View> avora_spaces_bar = nullptr;
 
+  // Avora leading-edge hover strip that peeks a hidden sidebar back in.
+  raw_ptr<views::View> avora_edge_hover = nullptr;
+
   // Avora quick-nav overlay (CMD+T).
   raw_ptr<views::View> avora_quick_nav = nullptr;
 
@@ -99,6 +102,9 @@ struct BrowserViewLayoutViews {
 
   // Avora confirmation toast, pinned to the top-right of the content area.
   raw_ptr<views::View> avora_toast = nullptr;
+
+  // Avora page-load bar, pinned to the top edge of the window.
+  raw_ptr<views::View> avora_loading_bar = nullptr;
 
   // LINT.ThenChange(//chrome/browser/ui/views/frame/browser_view.cc:BrowserViewLayoutViews)
 

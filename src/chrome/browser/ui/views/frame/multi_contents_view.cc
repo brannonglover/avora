@@ -233,9 +233,14 @@ void MultiContentsView::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
   background_view_->SetRoundedCorners(gfx::RoundedCornersF());
 
   if (!IsInSplitView()) {
-    GetActiveContentsContainerView()->SetRoundedCorners(radii);
-    GetInactiveContentsContainerView()->SetRoundedCorners(
-        gfx::RoundedCornersF());
+    // In kOverlay the window's content radii belong to the full-bleed
+    // container behind the card, not to the active one; the card carries its
+    // own radii, applied in UpdateContentsBorderAndOverlay().
+    GetPrimaryContentsContainerView()->SetRoundedCorners(radii);
+    if (secondary_mode_ != SecondaryContentsMode::kOverlay) {
+      GetInactiveContentsContainerView()->SetRoundedCorners(
+          gfx::RoundedCornersF());
+    }
   }
 }
 
@@ -261,7 +266,29 @@ MultiContentsView::GetFocusableViewsMapFor(
 }
 
 bool MultiContentsView::IsInSplitView() const {
-  return resize_area_->GetVisible();
+  CheckSecondaryModeInvariant();
+  return secondary_mode_ == SecondaryContentsMode::kSplit;
+}
+
+void MultiContentsView::CheckSecondaryModeInvariant() const {
+  // IsInSplitView() used to be resize_area_->GetVisible() outright.  Keeping
+  // the two in step means every existing split path behaves exactly as before,
+  // and a future change that toggles the resize area without updating the mode
+  // fails here rather than silently mislabelling an overlay as a split.
+  DCHECK_EQ(secondary_mode_ == SecondaryContentsMode::kSplit,
+            resize_area_->GetVisible());
+  DCHECK_EQ(secondary_mode_ == SecondaryContentsMode::kOverlay,
+            overlay_contents_bounds_.has_value());
+}
+
+ContentsContainerView* MultiContentsView::GetPrimaryContentsContainerView()
+    const {
+  // The overlay never swaps containers, so the card is always index 1 and the
+  // full-bleed container is always index 0.  In split the two are peers and
+  // the active one is the right answer.
+  return secondary_mode_ == SecondaryContentsMode::kOverlay
+             ? contents_container_views_[0].get()
+             : GetActiveContentsContainerView();
 }
 
 void MultiContentsView::SetWebContentsAtIndex(
@@ -274,6 +301,7 @@ void MultiContentsView::SetWebContentsAtIndex(
   if (index == 1 && !contents_container_views_[1]->GetVisible()) {
     contents_container_views_[1]->SetVisible(true);
     resize_area_->SetVisible(true);
+    secondary_mode_ = SecondaryContentsMode::kSplit;
     UpdateContentsBorderAndOverlay();
   }
 
@@ -294,6 +322,7 @@ void MultiContentsView::ShowSplitView(
     visual_data_ = visual_data;
     contents_container_views_[1]->SetVisible(true);
     resize_area_->SetVisible(true);
+    secondary_mode_ = SecondaryContentsMode::kSplit;
     resize_area_->SetLayout(visual_data.split_layout());
     UpdateContentsBorderAndOverlay();
   } else {
@@ -313,6 +342,7 @@ void MultiContentsView::CloseSplitView() {
   contents_container_views_[1]->contents_view()->SetWebContents(nullptr);
   contents_container_views_[1]->SetVisible(false);
   resize_area_->SetVisible(false);
+  secondary_mode_ = SecondaryContentsMode::kNone;
   UpdateContentsBorderAndOverlay();
 
   if (auto* active_contents = GetActiveContentsView()->web_contents()) {
@@ -349,6 +379,86 @@ void MultiContentsView::SetActiveIndex(int index) {
   GetActiveContentsView()->set_is_primary_web_contents_for_window(true);
   GetInactiveContentsView()->set_is_primary_web_contents_for_window(false);
   UpdateContentsBorderAndOverlay();
+}
+
+void MultiContentsView::ShowOverlayContents(
+    content::WebContents* contents,
+    const gfx::Rect& bounds,
+    const gfx::RoundedCornersF& radii) {
+  CHECK(contents);
+  // An overlay and a split cannot share the one secondary container.  Callers
+  // are responsible for closing a split first; asserting here keeps the two
+  // arrangements from silently interleaving.
+  CHECK_NE(secondary_mode_, SecondaryContentsMode::kSplit);
+
+  overlay_contents_bounds_ = bounds;
+  overlay_contents_radii_ = radii;
+  secondary_mode_ = SecondaryContentsMode::kOverlay;
+
+  // Size the container before the contents are attached: a zero-sized viewport
+  // stalls the renderer.
+  contents_container_views_[1]->SetVisible(true);
+  contents_container_views_[1]->SetBoundsRect(bounds);
+  contents_container_views_[1]->contents_view()->SetWebContents(contents);
+
+  // resize_area_ deliberately stays hidden.  It is what IsInSplitView() is
+  // asserted against, so leaving it alone keeps split geometry, split chrome
+  // and the split entry affordances inert without touching any of them.
+  if (tabs::TabInterface* tab =
+          tabs::TabInterface::MaybeGetFromContents(contents)) {
+    if (auto* sad_tab_helper = SadTabHelper::From(tab)) {
+      sad_tab_helper->ReinstallInWebView();
+    }
+  }
+
+  // The card is by definition the container the user is interacting with, so
+  // this arrangement owns the active index rather than leaving callers to
+  // sequence it.  Doing it here is also what lets BrowserView::
+  // OnActiveTabChanged() see the active contents view already holding the
+  // incoming contents, so its generic contents swap is a no-op.
+  SetActiveIndex(1);
+
+  UpdateContentsBorderAndOverlay();
+  InvalidateLayout();
+}
+
+void MultiContentsView::SetOverlayContentsBounds(const gfx::Rect& bounds) {
+  CHECK_EQ(secondary_mode_, SecondaryContentsMode::kOverlay);
+  if (overlay_contents_bounds_ == bounds) {
+    return;
+  }
+  overlay_contents_bounds_ = bounds;
+  InvalidateLayout();
+}
+
+void MultiContentsView::HideOverlayContents() {
+  if (secondary_mode_ != SecondaryContentsMode::kOverlay) {
+    return;
+  }
+  // Clear the overlay state first so the mode invariant holds across the
+  // SetActiveIndex() below, then hand the active index back to the primary
+  // container before the card is torn down.  In that order no caller can
+  // observe an active index pointing at an invisible container.
+  secondary_mode_ = SecondaryContentsMode::kNone;
+  overlay_contents_bounds_.reset();
+  overlay_contents_radii_ = gfx::RoundedCornersF();
+
+  SetActiveIndex(0);
+
+  contents_container_views_[1]->contents_view()->SetWebContents(nullptr);
+  contents_container_views_[1]->SetVisible(false);
+
+  if (auto* primary = GetActiveContentsView()->web_contents()) {
+    if (tabs::TabInterface* tab =
+            tabs::TabInterface::MaybeGetFromContents(primary)) {
+      if (auto* sad_tab_helper = SadTabHelper::From(tab)) {
+        sad_tab_helper->ReinstallInWebView();
+      }
+    }
+  }
+
+  UpdateContentsBorderAndOverlay();
+  InvalidateLayout();
 }
 
 void MultiContentsView::UpdateSplitVisualData(
@@ -454,7 +564,7 @@ int MultiContentsView::GetInactiveIndex() const {
 }
 
 void MultiContentsView::OnWebContentsFocused(views::WebView* web_view) {
-  if (IsInSplitView()) {
+  if (HasSecondaryContents()) {
     // Check whether the widget is visible as otherwise during browser hide,
     // inactive web contents gets focus. See crbug.com/419335827
     if (GetInactiveContentsView()->web_contents() == web_view->web_contents() &&
@@ -465,7 +575,7 @@ void MultiContentsView::OnWebContentsFocused(views::WebView* web_view) {
 }
 
 void MultiContentsView::OnActorOverlayFocused(views::WebView* web_view) {
-  if (IsInSplitView() && GetWidget()->IsVisible()) {
+  if (HasSecondaryContents() && GetWidget()->IsVisible()) {
     for (auto& contents_container_view : contents_container_views_) {
       if (contents_container_view->actor_overlay_web_view() &&
           contents_container_view->actor_overlay_web_view() == web_view &&
@@ -479,7 +589,7 @@ void MultiContentsView::OnActorOverlayFocused(views::WebView* web_view) {
 }
 
 void MultiContentsView::OnNtpFooterFocused(views::WebView* web_view) {
-  if (IsInSplitView() && GetWidget()->IsVisible()) {
+  if (HasSecondaryContents() && GetWidget()->IsVisible()) {
     for (auto& contents_container_view : contents_container_views_) {
       if (contents_container_view->new_tab_footer_view() &&
           contents_container_view->new_tab_footer_view() == web_view &&
@@ -495,7 +605,7 @@ void MultiContentsView::OnNtpFooterFocused(views::WebView* web_view) {
 void MultiContentsView::OnReadAnythingOverlayFocused(
     ContentsContainerView* container,
     views::WebView* web_view) {
-  if (IsInSplitView() && GetWidget()->IsVisible()) {
+  if (HasSecondaryContents() && GetWidget()->IsVisible()) {
     if (GetInactiveContentsContainerView() == container) {
       delegate_->WebContentsFocused(container->contents_view()->web_contents());
     }
@@ -527,6 +637,22 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
 
   available_space =
       CalculateSeparatorLayouts(available_space, layouts.child_layouts);
+
+  // kOverlay: the primary container keeps the whole available space and the
+  // secondary container floats above it.  Returns before any split geometry,
+  // which has no meaning for this arrangement.
+  if (secondary_mode_ == SecondaryContentsMode::kOverlay) {
+    layouts.child_layouts.emplace_back(contents_container_views_[0].get(), true,
+                                       available_space);
+    layouts.child_layouts.emplace_back(resize_area_.get(), false, gfx::Rect());
+    layouts.child_layouts.emplace_back(contents_container_views_[1].get(), true,
+                                       overlay_contents_bounds_.value());
+    layouts.child_layouts.emplace_back(lens_overlay_view_.get(),
+                                       lens_overlay_view_->GetVisible(),
+                                       gfx::Rect(width, height));
+    layouts.host_size = gfx::Size(width, height);
+    return layouts;
+  }
 
   if (IsInSplitView()) {
     available_space.Inset(split_view_insets_);
@@ -575,9 +701,17 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
   }
 
   if (!IsInSplitView()) {
+    // The animation target belongs to whichever container fills the contents
+    // area.  In kOverlay that is not the active one, so ask for the primary
+    // rather than assuming the two are the same.
     const auto outsets = -target_content_bounds_->clipped_area.ToOutsets();
-    GetActiveContentsContainerView()->SetTargetContentBounds(outsets);
-    GetInactiveContentsContainerView()->SetTargetContentBounds(std::nullopt);
+    ContentsContainerView* const primary = GetPrimaryContentsContainerView();
+    primary->SetTargetContentBounds(outsets);
+    for (auto& contents : contents_container_views_) {
+      if (contents != primary) {
+        contents->SetTargetContentBounds(std::nullopt);
+      }
+    }
     return;
   }
 
@@ -666,7 +800,15 @@ gfx::Rect MultiContentsView::CalculateDropTargetLayout(
 gfx::Rect MultiContentsView::CalculateSeparatorLayouts(
     const gfx::Rect& available_space,
     std::vector<views::ChildLayout>& child_layouts) const {
-  if (IsInSplitView()) {
+  // Neither secondary arrangement has anything for the separators to separate:
+  // a split's outline is its own box, and kOverlay's card carries its own
+  // corners.  The top separator in particular is laid out across the whole
+  // contents area and painted over both containers, so in kOverlay it cuts a
+  // hairline across the card and bisects its top corners.  Returning
+  // |available_space| untouched also gives back the DIP the separator's height
+  // would otherwise inset the contents by, so the page is not left shifted
+  // down by a pixel with the line merely hidden.
+  if (HasSecondaryContents()) {
     child_layouts.emplace_back(contents_separators_.top_separator.get(), false,
                                gfx::Rect());
     child_layouts.emplace_back(contents_separators_.leading_separator.get(),
@@ -803,6 +945,22 @@ int MultiContentsView::GetMinViewSize(gfx::Rect available_space) const {
 }
 
 void MultiContentsView::UpdateContentsBorderAndOverlay() {
+  if (secondary_mode_ == SecondaryContentsMode::kOverlay) {
+    // The card is the active container, but the container behind it still
+    // fills the contents area and must keep the window's radii rather than
+    // being styled as a backgrounded split pane.  Neither gets the split
+    // outline or mini toolbar.
+    ContentsContainerView* const primary = contents_container_views_[0];
+    ContentsContainerView* const card = contents_container_views_[1];
+    primary->SetRoundedCorners(GetBackgroundRadii());
+    primary->UpdateBorderAndOverlay(/*is_in_split=*/false, /*is_active=*/false,
+                                    /*is_highlighted=*/false);
+    card->SetRoundedCorners(overlay_contents_radii_);
+    card->UpdateBorderAndOverlay(/*is_in_split=*/false, /*is_active=*/true,
+                                 /*is_highlighted=*/false);
+    return;
+  }
+
   const bool is_in_split = IsInSplitView();
   for (auto& contents_container_view : contents_container_views_) {
     const bool is_active =

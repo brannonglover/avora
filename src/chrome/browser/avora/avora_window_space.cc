@@ -3,8 +3,18 @@
 #include "chrome/browser/avora/avora_window_space.h"
 
 #include "base/uuid.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 
 namespace avora {
+
+DEFINE_USER_DATA(WindowSpaceState);
+
+WindowSpaceState* GetWindowSpaceState(BrowserWindowInterface* browser) {
+  if (!browser) {
+    return nullptr;
+  }
+  return WindowSpaceState::Get(browser->GetUnownedUserDataHost());
+}
 
 // ---------- helpers ----------------------------------------------------------
 

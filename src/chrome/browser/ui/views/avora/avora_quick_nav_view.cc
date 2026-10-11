@@ -7,14 +7,13 @@
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/avora/avora_search_suggest.h"
+#include "chrome/browser/avora/avora_omnibox_bridge.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/browser/storage_partition.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -25,6 +24,7 @@
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/gfx/range/range.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/background.h"
@@ -139,17 +139,24 @@ class InputWrapper : public views::View {
 BEGIN_METADATA(InputWrapper)
 END_METADATA
 
-// ── History row (favicon | title | domain) ──────────────────────────────────
+// ── Result row (icon | title | trailing detail) ─────────────────────────────
 
-class HistoryRowView : public views::Button {
-  METADATA_HEADER(HistoryRowView, views::Button)
+// One row of the list, used for favorites, history matches and search
+// suggestions alike.  Search rows draw the search glyph and no trailing
+// detail; navigations draw a favicon and their domain.  Keeping these as one
+// class is what lets selection, favicon loading and keyboard traversal treat
+// every row the same regardless of where it came from.
+class ResultRowView : public views::Button {
+  METADATA_HEADER(ResultRowView, views::Button)
 
  public:
-  HistoryRowView(const std::string& url,
-                 const std::string& title,
-                 base::RepeatingCallback<void(const std::string&)> on_click)
-      : url_(url) {
-    SetCallback(base::BindRepeating(std::move(on_click), url));
+  ResultRowView(const std::string& value,
+                const std::u16string& title,
+                const std::u16string& detail,
+                bool is_search,
+                base::RepeatingCallback<void(const std::string&)> on_click)
+      : value_(value), is_search_(is_search) {
+    SetCallback(base::BindRepeating(std::move(on_click), value));
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 0)));
 
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -158,18 +165,22 @@ class HistoryRowView : public views::Button {
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
-    // Favicon — plain 32px ImageView, no background container.
+    // Icon — the search glyph up front for queries, otherwise left blank
+    // until the favicon for this row arrives.
     auto icon = std::make_unique<views::ImageView>();
     icon->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
     icon->SetPreferredSize(gfx::Size(kFaviconSize, kFaviconSize));
     icon->SetHorizontalAlignment(views::ImageView::Alignment::kCenter);
     icon->SetVerticalAlignment(views::ImageView::Alignment::kCenter);
+    if (is_search_) {
+      icon->SetImage(ui::ImageModel::FromVectorIcon(
+          vector_icons::kSearchIcon, kDomainColor, kFaviconSize));
+    }
     icon_view_ = AddChildView(std::move(icon));
 
     // Title label.
-    std::string display_title = title.empty() ? StripUrlPrefix(url) : title;
     auto title_label = std::make_unique<views::Label>(
-        base::UTF8ToUTF16(display_title),
+        title,
         views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                                 gfx::Font::NORMAL, 13,
                                                 gfx::Font::Weight::MEDIUM)});
@@ -179,27 +190,32 @@ class HistoryRowView : public views::Button {
     title_label_ = AddChildView(std::move(title_label));
     layout->SetFlexForView(title_label_, 1);
 
-    // Domain label.
-    std::string domain = StripUrlPrefix(url);
-    auto domain_label = std::make_unique<views::Label>(
-        base::UTF8ToUTF16(domain),
+    // Trailing detail (domain).  Search rows have none.
+    auto detail_label = std::make_unique<views::Label>(
+        detail,
         views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                                 gfx::Font::NORMAL, 12,
                                                 gfx::Font::Weight::NORMAL)});
-    domain_label->SetEnabledColor(kDomainColor);
-    domain_label->SetHorizontalAlignment(gfx::ALIGN_RIGHT);
-    domain_label_ = AddChildView(std::move(domain_label));
+    detail_label->SetEnabledColor(kDomainColor);
+    detail_label->SetHorizontalAlignment(gfx::ALIGN_RIGHT);
+    detail_label->SetVisible(!detail.empty());
+    detail_label_ = AddChildView(std::move(detail_label));
 
     SetPreferredSize(gfx::Size(0, kRowHeight));
-    SetAccessibleName(base::UTF8ToUTF16(display_title + " \u2014 " + domain));
+    SetAccessibleName(detail.empty() ? title
+                                     : title + u" \u2014 " + detail);
   }
 
-  ~HistoryRowView() override = default;
+  ~ResultRowView() override = default;
 
-  const std::string& url() const { return url_; }
+  // Identity of the row, and the string committed when it is chosen: the
+  // destination URL for navigations, the raw query for searches.
+  const std::string& value() const { return value_; }
+
+  bool is_search() const { return is_search_; }
 
   void SetFavicon(const gfx::ImageSkia& icon) {
-    if (icon.isNull() || !icon_view_) {
+    if (icon.isNull() || !icon_view_ || is_search_) {
       return;
     }
     favicon_ = icon;
@@ -248,107 +264,29 @@ class HistoryRowView : public views::Button {
   }
 
  private:
-  std::string url_;
+  std::string value_;
+  bool is_search_ = false;
   gfx::ImageSkia favicon_;
   bool selected_ = false;
   raw_ptr<views::ImageView> icon_view_ = nullptr;
   raw_ptr<views::Label> title_label_ = nullptr;
-  raw_ptr<views::Label> domain_label_ = nullptr;
+  raw_ptr<views::Label> detail_label_ = nullptr;
 };
 
-BEGIN_METADATA(HistoryRowView)
+BEGIN_METADATA(ResultRowView)
 END_METADATA
 
-// ── Suggestion row (search icon | suggestion text) ──────────────────────────
-
-class SuggestionRowView : public views::Button {
-  METADATA_HEADER(SuggestionRowView, views::Button)
-
- public:
-  SuggestionRowView(
-      const std::string& text,
-      base::RepeatingCallback<void(const std::string&)> on_click)
-      : value_(text) {
-    SetCallback(base::BindRepeating(std::move(on_click), text));
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 0)));
-
-    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal,
-        gfx::Insets::VH(4, 10), kRowIconGap));
-    layout->set_cross_axis_alignment(
-        views::BoxLayout::CrossAxisAlignment::kCenter);
-
-    // Search icon.
-    auto icon = std::make_unique<views::ImageView>();
-    icon->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
-    icon->SetPreferredSize(gfx::Size(kFaviconSize, kFaviconSize));
-    icon->SetImage(ui::ImageModel::FromVectorIcon(
-        vector_icons::kSearchIcon, kDomainColor, kFaviconSize));
-    AddChildView(std::move(icon));
-
-    // Suggestion text.
-    auto label = std::make_unique<views::Label>(
-        base::UTF8ToUTF16(text),
-        views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
-                                                gfx::Font::NORMAL, 13,
-                                                gfx::Font::Weight::MEDIUM)});
-    label->SetEnabledColor(kTitleColor);
-    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    label->SetElideBehavior(gfx::ELIDE_TAIL);
-    auto* label_ptr = AddChildView(std::move(label));
-    layout->SetFlexForView(label_ptr, 1);
-
-    SetPreferredSize(gfx::Size(0, kRowHeight));
-    SetAccessibleName(base::UTF8ToUTF16(text));
-  }
-
-  ~SuggestionRowView() override = default;
-
-  const std::string& value() const { return value_; }
-
-  void SetSelected(bool selected) {
-    if (selected_ != selected) {
-      selected_ = selected;
-      SchedulePaint();
-    }
-  }
-
-  bool selected() const { return selected_; }
-
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    const float r = static_cast<float>(kRowCornerRadius);
-    if (selected_) {
-      cc::PaintFlags fill;
-      fill.setAntiAlias(true);
-      fill.setColor(kRowSelectedBg);
-      fill.setStyle(cc::PaintFlags::kFill_Style);
-      canvas->DrawRoundRect(GetLocalBounds(), r, fill);
-
-      cc::PaintFlags border;
-      border.setAntiAlias(true);
-      border.setColor(kRowSelectedBorder);
-      border.setStyle(cc::PaintFlags::kStroke_Style);
-      border.setStrokeWidth(1.0f);
-      gfx::RectF br(GetLocalBounds());
-      br.Inset(0.5f);
-      canvas->DrawRoundRect(br, r, border);
-    } else if (GetState() == views::Button::STATE_HOVERED ||
-               GetState() == views::Button::STATE_PRESSED) {
-      cc::PaintFlags flags;
-      flags.setAntiAlias(true);
-      flags.setColor(kRowHoverBg);
-      flags.setStyle(cc::PaintFlags::kFill_Style);
-      canvas->DrawRoundRect(GetLocalBounds(), r, flags);
-    }
-  }
-
- private:
-  std::string value_;
-  bool selected_ = false;
-};
-
-BEGIN_METADATA(SuggestionRowView)
-END_METADATA
+// Build a row for a navigation target, falling back to the bare domain when
+// there is nothing better to use as a title.
+std::unique_ptr<ResultRowView> MakeUrlRow(
+    const std::string& url,
+    const std::string& title,
+    base::RepeatingCallback<void(const std::string&)> on_click) {
+  const std::string domain = StripUrlPrefix(url);
+  return std::make_unique<ResultRowView>(
+      url, base::UTF8ToUTF16(title.empty() ? domain : title),
+      base::UTF8ToUTF16(domain), /*is_search=*/false, std::move(on_click));
+}
 
 }  // namespace
 
@@ -395,9 +333,11 @@ AvoraQuickNavView::AvoraQuickNavView(BrowserWindowInterface* browser,
     window_space_state_->AddObserver(this);
   }
 
-  suggest_provider_ = std::make_unique<SearchSuggestProvider>(
-      profile->GetDefaultStoragePartition()
-          ->GetURLLoaderFactoryForBrowserProcess());
+  // Chromium's autocomplete stack supplies the matching, frecency ranking and
+  // inline completion; this view remains the whole presentation layer.
+  omnibox_bridge_ = std::make_unique<OmniboxBridge>(
+      profile, base::BindRepeating(&AvoraQuickNavView::OnOmniboxResults,
+                                   base::Unretained(this)));
 
   BuildCard();
 }
@@ -446,6 +386,9 @@ void AvoraQuickNavView::ShowOverlay(const std::u16string& url_text) {
     }
   }
 
+  user_text_ = url_text;
+  deleting_ = false;
+
   if (input_field_) {
     updating_from_selection_ = true;
     input_field_->SetText(url_text);
@@ -458,7 +401,7 @@ void AvoraQuickNavView::ShowOverlay(const std::u16string& url_text) {
 
   // CMD+L: pre-select the first row (current URL) and highlight it.
   // CMD+T: leave input empty with placeholder, no row selected.
-  if (!url_text.empty() && !row_urls_.empty()) {
+  if (!url_text.empty() && !row_values_.empty()) {
     UpdateSelection(0);
   }
 }
@@ -466,12 +409,13 @@ void AvoraQuickNavView::ShowOverlay(const std::u16string& url_text) {
 void AvoraQuickNavView::Hide() {
   SetVisible(false);
   selected_index_ = -1;
-  row_urls_.clear();
+  row_values_.clear();
   current_page_url_.clear();
-  showing_suggestions_ = false;
-  suggest_timer_.Stop();
-  if (suggest_provider_) {
-    suggest_provider_->Cancel();
+  showing_matches_ = false;
+  user_text_.clear();
+  deleting_ = false;
+  if (omnibox_bridge_) {
+    omnibox_bridge_->Stop();
   }
   if (input_field_) {
     input_field_->SetText(std::u16string());
@@ -563,6 +507,12 @@ bool AvoraQuickNavView::HandleKeyEvent(views::Textfield* sender,
     return true;
   }
 
+  // Backspace and Delete are handled by the Textfield itself, but note them
+  // here so the ContentsChanged they trigger knows to suppress type-ahead.
+  // Without this, deleting the completion would simply put it straight back.
+  deleting_ = key_event.key_code() == ui::VKEY_BACK ||
+              key_event.key_code() == ui::VKEY_DELETE;
+
   // Any other key: clear selection so the user is typing freely.
   if (selected_index_ >= 0 && !updating_from_selection_) {
     UpdateSelection(-1);
@@ -577,32 +527,35 @@ void AvoraQuickNavView::ContentsChanged(views::Textfield* sender,
     return;
   }
 
-  std::string query = base::UTF16ToUTF8(new_contents);
+  // Whatever is in the field now is text the user typed, not a completion we
+  // appended — our own edits return above on `updating_from_selection_`.
+  user_text_ = new_contents;
 
-  if (query.empty()) {
-    suggest_timer_.Stop();
-    if (suggest_provider_) {
-      suggest_provider_->Cancel();
+  const bool prevent_inline_autocomplete = deleting_;
+  deleting_ = false;
+
+  if (new_contents.empty()) {
+    if (omnibox_bridge_) {
+      omnibox_bridge_->Stop();
     }
-    showing_suggestions_ = false;
+    showing_matches_ = false;
     RebuildHistoryList();
-    if (input_favicon_) {
-      input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-    }
+    ResetInputIcon();
     return;
   }
 
-  suggest_timer_.Start(
-      FROM_HERE, base::Milliseconds(200),
-      base::BindOnce(&AvoraQuickNavView::FetchSuggestions,
-                     weak_factory_.GetWeakPtr(), query));
+  if (omnibox_bridge_) {
+    // No debounce here: AutocompleteController runs a synchronous pass for the
+    // local providers and paces its own network requests.
+    omnibox_bridge_->Start(new_contents, GURL(current_page_url_),
+                           prevent_inline_autocomplete);
+  }
 }
 
 // ── FavoritesManager::Observer ──────────────────────────────────────────────
 
 void AvoraQuickNavView::OnFavoritesChanged() {
-  if (IsShowing() && !showing_suggestions_) {
+  if (IsShowing() && !showing_matches_) {
     RebuildHistoryList();
   }
 }
@@ -682,11 +635,14 @@ void AvoraQuickNavView::RebuildHistoryList() {
   }
 
   grid_container_->RemoveAllChildViews();
-  row_urls_.clear();
+  row_values_.clear();
   selected_index_ = -1;
-  showing_suggestions_ = false;
+  showing_matches_ = false;
 
-  auto on_click = base::BindRepeating(&AvoraQuickNavView::OnFavoriteClicked,
+  // Drop favicon fetches aimed at the rows we just destroyed.
+  cancelable_task_tracker_.TryCancelAll();
+
+  auto on_click = base::BindRepeating(&AvoraQuickNavView::OnRowChosen,
                                       base::Unretained(this));
 
   // 1. Current page URL as the first entry.
@@ -700,9 +656,9 @@ void AvoraQuickNavView::RebuildHistoryList() {
       }
     }
     auto* row = grid_container_->AddChildView(
-        std::make_unique<HistoryRowView>(current_page_url_, title, on_click));
+        MakeUrlRow(current_page_url_, title, on_click));
     LoadFavicon(row, current_page_url_);
-    row_urls_.push_back(current_page_url_);
+    row_values_.push_back(current_page_url_);
   }
 
   // 2. Favorites (skip duplicate of current URL).
@@ -712,12 +668,12 @@ void AvoraQuickNavView::RebuildHistoryList() {
       continue;
     }
     auto* row = grid_container_->AddChildView(
-        std::make_unique<HistoryRowView>(entry.url, entry.title, on_click));
+        MakeUrlRow(entry.url, entry.title, on_click));
     LoadFavicon(row, entry.url);
-    row_urls_.push_back(entry.url);
+    row_values_.push_back(entry.url);
   }
 
-  grid_container_->SetVisible(!row_urls_.empty());
+  grid_container_->SetVisible(!row_values_.empty());
   grid_container_->InvalidateLayout();
   if (card_) {
     card_->InvalidateLayout();
@@ -739,74 +695,45 @@ void AvoraQuickNavView::UpdateSelection(int new_index) {
 
   // Clear previous selection.
   if (selected_index_ >= 0 && selected_index_ < count) {
-    if (showing_suggestions_) {
-      static_cast<SuggestionRowView*>(
-          grid_container_->children()[selected_index_])
-          ->SetSelected(false);
-    } else {
-      static_cast<HistoryRowView*>(
-          grid_container_->children()[selected_index_])
-          ->SetSelected(false);
-    }
+    static_cast<ResultRowView*>(grid_container_->children()[selected_index_])
+        ->SetSelected(false);
   }
 
   selected_index_ = new_index;
 
   // Apply new selection and update input field + favicon.
   if (selected_index_ >= 0 && selected_index_ < count) {
-    if (showing_suggestions_) {
-      static_cast<SuggestionRowView*>(
-          grid_container_->children()[selected_index_])
-          ->SetSelected(true);
-    } else {
-      static_cast<HistoryRowView*>(
-          grid_container_->children()[selected_index_])
-          ->SetSelected(true);
-    }
+    auto* row = static_cast<ResultRowView*>(
+        grid_container_->children()[selected_index_]);
+    row->SetSelected(true);
 
-    if (input_field_ && selected_index_ < static_cast<int>(row_urls_.size())) {
+    const int value_count = static_cast<int>(row_values_.size());
+    if (input_field_ && selected_index_ < value_count) {
       updating_from_selection_ = true;
-      input_field_->SetText(base::UTF8ToUTF16(row_urls_[selected_index_]));
+      input_field_->SetText(base::UTF8ToUTF16(row_values_[selected_index_]));
       input_field_->SelectAll(true);
       updating_from_selection_ = false;
     }
 
-    // Update the input favicon.
-    if (input_favicon_) {
-      if (showing_suggestions_) {
-        input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-            vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-        input_favicon_->SetVisible(true);
-      } else {
-        auto* row = static_cast<HistoryRowView*>(
-            grid_container_->children()[selected_index_]);
-        const gfx::ImageSkia& row_icon = row->favicon();
-        if (!row_icon.isNull()) {
-          gfx::ImageSkia resized =
-              gfx::ImageSkiaOperations::CreateResizedImage(
-                  row_icon, skia::ImageOperations::RESIZE_BEST,
-                  gfx::Size(kInputFaviconSize, kInputFaviconSize));
-          input_favicon_->SetImage(ui::ImageModel::FromImageSkia(resized));
-          input_favicon_->SetVisible(true);
-        } else {
-          input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-              vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-          input_favicon_->SetVisible(true);
-        }
-      }
+    // Mirror the selected row's favicon into the field.
+    const gfx::ImageSkia& row_icon = row->favicon();
+    if (input_favicon_ && !row->is_search() && !row_icon.isNull()) {
+      gfx::ImageSkia resized = gfx::ImageSkiaOperations::CreateResizedImage(
+          row_icon, skia::ImageOperations::RESIZE_BEST,
+          gfx::Size(kInputFaviconSize, kInputFaviconSize));
+      input_favicon_->SetImage(ui::ImageModel::FromImageSkia(resized));
+      input_favicon_->SetVisible(true);
+    } else {
+      ResetInputIcon();
     }
   } else {
     // No selection — revert to search icon.
-    if (input_favicon_) {
-      input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-      input_favicon_->SetVisible(true);
-    }
+    ResetInputIcon();
   }
 }
 
 void AvoraQuickNavView::MoveSelection(int delta) {
-  int count = static_cast<int>(row_urls_.size());
+  int count = static_cast<int>(row_values_.size());
   if (count == 0) {
     return;
   }
@@ -816,6 +743,12 @@ void AvoraQuickNavView::MoveSelection(int delta) {
     new_index = count - 1;
   } else if (new_index >= count) {
     new_index = 0;
+  }
+
+  // The user is choosing from what is on screen now.  Stop autocomplete so a
+  // late pass cannot reshuffle the list out from under the selection.
+  if (showing_matches_ && omnibox_bridge_) {
+    omnibox_bridge_->Stop();
   }
 
   UpdateSelection(new_index);
@@ -882,12 +815,12 @@ void AvoraQuickNavView::LoadFavicon(views::View* row_view,
       base::BindOnce(
           [](base::WeakPtr<AvoraQuickNavView> view, const std::string& url,
              const favicon_base::FaviconImageResult& result) {
-            if (!view || !view->grid_container_ || view->showing_suggestions_) {
+            if (!view || !view->grid_container_) {
               return;
             }
             for (views::View* child : view->grid_container_->children()) {
-              auto* row = static_cast<HistoryRowView*>(child);
-              if (row && row->url() == url) {
+              auto* row = static_cast<ResultRowView*>(child);
+              if (row && row->value() == url) {
                 row->SetFavicon(result.image.AsImageSkia());
                 break;
               }
@@ -931,83 +864,148 @@ void AvoraQuickNavView::LoadInputFavicon(const std::string& url) {
       &cancelable_task_tracker_);
 }
 
-void AvoraQuickNavView::OnFavoriteClicked(const std::string& url) {
+void AvoraQuickNavView::OnRowChosen(const std::string& value) {
   if (commit_cb_) {
-    commit_cb_.Run(base::UTF8ToUTF16(url), open_in_new_tab_);
+    commit_cb_.Run(base::UTF8ToUTF16(value), open_in_new_tab_);
   }
   if (dismiss_cb_) {
     dismiss_cb_.Run();
   }
 }
 
-void AvoraQuickNavView::FetchSuggestions(const std::string& query) {
-  if (!suggest_provider_) {
-    return;
-  }
-  suggest_provider_->FetchSuggestions(
-      query, base::BindOnce(&AvoraQuickNavView::OnSuggestionsReceived,
-                            weak_factory_.GetWeakPtr(), query));
-}
-
-void AvoraQuickNavView::OnSuggestionsReceived(
-    const std::string& query,
-    std::vector<std::string> suggestions) {
+void AvoraQuickNavView::OnOmniboxResults(const OmniboxResults& results) {
   if (!IsShowing() || !input_field_) {
     return;
   }
 
-  // Discard stale results if the user has since changed the input.
-  std::string current_text = base::UTF16ToUTF8(input_field_->GetText());
-  if (current_text != query) {
+  // A single keystroke produces several passes as providers finish, and the
+  // network-backed ones can land well after the user has typed on.  Drop
+  // anything that is no longer about what is in the field.
+  if (results.query != user_text_) {
     return;
   }
 
-  RebuildSuggestionList(query, suggestions);
+  RebuildMatchList(results.suggestions);
+  ApplyInlineCompletion(results.query, results.inline_completion,
+                        results.inline_completion_url);
 }
 
-void AvoraQuickNavView::RebuildSuggestionList(
-    const std::string& query,
-    const std::vector<std::string>& suggestions) {
+void AvoraQuickNavView::RebuildMatchList(
+    const std::vector<OmniboxSuggestion>& suggestions) {
   if (!grid_container_) {
     return;
   }
 
-  grid_container_->RemoveAllChildViews();
-  row_urls_.clear();
-  selected_index_ = -1;
-  showing_suggestions_ = true;
-
-  // Cancel any outstanding favicon fetches from the previous favorites list.
-  cancelable_task_tracker_.TryCancelAll();
-
-  auto on_click = base::BindRepeating(&AvoraQuickNavView::OnFavoriteClicked,
-                                      base::Unretained(this));
-
-  // First row: the typed query itself (so Enter always searches for it).
-  grid_container_->AddChildView(
-      std::make_unique<SuggestionRowView>(query, on_click));
-  row_urls_.push_back(query);
-
-  // Remaining rows: API suggestions (skip duplicates of the query).
-  constexpr size_t kMaxSuggestions = 8;
+  std::vector<std::string> values;
+  values.reserve(suggestions.size());
   for (const auto& suggestion : suggestions) {
-    if (row_urls_.size() >= kMaxSuggestions) {
-      break;
-    }
-    if (suggestion == query) {
-      continue;
-    }
-    grid_container_->AddChildView(
-        std::make_unique<SuggestionRowView>(suggestion, on_click));
-    row_urls_.push_back(suggestion);
+    values.push_back(suggestion.commit_value);
   }
 
-  grid_container_->SetVisible(!row_urls_.empty());
+  // Later passes usually repeat the earlier ones verbatim.  Rebuilding anyway
+  // would throw away favicons that have already loaded and flicker the list
+  // under the user for no visible gain.
+  if (showing_matches_ && values == row_values_) {
+    return;
+  }
+
+  grid_container_->RemoveAllChildViews();
+  row_values_ = std::move(values);
+  selected_index_ = -1;
+  showing_matches_ = true;
+
+  // Cancel favicon fetches aimed at the rows we just destroyed.
+  cancelable_task_tracker_.TryCancelAll();
+
+  auto on_click = base::BindRepeating(&AvoraQuickNavView::OnRowChosen,
+                                      base::Unretained(this));
+
+  for (const auto& suggestion : suggestions) {
+    auto* row = grid_container_->AddChildView(std::make_unique<ResultRowView>(
+        suggestion.commit_value, suggestion.title, suggestion.subtitle,
+        suggestion.is_search, on_click));
+    if (!suggestion.is_search) {
+      LoadFavicon(row, suggestion.destination_url.spec());
+    }
+  }
+
+  grid_container_->SetVisible(!row_values_.empty());
   grid_container_->InvalidateLayout();
   if (card_) {
     card_->InvalidateLayout();
   }
   LayoutCard();
+}
+
+void AvoraQuickNavView::ApplyInlineCompletion(const std::u16string& user_text,
+                                              const std::u16string& completion,
+                                              const GURL& completion_url) {
+  if (!input_field_) {
+    return;
+  }
+
+  // Once the user has arrowed into the list the field is showing their choice;
+  // completing over it would fight the arrow keys.
+  if (selected_index_ >= 0 || !CanTypeAhead(user_text)) {
+    return;
+  }
+
+  if (completion.empty()) {
+    // Whatever was completed no longer applies.  Take it back out, leaving
+    // exactly the characters the user typed.
+    if (input_field_->GetText() != user_text) {
+      updating_from_selection_ = true;
+      input_field_->SetText(user_text);
+      updating_from_selection_ = false;
+      ResetInputIcon();
+    }
+    return;
+  }
+
+  const std::u16string completed = user_text + completion;
+  if (input_field_->GetText() != completed) {
+    updating_from_selection_ = true;
+    input_field_->SetText(completed);
+    // Select the completed tail so the next keystroke replaces it and Enter
+    // takes the whole thing.
+    input_field_->SetSelectedRange(
+        gfx::Range(user_text.length(), completed.length()));
+    updating_from_selection_ = false;
+  }
+
+  // Show the completed site's favicon for as long as its name is in the field.
+  if (completion_url.is_valid()) {
+    LoadInputFavicon(completion_url.spec());
+  }
+}
+
+bool AvoraQuickNavView::CanTypeAhead(const std::u16string& user_text) const {
+  if (!input_field_) {
+    return false;
+  }
+
+  const std::u16string_view current = input_field_->GetText();
+  if (current == user_text) {
+    return true;
+  }
+
+  // A completion placed by an earlier pass is still sitting there selected, so
+  // replacing that tail leaves the user's own characters untouched.
+  if (!base::StartsWith(current, user_text)) {
+    return false;
+  }
+  const gfx::Range selection = input_field_->GetSelectedRange();
+  return selection.GetMin() == user_text.length() &&
+         selection.GetMax() == current.length();
+}
+
+void AvoraQuickNavView::ResetInputIcon() {
+  if (!input_favicon_) {
+    return;
+  }
+  input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
+      vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
+  input_favicon_->SetVisible(true);
 }
 
 BEGIN_METADATA(AvoraQuickNavView)

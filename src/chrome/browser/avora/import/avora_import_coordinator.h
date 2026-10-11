@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "chrome/browser/avora/import/arc_sidebar_parser.h"
 #include "chrome/browser/avora/import/bookmark_import_types.h"
 #include "chrome/browser/avora/import/chromium_bookmark_parser.h"
 #include "chrome/browser/avora/import/firefox_bookmark_parser.h"
@@ -18,6 +19,40 @@
 namespace avora {
 
 class ImportedLinkStore;
+class ImportProvenanceStore;
+class PinnedFoldersManager;
+class PinnedItemsManager;
+class SpaceManager;
+
+// Result of importing Arc's Spaces and pinned tabs.
+//
+// Unlike bookmark import, this does NOT produce an ImportedSource parked in
+// the sidebar's Imported section.  Arc Spaces and pinned tabs map onto Avora
+// Spaces and pinned items directly -- they are the same kind of object in both
+// browsers -- so importing them into a staging list the user then has to drag
+// out one at a time would be strictly worse than what Arc already had.
+struct ArcImportResult {
+  bool success = false;
+  std::string error_message;
+  ArcParseStats stats;
+
+  // Avora Spaces created fresh vs. matched to an earlier import via
+  // ImportProvenanceStore and updated in place.
+  int spaces_created = 0;
+  int spaces_updated = 0;
+
+  // Pinned items and folders newly created by this run, vs. matched to
+  // something already in the destination Space -- an earlier import via
+  // ImportProvenanceStore, or the user's own same-named folder / already
+  // pinned URL -- and merged into rather than duplicated.
+  int items_created = 0;
+  int items_updated = 0;
+  int folders_created = 0;
+  int folders_updated = 0;
+
+  // Avora Space ids touched, in import order.
+  std::vector<std::string> space_ids;
+};
 
 // Result of a single import operation.
 // Uses the authoritative ParseStats from the parser rather than
@@ -58,6 +93,12 @@ class AvoraImportCoordinator {
   // data directory for this platform.
   static DetectedBrowser DetectFirefox();
   static DetectedBrowser DetectFirefox(const base::FilePath& data_dir);
+
+  // Detect all importable Arc profiles.  Arc is Chromium-based, so its
+  // profiles are parsed by ChromiumBookmarkParser exactly like Chrome and
+  // Edge -- only the data directory differs.
+  static DetectedBrowser DetectArc();
+  static DetectedBrowser DetectArc(const base::FilePath& data_dir);
 
 #if BUILDFLAG(IS_MAC)
   // Detect Safari bookmarks.  Safari has a single shared bookmark
@@ -135,6 +176,23 @@ class AvoraImportCoordinator {
   //
   // |source_profile_id| is used for deterministic re-import matching.
   // For Safari exports this is typically "default".
+  // Import Arc's Spaces and pinned tabs from StorableSidebar.json.
+  //
+  // Each Arc Space becomes (or updates) an Avora Space; each pinned tab
+  // becomes a pinned item in that Space; Arc folders become pinned folders.
+  //
+  // Re-import is idempotent through |provenance|: records are matched on
+  // Arc's own UUIDs, so running this twice updates rather than duplicates,
+  // and a Space the user has since renamed in Avora keeps its new name.
+  //
+  // Any of the manager pointers being null is an error rather than a partial
+  // import -- a half-materialized Space is worse than none.
+  static ArcImportResult ImportArcSidebar(const base::FilePath& sidebar_path,
+                                          SpaceManager* space_manager,
+                                          PinnedItemsManager* pinned_items,
+                                          PinnedFoldersManager* pinned_folders,
+                                          ImportProvenanceStore* provenance);
+
   static ImportResult ImportHtmlFile(
       const base::FilePath& html_path,
       const std::string& browser,

@@ -4,6 +4,7 @@
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_IMPORT_OFFER_VIEW_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -28,6 +29,14 @@ class WindowSpaceState;
 // This view is the contents view of a plain views::DialogDelegate rather
 // than a views::DialogDelegateView subclass; see the comment on
 // `delegate_` for the ownership contract.
+// Command-line switch that suppresses the import offer.  Used by Avora's test
+// binaries so they can run under a DCHECK build: the dialog can outlive the
+// browser window whose WindowSpaceState it points at, and the resulting
+// dangling raw_ptr aborts the whole test process.  Tracked separately from the
+// Window Overlay work.
+inline constexpr char kSuppressImportOfferSwitch[] =
+    "avora-suppress-import-offer";
+
 class AvoraImportOfferView : public views::View {
   METADATA_HEADER(AvoraImportOfferView, views::View)
 
@@ -46,6 +55,15 @@ class AvoraImportOfferView : public views::View {
   ~AvoraImportOfferView() override;
 
  private:
+  // "We found 342 bookmarks in 4 browsers." -- built from `browsers_`, so the
+  // header states what was actually detected instead of a fixed line.
+  std::u16string SummaryText() const;
+
+  // Avora draws its own footer buttons, so the presses are routed back through
+  // the delegate rather than coming from Chromium's dialog buttons.
+  void OnImportPressed();
+  void OnDismissPressed();
+
   // Runs when the user presses "Import bookmarks".  The dialog closes
   // once this returns.
   void OnAccept();

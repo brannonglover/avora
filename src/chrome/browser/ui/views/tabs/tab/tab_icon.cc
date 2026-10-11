@@ -158,7 +158,14 @@ TabIcon::~TabIcon() = default;
 void TabIcon::SetData(const tabs::TabData& data) {
   const bool was_showing_load = GetShowingLoadingAnimation();
 
-  inhibit_loading_animation_ = data.should_hide_throbber;
+  // Avora: a loading tab is reported by the bar along the top edge of the
+  // window (AvoraLoadingBarView), never by a spinner over the favicon.  The
+  // favicon is how a tab is recognised in the vertical sidebar, so covering it
+  // for the whole of a load costs more than the spinner is worth, and two
+  // indicators for one event is noise.  Inhibiting here rather than at the
+  // paint site keeps the rest of TabIcon's state machine -- throbber layer,
+  // favicon inset animation -- consistently in the not-loading branch.
+  inhibit_loading_animation_ = true;
   is_monochrome_favicon_ = data.is_monochrome_favicon;
   SetIcon(data.favicon, data.should_themify_favicon);
   SetNetworkState(data.network_state);

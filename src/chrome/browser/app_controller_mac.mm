@@ -26,6 +26,7 @@
 #include "base/functional/bind.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/not_fatal_until.h"
 #include "base/run_loop.h"
@@ -71,6 +72,7 @@
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
+#include "chrome/browser/shell_integration.h"
 #include "chrome/browser/shortcuts/chrome_webloc_file.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/task_manager/task_manager_metrics_recorder.h"
@@ -108,6 +110,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/avora/avora_mini_window.h"
 #include "chrome/browser/ui/views/color_provider_browser_helper.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
@@ -624,6 +627,10 @@ Profile* GetLastProfileMac() {
 // position of the tab strip.
 - (void)onVerticalTabStripModeChanged:
     (tabs::VerticalTabStripStateController*)stateController;
+
+// Avora: shows or hides the app menu's "Make Avora Your Default Browser" item
+// according to whether Avora is currently the default browser.
+- (void)avoraRefreshSetDefaultBrowserMenuItem;
 @end
 
 class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
@@ -946,6 +953,17 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
       addObserver:self
          selector:@selector(willPowerOff:)
              name:NSWorkspaceWillPowerOffNotification
+           object:nil];
+
+  // Avora: the default browser can change behind our back -- in System
+  // Settings, or in the OS confirmation sheet raised by the app menu item
+  // itself -- and both of those hand focus back to Avora afterwards, so
+  // re-checking on activation is enough to keep the menu item honest without
+  // polling.
+  [notificationCenter
+      addObserver:self
+         selector:@selector(avoraRefreshSetDefaultBrowserMenuItem)
+             name:NSApplicationDidBecomeActiveNotification
            object:nil];
 
   // Set up the command updater for when there are no windows open
@@ -1397,6 +1415,10 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 
   [MenuControllerCocoa
       initializeWithNewMenuIconScheme:features::IsMenuSimplificationEnabled()];
+
+  // Avora: the item is built hidden, so this first check is what reveals it
+  // for a user who has not made Avora their default browser yet.
+  [self avoraRefreshSetDefaultBrowserMenuItem];
 }
 
 - (void)observeValueForKeyPath:(NSString*)keyPath
@@ -1752,6 +1774,19 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     return;
   }
 
+  // Avora: becoming the default browser is an OS-level registration that needs
+  // neither a window nor a profile.  Handling it here rather than falling
+  // through means picking it with no window open does not first load a profile
+  // (or raise the profile picker) just to run a command that ignores it.
+  if (tag == IDC_SET_BROWSER_AS_DEFAULT) {
+    base::MakeRefCounted<shell_integration::DefaultBrowserWorker>()
+        ->StartSetAsDefault(base::BindOnce(
+            ^(shell_integration::DefaultWebClientState state) {
+              [self avoraRefreshSetDefaultBrowserMenuItem];
+            }));
+    return;
+  }
+
   if (unsafeLastProfile && !lastProfile) {
     // The profile is disallowed by policy (locked or guest mode disabled).
     ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
@@ -1982,11 +2017,51 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   _menuState->UpdateCommandEnabled(IDC_MANAGE_EXTENSIONS, true);
   _menuState->UpdateCommandEnabled(IDC_HELP_PAGE_VIA_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_IMPORT_SETTINGS, true);
+  // Avora: AppController keeps its own command allow-list for validating main
+  // menu items; a command missing here is greyed out regardless of what the
+  // browser's own BrowserCommandController says.
+  _menuState->UpdateCommandEnabled(IDC_AVORA_IMPORT_ARC, true);
+  _menuState->UpdateCommandEnabled(IDC_SET_BROWSER_AS_DEFAULT, true);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   _menuState->UpdateCommandEnabled(IDC_FEEDBACK, true);
 #endif
   _menuState->UpdateCommandEnabled(IDC_TASK_MANAGER_MAIN_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_EXIT, true);
+}
+
+// Avora: the app menu's "Make Avora Your Default Browser" item is only useful
+// while Avora is not the default, so rather than sitting there permanently
+// greyed out it disappears once the OS reports Avora already owns http.  The
+// item shares the Preferences separator group precisely so that hiding it
+// still leaves a well-formed menu.
+- (void)avoraRefreshSetDefaultBrowserMenuItem {
+  // The check runs on the thread pool, which does not exist yet when the main
+  // menu is first built in PreCreateThreads().
+  if (!_startupComplete) {
+    return;
+  }
+
+  NSMenuItem* appMenuItem = [NSApp.mainMenu itemWithTag:IDC_CHROME_MENU];
+  NSMenuItem* item =
+      [appMenuItem.submenu itemWithTag:IDC_SET_BROWSER_AS_DEFAULT];
+  if (!item) {
+    // Web app windows build the app menu without this item.
+    return;
+  }
+
+  if (!shell_integration::CanSetAsDefaultBrowser()) {
+    item.hidden = YES;
+    return;
+  }
+
+  // IS_DEFAULT is the only state worth hiding for.  If the check fails outright
+  // (UNKNOWN_DEFAULT) the user is better served by an item they can try than by
+  // one that silently vanished.
+  base::MakeRefCounted<shell_integration::DefaultBrowserWorker>()
+      ->StartCheckIsDefault(
+          base::BindOnce(^(shell_integration::DefaultWebClientState state) {
+            item.hidden = (state == shell_integration::IS_DEFAULT);
+          }));
 }
 
 // Conditionally adds the Profile menu to the main menu bar.
@@ -2685,6 +2760,21 @@ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
     profile = ProfileManager::MaybeForceOffTheRecordMode(
         profile->GetOriginalProfile());
   }
+
+  // Avora: a single web link handed over by another app -- Mail, Slack, a
+  // terminal -- opens in the mini window instead of landing in the user's tab
+  // strip.  An external link is a glance until the user says otherwise, and
+  // the mini window is where they say it: its Space selector is what turns the
+  // link into a daily tab.
+  //
+  // Only a lone link takes this path.  Several URLs arriving at once is a bulk
+  // open (a multi-selection dropped on the Dock icon), and a single mini
+  // window would show only the last of them, so those still open as tabs.
+  if (tabs.size() == 1 && tabs.front().url.SchemeIsHTTPOrHTTPS()) {
+    avora::ShowMiniWindow(profile, tabs.front().url);
+    return;
+  }
+
   // Use FindTabbedBrowser() to ensure URLs open in a normal tabbed browser
   // window, not in PWA/app windows which cannot accept new tabs.
   BrowserWindowInterface* browser =

@@ -76,7 +76,12 @@
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/actions/chrome_action_properties.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
+#include "chrome/browser/ui/views/animations/avora_sidebar_animations.h"
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/views/avora/avora_caption_buttons_mac.h"
+#endif
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -186,13 +191,16 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
 #include "chrome/browser/avora/avora_live_folder_service.h"
+#include "chrome/browser/avora/avora_nav_history.h"
 #include "chrome/browser/avora/avora_search_engine.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/extensions/extension_view_host_factory.h"
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
+#include "chrome/browser/ui/views/avora/avora_loading_bar_view.h"
 #include "chrome/browser/ui/views/avora/avora_toast_view.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
@@ -915,6 +923,33 @@ class BrowserView::PipExclusionObserverImpl
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserView, public:
 
+namespace {
+
+// A do-nothing strip that exists only to notice the pointer.  It sits in the
+// window's leading gutter, which with the sidebar hidden is browser chrome, so
+// it receives mouse events without contending with the page's native view.
+class AvoraEdgeHoverView : public views::View {
+  METADATA_HEADER(AvoraEdgeHoverView, views::View)
+
+ public:
+  explicit AvoraEdgeHoverView(base::RepeatingClosure on_enter)
+      : on_enter_(std::move(on_enter)) {}
+  ~AvoraEdgeHoverView() override = default;
+
+  void OnMouseEntered(const ui::MouseEvent& event) override { on_enter_.Run(); }
+  // Moving along the strip still counts as arriving: the pointer can enter at
+  // a point the enter event missed after a layout change.
+  void OnMouseMoved(const ui::MouseEvent& event) override { on_enter_.Run(); }
+
+ private:
+  base::RepeatingClosure on_enter_;
+};
+
+BEGIN_METADATA(AvoraEdgeHoverView)
+END_METADATA
+
+}  // namespace
+
 BrowserView::BrowserView(BrowserWindowInterface* browser)
     : views::ClientView(nullptr, nullptr),
       exclusive_access_context_(
@@ -1031,8 +1066,22 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
       };
       avora_sidebar_header_ = AddChildView(std::make_unique<AvoraSidebarView>(
           GetProfile(),
+          base::BindRepeating(&BrowserView::ToggleAvoraSidebar,
+                              base::Unretained(this)),
           make_cmd(browser_, IDC_BACK), make_cmd(browser_, IDC_FORWARD),
           make_cmd(browser_, IDC_RELOAD),
+          base::BindRepeating(
+              [](BrowserView* bv, avora::NavHistoryDirection direction) {
+                return avora::GetNavHistory(bv->GetActiveWebContents(),
+                                            direction);
+              },
+              base::Unretained(this)),
+          base::BindRepeating(
+              [](BrowserView* bv, int entry_index) {
+                avora::GoToNavHistoryEntry(bv->GetActiveWebContents(),
+                                           entry_index);
+              },
+              base::Unretained(this)),
           base::BindRepeating(
               [](BrowserView* bv, const std::string& extension_id) {
                 bv->ShowAvoraExtensionPopup(extension_id);
@@ -1090,6 +1139,11 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
           std::make_unique<avora::WindowSpaceState>(GetProfile()->GetPrefs());
     }
 
+    // Publish the Space state on the host too: surfaces outside this view
+    // hierarchy switch a window's Space through it (see GetWindowSpaceState).
+    avora_window_space_state_holder_.emplace(
+        browser_->GetUnownedUserDataHost(), *avora_window_space_state_);
+
     // Attach session data to the UnownedUserDataHost so that
     // BuildCommandsForBrowser can read the GUID and active Space during
     // session rebuilds.
@@ -1129,6 +1183,23 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
         std::make_unique<avora::AvoraSpaceGestureController>(
             avora_window_space_state_.get(), std::move(gesture_regions));
 
+    // Side nav show/hide (CMD+S).  Registered here rather than in
+    // BrowserWindowFeatures::InitPostBrowserViewConstruction() -- where
+    // Chromium registers its own providers -- so that the whole feature stays
+    // inside the Avora overlay.  The controller is built before BrowserView,
+    // so it is always available by now.
+    auto* const avora_animation_controller =
+        BrowserAnimationController::From(browser_);
+    CHECK(avora_animation_controller);
+    avora_animation_controller->AddAnimationProvider(
+        std::make_unique<AvoraSidebarAnimations>());
+    avora_sidebar_animation_subscription_ =
+        avora_animation_controller->Subscribe(
+            AvoraSidebarAnimations::kSidebar,
+            base::BindRepeating(
+                &BrowserView::OnAvoraSidebarAnimationProgressed,
+                base::Unretained(this)));
+
     // Quick-nav overlay (CMD+T).
     avora_quick_nav_ =
         AddChildView(std::make_unique<avora::AvoraQuickNavView>(
@@ -1143,10 +1214,15 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
     avora_link_preview_ =
         AddChildView(std::make_unique<avora::AvoraLinkPreviewView>(
             browser_.get(),
-            base::BindRepeating(&BrowserView::OnLinkPreviewOpenInNewTab,
+            base::BindRepeating(&BrowserView::PromoteAvoraLinkPreviewToTab,
                                 base::Unretained(this)),
             base::BindRepeating(&BrowserView::HideAvoraLinkPreview,
                                 base::Unretained(this))));
+    // Keeps the secondary contents container glued to the card as the overlay
+    // relays itself out (window resize, fullscreen, sidebar toggle).
+    avora_link_preview_->set_card_bounds_changed_callback(base::BindRepeating(
+        &BrowserView::OnAvoraLinkPreviewCardBoundsChanged,
+        base::Unretained(this)));
 
     // Confirmation toast (upper-right of the content area).  Created hidden;
     // it shows itself for a couple of seconds when a command asks it to.
@@ -1170,6 +1246,22 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
     vertical_tab_strip_bottom_corner_->SetProperty(
         views::kElementIdentifierKey,
         BrowserViewLayoutViews::kVerticalTabStripBottomCornerElementId);
+
+    // Page-load bar along the very top edge of the window.  Added last, and so
+    // layered above every other child: it crosses the sidebar header and the
+    // tab strip's top corner, and a load indicator that anything can paint
+    // over is worse than none.  It is pointed at the active tab by
+    // OnActiveTabChanged.
+    avora_loading_bar_ =
+        AddChildView(std::make_unique<avora::AvoraLoadingBarView>());
+
+    // Leading-edge hover target for peeking the hidden sidebar back in.  Added
+    // after the loading bar so nothing is laid out over it, and hidden until
+    // there is actually a hidden sidebar to summon.
+    avora_edge_hover_ = AddChildView(std::make_unique<AvoraEdgeHoverView>(
+        base::BindRepeating(&BrowserView::RevealAvoraSidebarOverlay,
+                            base::Unretained(this))));
+    avora_edge_hover_->SetVisible(false);
   } else {
     horizontal_tab_strip_region_view_->InitializeTabStrip();
   }
@@ -1312,7 +1404,16 @@ BrowserView::~BrowserView() {
   side_panel_ = nullptr;
   avora_space_gesture_controller_.reset();
   avora_sidebar_header_ = nullptr;
+  avora_edge_hover_ = nullptr;
   avora_spaces_bar_ = nullptr;
+  avora_loading_bar_ = nullptr;
+  // These three were missing from the list above.  RemoveAllChildViews()
+  // destroys the views while these still point at them, so the raw_ptr
+  // release that follows is dangling -- which only a DCHECK build detects,
+  // and Avora had never been run under one.
+  avora_link_preview_ = nullptr;
+  avora_quick_nav_ = nullptr;
+  avora_toast_ = nullptr;
 
   // Disconnect BrowserView's own observer before child views are destroyed.
   if (avora_window_space_state_) {
@@ -1322,6 +1423,10 @@ BrowserView::~BrowserView() {
   // Release the session data holder before RemoveAllChildViews; after this
   // point the host entry is erased.
   avora_session_data_holder_.reset();
+
+  // Same for the Space state: erase the host entry while the state it points
+  // at is still alive.
+  avora_window_space_state_holder_.reset();
 
 #if BUILDFLAG(IS_MAC)
   tab_overlay_view_ = nullptr;
@@ -2152,6 +2257,26 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
                                      int reason) {
   DCHECK(new_contents);
   TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
+
+  // A link preview's tab is hidden from the tab strip but still in the model,
+  // so model-order navigation (Cmd+Opt+arrow, Cmd+<n>) can land on it.  One
+  // WebContents cannot be hosted by two WebViews at once, so the overlay lets
+  // go here -- before the contents view takes over below -- and the preview
+  // becomes an ordinary tab.
+  // Activation is leaving the overlay.  The secondary container has to be
+  // returned BEFORE change_tab_contents is computed below: that value is
+  // derived from the active contents view, so running the generic swap while
+  // the card is still the active container evicts the host from the primary
+  // container and mounts the incoming tab into the card.  See
+  // UnmountAvoraLinkPreview().
+  if (avora_overlay_hosts_preview_ && avora_link_preview_ &&
+      avora_link_preview_->attached_preview() != new_contents) {
+    TeardownAvoraOverlayContainer();
+    avora_link_preview_->DetachPreview();
+  }
+
+  PromoteAvoraLinkPreviewIfActivated(new_contents);
+
   views::WebView* active_contents_view = GetActiveContentsWebView();
   bool tab_change_in_split_view =
       IsTabChangeInSplitView(old_contents, new_contents);
@@ -2299,6 +2424,13 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   // Done after focus is restored above so the overlay, not the page, ends up
   // focused when it is the thing on screen.
   UpdateAvoraLinkPreviewForActiveTab();
+
+  // The top-edge load bar shows one tab at a time: the active one.  Handing it
+  // the new tab adopts a load already in flight there and drops the outgoing
+  // tab's animation.
+  if (avora_loading_bar_) {
+    avora_loading_bar_->SetWebContents(new_contents);
+  }
 
   CHECK_DEREF(TranslateBubbleController::From(browser_.get())).CloseBubble();
 }
@@ -5394,10 +5526,12 @@ void BrowserView::AddedToWidget() {
   layout_views.side_panel = side_panel_;
   layout_views.top_container_separator = top_container_separator_;
   layout_views.avora_sidebar_header = avora_sidebar_header_;
+  layout_views.avora_edge_hover = avora_edge_hover_;
   layout_views.avora_spaces_bar = avora_spaces_bar_;
   layout_views.avora_quick_nav = avora_quick_nav_;
   layout_views.avora_link_preview = avora_link_preview_;
   layout_views.avora_toast = avora_toast_;
+  layout_views.avora_loading_bar = avora_loading_bar_;
   // LINT.ThenChange(//chrome/browser/ui/views/frame/layout/browser_view_layout.h:BrowserViewLayoutViews)
 
   SetLayoutManager(BrowserViewLayout::CreateLayout(
@@ -6564,44 +6698,10 @@ void BrowserView::ShowAvoraExtensionPopup(const std::string& extension_id) {
 
 void BrowserView::NavigateAvoraAddressBar(const std::u16string& text,
                                           bool new_tab) {
-  std::string input = base::UTF16ToUTF8(text);
-
-  // Determine whether the input looks like a URL or a search query.
-  // FixupURL aggressively prepends http:// and percent-encodes spaces,
-  // turning plain search queries into bogus URLs.  Use simple heuristics
-  // that match what users expect:
-  //   - Contains a space           → search  (URLs never have bare spaces)
-  //   - Starts with a scheme       → URL
-  //   - Contains a dot and no space → URL  (e.g. "example.com")
-  //   - Single word like "localhost" or an IP → URL
-  //   - Everything else            → search
-  bool looks_like_url = false;
-  if (input.find(' ') == std::string::npos) {
-    // No spaces — could be a URL.
-    if (input.find("://") != std::string::npos) {
-      looks_like_url = true;
-    } else if (input.find('.') != std::string::npos) {
-      looks_like_url = true;
-    } else if (input == "localhost" ||
-               base::StartsWith(input, "localhost:",
-                                base::CompareCase::INSENSITIVE_ASCII)) {
-      looks_like_url = true;
-    }
-  }
-
-  GURL url;
-  if (looks_like_url) {
-    url = url_formatter::FixupURL(input, std::string());
-    if (!url.is_valid() ||
-        (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIs("chrome"))) {
-      looks_like_url = false;
-    }
-  }
-
-  if (!looks_like_url) {
-    avora::SearchEngineManager engine_mgr(
-        browser_->GetProfile()->GetPrefs());
-    url = GURL(engine_mgr.BuildSearchURL(input));
+  const GURL url =
+      avora::ResolveAddressInput(browser_->GetProfile()->GetPrefs(), text);
+  if (!url.is_valid()) {
+    return;
   }
 
   NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
@@ -6623,6 +6723,129 @@ void BrowserView::ShowAvoraToast(const std::u16string& message) {
   // Give it its authoritative bounds now, so it never paints a frame at a
   // stale position.
   DeprecatedLayoutImmediately();
+}
+
+
+void BrowserView::ToggleAvoraSidebar() {
+  SetAvoraSidebarHidden(!avora_sidebar_hidden_);
+}
+
+void BrowserView::SetAvoraSidebarHidden(bool hidden) {
+  // Windows without a vertical tab strip have no sidebar to hide.
+  if (!vertical_tab_strip_region_view_ || avora_sidebar_hidden_ == hidden) {
+    return;
+  }
+  avora_sidebar_hidden_ = hidden;
+
+  // Either answer settles the question a peek was asking, so stop watching the
+  // pointer.  Note this drops the reveal *state* without running kConceal --
+  // where the sidebar is drawn is decided below.
+  avora_overlay_watch_timer_.Stop();
+  avora_sidebar_overlay_revealed_ = false;
+  UpdateAvoraCaptionButtons();
+
+  if (avora_edge_hover_) {
+    avora_edge_hover_->SetVisible(hidden);
+  }
+
+  auto* const controller = BrowserAnimationController::From(browser_);
+
+  // On-screen position is `1 - hidden * (1 - overlay)`, so the two values have
+  // to be sequenced carefully or the sidebar jumps.
+  if (hidden) {
+    // Clear any peek before sliding out.  The sidebar is still docked at this
+    // point, so the snap is invisible -- and without it a leftover overlay of
+    // 1.0 would pin the sidebar on screen and kHide would move nothing.
+    controller->Reset(AvoraSidebarAnimations::kSidebar,
+                      AvoraSidebarAnimations::kConceal);
+  }
+  // Docking deliberately leaves the overlay value alone.  Coming from a peek
+  // it is already 1.0, which holds the sidebar exactly where the hover put it
+  // while kShow hands the page's width back -- so the sidebar settles in place
+  // rather than slamming off screen and sliding in a second time.  Coming from
+  // a plain CMD+S it is 0.0, and kShow slides the sidebar in as before.
+  controller->Start(AvoraSidebarAnimations::kSidebar,
+                    hidden ? AvoraSidebarAnimations::kHide
+                           : AvoraSidebarAnimations::kShow);
+}
+
+void BrowserView::RevealAvoraSidebarOverlay() {
+  // Only a hidden sidebar has anything to peek at.
+  if (!avora_sidebar_hidden_) {
+    return;
+  }
+  avora_overlay_away_ticks_ = 0;
+  if (avora_sidebar_overlay_revealed_) {
+    return;  // Already out; the tick counter reset is the whole job.
+  }
+  avora_sidebar_overlay_revealed_ = true;
+  UpdateAvoraCaptionButtons();
+  BrowserAnimationController::From(browser_)
+      ->Start(AvoraSidebarAnimations::kSidebar,
+              AvoraSidebarAnimations::kReveal);
+  avora_overlay_watch_timer_.Start(
+      FROM_HERE, base::Milliseconds(120), this,
+      &BrowserView::OnAvoraOverlayWatchTick);
+}
+
+void BrowserView::ConcealAvoraSidebarOverlay() {
+  avora_overlay_watch_timer_.Stop();
+  if (!avora_sidebar_overlay_revealed_) {
+    return;
+  }
+  avora_sidebar_overlay_revealed_ = false;
+  UpdateAvoraCaptionButtons();
+  BrowserAnimationController::From(browser_)
+      ->Start(AvoraSidebarAnimations::kSidebar,
+              AvoraSidebarAnimations::kConceal);
+}
+
+bool BrowserView::IsPointerOverAvoraSidebarRegion() const {
+  auto* const screen = display::Screen::Get();
+  if (!screen || !vertical_tab_strip_region_view_) {
+    return false;
+  }
+  const gfx::Point cursor = screen->GetCursorScreenPoint();
+
+  // The sidebar's own footprint, wherever the reveal animation has it.
+  gfx::Rect region = vertical_tab_strip_region_view_->GetBoundsInScreen();
+  // Plus the gutter that summons it, so sliding off the sidebar's leading edge
+  // does not immediately dismiss it.
+  if (avora_edge_hover_) {
+    region.Union(avora_edge_hover_->GetBoundsInScreen());
+  }
+  return region.Contains(cursor);
+}
+
+void BrowserView::OnAvoraOverlayWatchTick() {
+  if (IsPointerOverAvoraSidebarRegion()) {
+    avora_overlay_away_ticks_ = 0;
+    return;
+  }
+  // Two quiet ticks before dismissing, so overshooting the sidebar by a few
+  // pixels on the way to the page does not make it flicker away.
+  if (++avora_overlay_away_ticks_ >= 2) {
+    ConcealAvoraSidebarOverlay();
+  }
+}
+
+void BrowserView::UpdateAvoraCaptionButtons() {
+#if BUILDFLAG(IS_MAC)
+  // The traffic lights sit in the sidebar's nav row, so they are present
+  // exactly when it is -- docked, or peeked out over the page.
+  avora::SetCaptionButtonsHidden(
+      GetNativeWindow(),
+      avora_sidebar_hidden_ && !avora_sidebar_overlay_revealed_);
+#endif
+}
+
+void BrowserView::OnAvoraSidebarAnimationProgressed(
+    const BrowserAnimationController* controller,
+    BrowserAnimationUpdate update) {
+  // Every frame moves the sidebar and resizes the contents, both of which are
+  // decided in BrowserViewTabbedLayoutImpl, so the only thing to do is ask for
+  // another layout pass.
+  InvalidateLayout();
 }
 
 void BrowserView::ShowAvoraQuickNav() {
@@ -6695,28 +6918,6 @@ void BrowserView::HideAvoraQuickNav() {
   avora_quick_nav_->Hide();
 }
 
-// A link preview hosts an ordinary page, but its WebContents never enters a
-// TabStripModel, so none of Chromium's usual adoption points (tabs::TabModel,
-// BrowserTabStripModelDelegate) ever run for it. Attaching the tab helpers by
-// hand is what gives the preview a session tab ID and a
-// ChromeExtensionWebContentsObserver -- without the latter,
-// ChromeContentBrowserClient silently skips binding mojom::LocalFrameHost for
-// the preview's frames, so extension content scripts load but can never call
-// back into the browser process.
-//
-// This class exists solely to hold the friendship declared in tab_helpers.h;
-// it keeps that private API reachable from exactly one place rather than from
-// all of BrowserView.
-class AvoraLinkPreviewTabHelperAttacher {
- public:
-  // Safe to call on contents that were already adopted -- AttachTabHelpers is
-  // idempotent -- which matters for the window.open path, where the contents
-  // arrives from the renderer in an unknown state.
-  static void Attach(content::WebContents* preview) {
-    TabHelpers::AttachTabHelpers(preview);
-  }
-};
-
 void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
   content::WebContents* host_tab = GetActiveWebContents();
   if (!avora_link_preview_ || !host_tab || !url.is_valid()) {
@@ -6727,13 +6928,21 @@ void BrowserView::ShowAvoraLinkPreview(const GURL& url) {
   if (!contents) {
     return;
   }
-  content::WebContents* preview = contents.get();
-  // Before the first navigation, so the helpers observe the load from the
-  // start rather than joining a page that is already committed.
-  AvoraLinkPreviewTabHelperAttacher::Attach(preview);
-  avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
+  // Adoption into the tab strip is what attaches the tab helpers (via
+  // BrowserTabStripModelDelegate::WillAddWebContents) and gives the page a
+  // tab id extensions can resolve.  It happens before the first navigation,
+  // so those helpers observe the load from the start rather than joining a
+  // page that is already committed.
+  if (avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url)) {
+    // Nowhere to adopt it into; the caller asked for a preview, not a tab.
+    return;
+  }
   UpdateAvoraLinkPreviewForActiveTab();
 
+  content::WebContents* preview = avora::GetLinkPreviewContents(host_tab);
+  if (!preview) {
+    return;
+  }
   // Navigate only once the overlay has sized the WebView: a zero-sized
   // viewport stalls the renderer.
   preview->GetController().LoadURL(url, content::Referrer(),
@@ -6744,20 +6953,39 @@ void BrowserView::ShowAvoraLinkPreviewWithContents(
     content::WebContents* host_tab,
     std::unique_ptr<content::WebContents> contents,
     const GURL& url) {
-  if (!avora_link_preview_ || !contents) {
+  if (!contents) {
     return;
   }
+  // Every path out of here that cannot produce a preview opens the page as an
+  // ordinary tab instead.  The renderer has already built it; dropping it
+  // would turn the link the user clicked into a no-op.
+  TabStripModel* const model = browser_->GetTabStripModel();
+  if (!avora_link_preview_) {
+    model->AppendWebContents(std::move(contents), /*foreground=*/true);
+    return;
+  }
+
   // The opener is normally the active tab, but fall back to it when the
   // request came from something that is not in this window's tab strip.
-  if (!host_tab || browser_->GetTabStripModel()->GetIndexOfWebContents(
-                       host_tab) == TabStripModel::kNoTab) {
+  if (!host_tab ||
+      model->GetIndexOfWebContents(host_tab) == TabStripModel::kNoTab) {
     host_tab = GetActiveWebContents();
   }
-  if (!host_tab) {
+  // A preview cannot host a preview of its own: a link opened from inside the
+  // card is a commitment, and BrowserWebContentsDelegate already sends those
+  // down the ordinary new-tab path.  This is the backstop for anything that
+  // reaches here by another route.
+  if (!host_tab || avora::IsLinkPreviewTab(host_tab)) {
+    model->AppendWebContents(std::move(contents), /*foreground=*/true);
     return;
   }
-  AvoraLinkPreviewTabHelperAttacher::Attach(contents.get());
-  avora::LinkPreviewTabState::Set(host_tab, std::move(contents), url);
+
+  contents = avora::LinkPreviewTabState::Set(host_tab, std::move(contents),
+                                             url);
+  if (contents) {
+    model->AppendWebContents(std::move(contents), /*foreground=*/true);
+    return;
+  }
   UpdateAvoraLinkPreviewForActiveTab();
 }
 
@@ -6769,39 +6997,259 @@ void BrowserView::HideAvoraLinkPreview() {
   // preview to destroy is the attached one -- not merely the active tab's,
   // which may already have moved on.
   content::WebContents* host_tab = avora_link_preview_->host_tab();
+
+  // Clear the parked-preview state BEFORE handing activation back.  The
+  // activation fires OnActiveTabChanged() for the host, whose tail calls
+  // UpdateAvoraLinkPreviewForActiveTab(); if the host still had a preview
+  // parked on it at that point, that would immediately re-open the overlay we
+  // are dismissing.
+  TeardownAvoraOverlayContainer();
   avora_link_preview_->DetachPreview();
   avora::LinkPreviewTabState::Clear(host_tab);
+
+  // Hand activation back to the host.  Queued ahead of the preview tab's own
+  // close, which LinkPreviewTabState::Clear() also posts, so the preview is
+  // no longer the active tab by the time it is closed and TabStripModel never
+  // has to pick a successor by strip index.  The host is left where the user
+  // left it: closing the overlay is not a navigation of the tab underneath.
+  ActivateAvoraTabSoon(host_tab);
+}
+
+void BrowserView::PromoteAvoraLinkPreview(content::WebContents* preview) {
+  if (!avora_link_preview_ || !avora::IsLinkPreviewTab(preview)) {
+    return;
+  }
+  if (avora_link_preview_->attached_preview() == preview) {
+    // Give the secondary container back first: the preview is about to become
+    // an ordinary tab in the primary container, and it cannot be hosted by
+    // both at once.
+    TeardownAvoraOverlayContainer();
+    avora_link_preview_->DetachPreview();
+    // DetachPreview() parks it as a background tab; it is about to become the
+    // active one, so undo that before the contents view attaches it.
+    preview->WasShown();
+  }
+  // Promote() drops the mark and announces the change, which is what makes
+  // AvoraSpaceTabFilter tag the tab into the active Space and draw its row.
+  // It cannot do either when the host tab has already been closed, so unmark
+  // and announce directly in that case.  A mark dropped in silence leaves the
+  // tab hidden and untagged: open and active, with no row anywhere.
+  if (!avora::LinkPreviewTabState::Promote(
+          avora::GetLinkPreviewHostTab(preview))) {
+    avora::UnmarkLinkPreviewTab(preview);
+    avora::NotifyLinkPreviewStateChanged(preview);
+  }
+}
+
+void BrowserView::PromoteAvoraLinkPreviewIfActivated(
+    content::WebContents* new_contents) {
+  // While the overlay hosts the preview, the preview being the active tab is
+  // the intended state rather than a stray activation to recover from, so it
+  // must not be promoted to an ordinary tab.
+  if (avora_overlay_hosts_preview_ && avora_link_preview_ &&
+      avora_link_preview_->attached_preview() == new_contents) {
+    return;
+  }
+  PromoteAvoraLinkPreview(new_contents);
+}
+
+void BrowserView::MountAvoraLinkPreview(content::WebContents* preview) {
+  if (!multi_contents_view_ || !avora_link_preview_ || !preview) {
+    return;
+  }
+  // The overlay is sized to the contents view, so its card bounds are already
+  // in MultiContentsView's coordinate space.
+  multi_contents_view_->ShowOverlayContents(
+      preview, avora_link_preview_->card_bounds(),
+      avora::AvoraLinkPreviewView::card_radii());
+  avora_overlay_hosts_preview_ = true;
+
+  // ShowOverlayContents() has already made the card the active container, so
+  // when the activation below lands, OnActiveTabChanged() finds the active
+  // contents view already holding `preview` and skips its generic contents
+  // swap entirely.
+  //
+  // Posted, not called directly: this method is reachable from
+  // UpdateAvoraLinkPreviewForActiveTab() at the tail of OnActiveTabChanged()
+  // -- switching back to a tab that still has a preview parked on it does
+  // exactly that -- and activating from there re-enters TabStripModel inside
+  // its own notification.  See ActivateAvoraTabSoon().
+  ActivateAvoraTabSoon(preview);
+}
+
+void BrowserView::ActivateAvoraTabSoon(content::WebContents* contents) {
+  tabs::TabInterface* const tab =
+      contents ? tabs::TabInterface::MaybeGetFromContents(contents) : nullptr;
+  if (!tab) {
+    return;
+  }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&BrowserView::ActivateAvoraTabNow,
+                                weak_ptr_factory_.GetWeakPtr(),
+                                tab->GetHandle()));
+}
+
+void BrowserView::ActivateAvoraTabNow(tabs::TabHandle handle) {
+  tabs::TabInterface* const tab = handle.Get();
+  if (!tab) {
+    // The tab was closed between the post and now, which is exactly what the
+    // handle is here to absorb.
+    return;
+  }
+  TabStripModel* const model = browser_->GetTabStripModel();
+  const int index = model->GetIndexOfTab(tab);
+  if (index != TabStripModel::kNoTab && model->active_index() != index) {
+    model->ActivateTabAt(index);
+  }
+}
+
+void BrowserView::TeardownAvoraOverlayContainer() {
+  if (!avora_overlay_hosts_preview_ || !multi_contents_view_) {
+    return;
+  }
+  // Touches views only -- never TabStripModel -- so this is safe to call from
+  // inside a tab-strip notification such as OnActiveTabChanged().
+  multi_contents_view_->HideOverlayContents();
+  avora_overlay_hosts_preview_ = false;
+}
+
+void BrowserView::UnmountAvoraLinkPreview(content::WebContents* host_tab) {
+  if (!avora_overlay_hosts_preview_ || !multi_contents_view_) {
+    return;
+  }
+  // Order matters.  Returning the secondary container first means that by the
+  // time the host is reactivated, the active contents view already holds it
+  // and OnActiveTabChanged()'s generic swap is a no-op.  Reactivating first
+  // would run that swap while the card was still the active container, which
+  // evicts the host from the primary container and mounts the incoming tab
+  // into the card.
+  TeardownAvoraOverlayContainer();
+
+  // Posted rather than activated inline -- see ActivateAvoraTabSoon() for the
+  // reentrancy invariant this upholds.
+  ActivateAvoraTabSoon(host_tab);
+}
+
+void BrowserView::OnAvoraLinkPreviewCardBoundsChanged() {
+  if (!avora_overlay_hosts_preview_ || !multi_contents_view_ ||
+      !avora_link_preview_) {
+    return;
+  }
+  multi_contents_view_->SetOverlayContentsBounds(
+      avora_link_preview_->card_bounds());
+}
+
+bool BrowserView::CanMountAvoraLinkPreview(
+    content::WebContents* preview) const {
+  // THE PRECONDITION.  UpdateAvoraLinkPreviewForActiveTab() runs at the tail
+  // of OnActiveTabChanged(), i.e. inside a TabStripModel notification, and the
+  // parked-preview state it reads is not guaranteed to describe a live tab at
+  // that moment:
+  //
+  //   - closing the preview notifies for the host while the host still has
+  //     the dying preview parked on it, and mounting a WebContents that is
+  //     being destroyed crashes in MultiContentsViewMiniToolbar as it
+  //     subscribes to a detaching tab;
+  //   - the same is true of any teardown that detaches the tab before the
+  //     state keyed on it is cleared.
+  //
+  // Every caller must clear this before mounting.  Three separate crashes
+  // came from assuming the state was live, so it is asserted in one place
+  // rather than re-checked ad hoc at each new call site.
+  return preview && !preview->IsBeingDestroyed() &&
+         browser_->GetTabStripModel()->GetIndexOfWebContents(preview) !=
+             TabStripModel::kNoTab;
 }
 
 void BrowserView::UpdateAvoraLinkPreviewForActiveTab() {
   if (!avora_link_preview_) {
     return;
   }
-  content::WebContents* host_tab = GetActiveWebContents();
+  // While the overlay is open the preview is the active tab, so the active
+  // contents may be the preview itself.  Resolve back to the tab hosting it.
+  content::WebContents* const active = GetActiveWebContents();
+  content::WebContents* const host_tab =
+      (active && avora::IsLinkPreviewTab(active))
+          ? avora::GetLinkPreviewHostTab(active)
+          : active;
   content::WebContents* preview = avora::GetLinkPreviewContents(host_tab);
-  if (!preview) {
+
+  // No preview to show, or one that cannot be mounted -- see
+  // CanMountAvoraLinkPreview().  Tear down without touching TabStripModel:
+  // this runs inside its notification, and re-entering trips its reentrancy
+  // CHECK.
+  if (!CanMountAvoraLinkPreview(preview)) {
+    TeardownAvoraOverlayContainer();
     avora_link_preview_->DetachPreview();
     return;
   }
   if (avora_link_preview_->attached_preview() == preview) {
     return;
   }
+
   avora_link_preview_->SetBoundsRect(
       multi_contents_view_ ? multi_contents_view_->bounds()
                            : GetLocalBounds());
   avora_link_preview_->AttachPreview(host_tab, preview,
                                      avora::GetLinkPreviewUrl(host_tab));
   ReorderChildView(avora_link_preview_, children().size());
+  MountAvoraLinkPreview(preview);
   DeprecatedLayoutImmediately();
 }
 
-void BrowserView::OnLinkPreviewOpenInNewTab(const GURL& url) {
-  if (!url.is_valid()) {
+void BrowserView::PromoteAvoraLinkPreviewToTab() {
+  if (!avora_link_preview_) {
     return;
   }
-  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  Navigate(&params);
+  content::WebContents* preview = avora_link_preview_->attached_preview();
+  if (!preview) {
+    return;
+  }
+  // The preview already IS a tab, sitting hidden right after its host, so
+  // expanding is activation and nothing more: no navigation, no reload, no
+  // second WebContents.  Whatever the user has been doing inside the card --
+  // a half-filled form, a scrolled position, a live websocket, an editor with
+  // unsaved text -- carries over untouched, because it is the same page.
+  //
+  // Promotion runs first, activation second.  Activation is what makes the
+  // tab strip adopt this row as its scroll target, and a row still hidden at
+  // that moment never reaches the size the strip is waiting for: the strip
+  // parks its scrollbar in the mid-animation state
+  // (TabStripView::DisableOverflowVisuals) and never leaves it, so the whole
+  // sidebar stops scrolling while the page it was waiting on is drawn
+  // nowhere.  Dropping the preview mark up front lets AvoraSpaceTabFilter tag
+  // the tab and reveal its row, so an ordinary, visible tab is what gets
+  // selected.  Cmd+Opt+arrow onto the preview cannot promote first -- there
+  // the activation is the gesture -- and is caught by
+  // PromoteAvoraLinkPreviewIfActivated() on the way through instead.
+  TabStripModel* const model = browser_->GetTabStripModel();
+  if (model->GetIndexOfWebContents(preview) == TabStripModel::kNoTab) {
+    return;
+  }
+  PromoteAvoraLinkPreview(preview);
+  // Re-read the index: revealing the row runs the Space filter's tagging
+  // pass, which is free to pin or reorder the tab now that it is an ordinary
+  // one, and an index taken before that can point at a different tab.
+  const int index = model->GetIndexOfWebContents(preview);
+  if (index == TabStripModel::kNoTab) {
+    return;
+  }
+  model->ActivateTabAt(index);
+
+  // Then scroll the row into view.  Activation on its own does not do it:
+  // TabStripView only scrolls to the active tab from OnChildMoved(), which
+  // fires when a node moves within the collection, and promoting moves
+  // nothing -- the preview has been sitting at this index since it was
+  // created.  Without this the page really does open, silently, somewhere
+  // below the fold of a list the user is not looking at.
+  if (vertical_tab_strip_region_view_) {
+    TabStripView* const strip = views::AsViewClass<TabStripView>(
+        vertical_tab_strip_region_view_->GetTabStripView());
+    tabs::TabInterface* const tab = model->GetTabAtIndex(index);
+    if (strip && tab) {
+      strip->OnTabChanged(tab);
+    }
+  }
 }
 
 bool BrowserView::IsAvoraLinkPreviewShowing() const {

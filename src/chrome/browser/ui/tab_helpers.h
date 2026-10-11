@@ -27,10 +27,6 @@ class BrowserTabStripModelDelegate;
 
 class PreviewTab;
 
-// Avora: attaches tab helpers to the WebContents shown in the link preview
-// overlay. Defined in browser_view.cc.
-class AvoraLinkPreviewTabHelperAttacher;
-
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace content {
@@ -83,12 +79,14 @@ class TabHelpers {
   // Link Preview shows a preview of a page, then promote it as a new tab.
   friend class PreviewTab;
 
-  // Avora: the link preview overlay hosts a real page in a WebContents that
-  // never enters a TabStripModel, so nothing else attaches its tab helpers.
+  // Avora: the mini window hosts a real page in a WebContents that never
+  // enters a TabStripModel, so nothing else attaches its tab helpers.
   // Without them the extension system never binds mojom::LocalFrameHost for
   // its frames and the contents has no session tab ID, which breaks content
-  // scripts, extension messaging and password managers inside the preview.
-  friend class AvoraLinkPreviewTabHelperAttacher;
+  // scripts, extension messaging and password managers inside the window.
+  // (The link preview overlay used to need this too; its page is now a real
+  // tab, so the tab strip attaches its helpers like any other tab's.)
+  friend class AvoraMiniWindowTabHelperAttacher;
 
   // FYI: Do NOT add any more friends here. The functions above are the ONLY
   // ones that need to call AttachTabHelpers; if you think you do, re-read the

@@ -35,13 +35,15 @@ class FavoriteButton : public views::ImageButton,
   METADATA_HEADER(FavoriteButton, views::ImageButton)
 
  public:
-  FavoriteButton(const std::string& url,
+  FavoriteButton(const std::string& id,
+                 const std::string& url,
                  const std::string& title,
                  base::RepeatingCallback<void(const std::string&)> on_click,
                  base::RepeatingCallback<void(const std::string&,
                                               const gfx::Point&)> on_context);
   ~FavoriteButton() override;
 
+  const std::string& id() const { return id_; }
   const std::string& url() const { return url_; }
   const std::string& title() const { return title_; }
 
@@ -61,6 +63,10 @@ class FavoriteButton : public views::ImageButton,
       ui::mojom::MenuSourceType source_type) override;
 
  private:
+  // The Favorite's stable identity, not its URL: the active highlight is
+  // keyed off which Favorite owns the active tab, never off what that tab
+  // currently shows.
+  std::string id_;
   std::string url_;
   std::string title_;
   bool is_active_ = false;
@@ -160,8 +166,8 @@ class AvoraFavoritesView : public views::View,
   // Loads the favicon for a FavoriteButton.
   void LoadFavicon(FavoriteButton* button);
 
-  // Updates which FavoriteButton shows the active highlight based on the
-  // currently active tab's URL.
+  // Updates which FavoriteButton shows the active highlight based on which
+  // Favorite owns the currently active tab.
   void UpdateActiveState();
 
   // On startup, ensure every favorite has a corresponding open tab.

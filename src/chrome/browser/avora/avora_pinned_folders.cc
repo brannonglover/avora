@@ -29,6 +29,11 @@ std::vector<PinnedFolder> FoldersFromList(const base::ListValue& list) {
     const std::string* name = dict.FindString("name");
     folder.name = name ? *name : "Untitled";
     folder.expanded = dict.FindBool("expanded").value_or(true);
+    // Absent, not empty, is the default: an empty anchor means "before every
+    // item", which is a real placement a folder can be given.
+    if (const std::string* after = dict.FindString("after_item")) {
+      folder.after_item_id = *after;
+    }
     if (const base::ListValue* ids = dict.FindList("ordered_item_ids")) {
       for (const auto& id_val : *ids) {
         if (id_val.is_string() && !id_val.GetString().empty()) {
@@ -52,6 +57,9 @@ base::ListValue FoldersToList(const std::vector<PinnedFolder>& folders) {
     entry.Set("id", folder.id);
     entry.Set("name", folder.name);
     entry.Set("expanded", folder.expanded);
+    if (folder.after_item_id) {
+      entry.Set("after_item", *folder.after_item_id);
+    }
     entry.Set("ordered_item_ids", std::move(ids));
     list.Append(std::move(entry));
   }
@@ -353,8 +361,23 @@ std::string PinnedFoldersManager::GetFolderIdForItem(
   return std::string();
 }
 
+std::string PinnedFoldersManager::GetCustomTitleForItem(
+    const std::string& item_id,
+    const std::string& fallback_url) const {
+  if (!item_id.empty()) {
+    const std::string by_id = GetCustomTabTitle(item_id);
+    if (!by_id.empty()) {
+      return by_id;
+    }
+  }
+  // Nothing under the id: either this row has no item, or its name predates
+  // id keying and is still filed under the pin's target.
+  return fallback_url.empty() ? std::string()
+                              : GetCustomTabTitle(fallback_url);
+}
+
 std::string PinnedFoldersManager::GetCustomTabTitle(
-    const std::string& url) const {
+    const std::string& key) const {
   if (!prefs_ || !pref_available_) {
     return std::string();
   }
@@ -368,7 +391,7 @@ std::string PinnedFoldersManager::GetCustomTabTitle(
   if (!titles) {
     return std::string();
   }
-  const std::string* title = titles->FindString(url);
+  const std::string* title = titles->FindString(key);
   return title ? *title : std::string();
 }
 
@@ -468,6 +491,46 @@ void PinnedFoldersManager::ReorderFolder(const std::string& folder_id,
   SaveFolders(folders);
 }
 
+void PinnedFoldersManager::SetFolderPlacements(
+    const std::vector<FolderPlacement>& placements) {
+  const std::vector<PinnedFolder> before = ActiveFolders();
+
+  // Listed folders first, in the order given; anything unlisted keeps its
+  // placement and follows, so a folder in another window's half-stale view
+  // of the Space is never dropped on the floor.
+  std::vector<PinnedFolder> folders;
+  folders.reserve(before.size());
+  std::set<std::string> placed;
+  for (const auto& placement : placements) {
+    auto it = std::find_if(before.begin(), before.end(),
+                           [&placement](const PinnedFolder& f) {
+                             return f.id == placement.folder_id;
+                           });
+    if (it == before.end() || placed.count(placement.folder_id)) {
+      continue;
+    }
+    PinnedFolder folder = *it;
+    folder.after_item_id = placement.after_item_id;
+    folders.push_back(std::move(folder));
+    placed.insert(placement.folder_id);
+  }
+  for (const auto& folder : before) {
+    if (!placed.count(folder.id)) {
+      folders.push_back(folder);
+    }
+  }
+
+  bool changed = folders.size() != before.size();
+  for (size_t i = 0; !changed && i < folders.size(); ++i) {
+    changed = folders[i].id != before[i].id ||
+              folders[i].after_item_id != before[i].after_item_id;
+  }
+  if (!changed) {
+    return;  // The layout is already the one being asked for.
+  }
+  SaveFolders(folders);
+}
+
 void PinnedFoldersManager::MoveItemToFolder(const std::string& pinned_item_id,
                                             const std::string& folder_id) {
   if (pinned_item_id.empty()) {
@@ -516,6 +579,45 @@ void PinnedFoldersManager::ReorderItemInFolder(
   }
 }
 
+void PinnedFoldersManager::MoveItemToFolderAt(
+    const std::string& pinned_item_id,
+    const std::string& folder_id,
+    int index) {
+  if (pinned_item_id.empty()) {
+    return;
+  }
+
+  const std::vector<PinnedFolder> before = ActiveFolders();
+  std::vector<PinnedFolder> folders = before;
+  for (auto& folder : folders) {
+    std::erase(folder.ordered_item_ids, pinned_item_id);
+  }
+
+  if (!folder_id.empty()) {
+    auto destination = std::find_if(
+        folders.begin(), folders.end(),
+        [&folder_id](const PinnedFolder& f) { return f.id == folder_id; });
+    if (destination == folders.end()) {
+      return;  // Unknown destination -- leave membership as it was.
+    }
+    auto& ids = destination->ordered_item_ids;
+    const int clamped = std::clamp(index, 0, static_cast<int>(ids.size()));
+    ids.insert(ids.begin() + clamped, pinned_item_id);
+  }
+
+  bool changed = false;
+  for (size_t i = 0; i < folders.size(); ++i) {
+    if (folders[i].ordered_item_ids != before[i].ordered_item_ids) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) {
+    return;  // Dropped exactly where it already was.
+  }
+  SaveFolders(folders);
+}
+
 void PinnedFoldersManager::RemoveItemFromAllFolders(
     const std::string& pinned_item_id) {
   if (pinned_item_id.empty()) {
@@ -535,7 +637,20 @@ void PinnedFoldersManager::RemoveItemFromAllFolders(
   }
 }
 
-void PinnedFoldersManager::SetCustomTabTitle(const std::string& url,
+void PinnedFoldersManager::SetCustomTitleForItem(
+    const std::string& item_id,
+    const std::string& fallback_url,
+    const std::string& title) {
+  // The id when there is one, so the name is the pin's; the URL only for a
+  // row that has no pin to attach it to.
+  const std::string key = item_id.empty() ? fallback_url : item_id;
+  if (key.empty()) {
+    return;
+  }
+  SetCustomTabTitle(key, title);
+}
+
+void PinnedFoldersManager::SetCustomTabTitle(const std::string& key,
                                              const std::string& title) {
   const std::string space_id = ActiveSpaceId();
   if (space_id.empty() || !prefs_ || !pref_available_) {
@@ -550,7 +665,7 @@ void PinnedFoldersManager::SetCustomTabTitle(const std::string& url,
     titles = by_space->FindDict(space_id);
   }
   if (titles) {
-    titles->Set(url, title);
+    titles->Set(key, title);
   }
   writing_ = false;
   // Title changes are cosmetic — the calling view already updated its
@@ -559,7 +674,7 @@ void PinnedFoldersManager::SetCustomTabTitle(const std::string& url,
   // OnPinnedPrefsChanged() still works.
 }
 
-void PinnedFoldersManager::ClearCustomTabTitle(const std::string& url) {
+void PinnedFoldersManager::ClearCustomTabTitle(const std::string& key) {
   const std::string space_id = ActiveSpaceId();
   if (space_id.empty() || !prefs_ || !pref_available_) {
     return;
@@ -568,7 +683,7 @@ void PinnedFoldersManager::ClearCustomTabTitle(const std::string& url) {
   writing_ = true;
   ScopedDictPrefUpdate by_space(prefs_, kPinnedTabTitlesBySpacePref);
   if (base::DictValue* titles = by_space->FindDict(space_id)) {
-    titles->Remove(url);
+    titles->Remove(key);
   }
   writing_ = false;
   // See SetCustomTabTitle — no rebuild needed for title removal.

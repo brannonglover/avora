@@ -15,6 +15,7 @@
 #include "ui/actions/actions.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/ink_drop_host.h"
 #include "ui/views/view_class_properties.h"
 
 VerticalTabStripBottomContainer::VerticalTabStripBottomContainer(
@@ -46,7 +47,15 @@ VerticalTabStripBottomContainer::VerticalTabStripBottomContainer(
   new_tab_button_->SetPaintTransparentForGlass(true);
   new_tab_button_->SetShouldShowLabel(true);
   new_tab_button_->SetLabelText(u"New Tab");
-  views::InkDrop::Remove(new_tab_button_);
+  // Avora: no ink drop ripple on the new tab button.  Switch the host off
+  // rather than InkDrop::Remove() it: Remove() clears the kInkDropKey
+  // property, and every views::Button press path -- HasInkDrop(),
+  // AnimateToState(), StateChanged() -- dereferences InkDrop::Get() without
+  // a null check, so a removed host turns the next click on this button into
+  // a null dereference.  InkDropMode::OFF keeps the host and hands back an
+  // InkDropStub, which is inert and safe.
+  views::InkDrop::Get(new_tab_button_)
+      ->SetMode(views::InkDropHost::InkDropMode::OFF);
 
   OnCollapseStateChanged(state_controller->GetCollapseState());
   collapsed_state_change_subscription_ =

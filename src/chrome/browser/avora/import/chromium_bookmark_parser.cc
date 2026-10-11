@@ -323,6 +323,24 @@ base::FilePath ChromiumBookmarkParser::DefaultEdgeDataDir() {
 }
 
 // static
+base::FilePath ChromiumBookmarkParser::DefaultArcDataDir() {
+#if BUILDFLAG(IS_MAC)
+  base::FilePath home;
+  if (base::PathExists(base::FilePath("/Users"))) {
+    home = base::GetHomeDir();
+  }
+  return home.Append("Library")
+      .Append("Application Support")
+      .Append("Arc")
+      .Append("User Data");
+#else
+  // Arc ships on macOS and Windows; the Windows build is not supported here
+  // yet, so return an empty path and let DetectProfiles() find nothing.
+  return base::FilePath();
+#endif
+}
+
+// static
 DetectedBrowser ChromiumBookmarkParser::DetectProfiles(
     const base::FilePath& data_dir,
     const std::string& browser) {

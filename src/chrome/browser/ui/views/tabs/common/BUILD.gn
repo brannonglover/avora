@@ -44,6 +44,8 @@ source_set("common") {
 
 source_set("impl") {
   sources = [
+    "avora_side_nav_scroll.cc",
+    "avora_side_nav_scroll.h",
     "avora_space_tab_filter.cc",
     "avora_space_tab_filter.h",
     "dragged_tabs_container.cc",
@@ -207,6 +209,7 @@ source_set("browser_tests") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "avora_side_nav_scroll_unittest.cc",
     "tab_collection_animating_layout_manager_unittest.cc",
     "tab_group_header_view_unittest.cc",
     "tab_strip_layout_unittest.cc",

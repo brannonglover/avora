@@ -46,6 +46,11 @@ AvoraSpaceLabelView::AvoraSpaceLabelView(BrowserWindowInterface* browser,
                                              gfx::Font::Weight::MEDIUM)});
   label->SetEnabledColor(kTextColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  // This label paints over VerticalTabStripRegionView's non-opaque layer with
+  // no opaque background in between, so subpixel anti-aliasing would sample
+  // pixels that are not there.  Grayscale AA is the correct rendering here,
+  // and it is what views::Label DCHECKs for in PaintText().
+  label->SetSubpixelRenderingEnabled(false);
   label->SetBorder(
       views::CreateEmptyBorder(gfx::Insets::VH(0, kHorizontalInset)));
   label_ = AddChildView(std::move(label));

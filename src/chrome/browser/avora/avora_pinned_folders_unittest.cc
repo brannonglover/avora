@@ -202,6 +202,213 @@ TEST_F(PinnedFoldersManagerTest, ReorderItemNotInFolderIsNoOp) {
   EXPECT_THAT(MembersOf(folder_id), IsEmpty());
 }
 
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtInsertsAtIndex) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  const std::string item_c = items_->AddPinnedItem("https://c.com", "C");
+  manager_->MoveItemToFolder(item_a, folder_id);
+  manager_->MoveItemToFolder(item_b, folder_id);
+
+  manager_->MoveItemToFolderAt(item_c, folder_id, 1);
+
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_a, item_c, item_b));
+  EXPECT_EQ(manager_->GetFolderIdForItem(item_c), folder_id);
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtWithinOwnFolderReorders) {
+  // The drag-downwards case: the index counts positions with the item
+  // already taken out, so 2 means "last of three", not "past the end".
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  const std::string item_c = items_->AddPinnedItem("https://c.com", "C");
+  manager_->MoveItemToFolder(item_a, folder_id);
+  manager_->MoveItemToFolder(item_b, folder_id);
+  manager_->MoveItemToFolder(item_c, folder_id);
+
+  manager_->MoveItemToFolderAt(item_a, folder_id, 2);
+
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_b, item_c, item_a));
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtClampsIndex) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  manager_->MoveItemToFolder(item_a, folder_id);
+
+  manager_->MoveItemToFolderAt(item_b, folder_id, 99);
+
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_a, item_b));
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtLeavesSourceFolder) {
+  const std::string folder_a = manager_->AddFolder("Frontend");
+  const std::string folder_b = manager_->AddFolder("Backend");
+  const std::string item_id = items_->AddPinnedItem("https://a.com", "A");
+  const std::string other = items_->AddPinnedItem("https://b.com", "B");
+  manager_->MoveItemToFolder(item_id, folder_a);
+  manager_->MoveItemToFolder(other, folder_b);
+
+  manager_->MoveItemToFolderAt(item_id, folder_b, 0);
+
+  EXPECT_THAT(MembersOf(folder_a), IsEmpty());
+  EXPECT_THAT(MembersOf(folder_b), ElementsAre(item_id, other));
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtEmptyFolderGoesTopLevel) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_id = items_->AddPinnedItem("https://a.com", "A");
+  manager_->MoveItemToFolder(item_id, folder_id);
+
+  manager_->MoveItemToFolderAt(item_id, std::string(), 0);
+
+  EXPECT_THAT(MembersOf(folder_id), IsEmpty());
+  EXPECT_EQ(manager_->GetFolderIdForItem(item_id), "");
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtSamePositionIsNoOp) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  manager_->MoveItemToFolder(item_a, folder_id);
+  manager_->MoveItemToFolder(item_b, folder_id);
+
+  observer_.Reset();
+  manager_->MoveItemToFolderAt(item_a, folder_id, 0);  // Already there.
+
+  EXPECT_EQ(observer_.change_count(), 0);
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_a, item_b));
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtUnknownFolderChangesNothing) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_id = items_->AddPinnedItem("https://a.com", "A");
+  manager_->MoveItemToFolder(item_id, folder_id);
+
+  observer_.Reset();
+  manager_->MoveItemToFolderAt(item_id, "no-such-folder", 0);
+
+  EXPECT_EQ(observer_.change_count(), 0);
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_id));
+}
+
+TEST_F(PinnedFoldersManagerTest, MoveItemToFolderAtSurvivesRestart) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  manager_->MoveItemToFolder(item_a, folder_id);
+  manager_->MoveItemToFolderAt(item_b, folder_id, 0);
+
+  SimulateRestart();
+
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(item_b, item_a));
+}
+
+// ── Placement among top-level items ──────────────────────────────────────────
+
+TEST_F(PinnedFoldersManagerTest, FolderStartsWithNoPlacement) {
+  // The default is "after every item", which is where folders were drawn
+  // before they could be placed at all -- so data written by an older build
+  // keeps rendering exactly as it did.
+  const std::string folder_id = manager_->AddFolder("Development");
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(1));
+  EXPECT_EQ(folders[0].id, folder_id);
+  EXPECT_FALSE(folders[0].after_item_id.has_value());
+}
+
+TEST_F(PinnedFoldersManagerTest, SetFolderPlacementsAnchorsToItem) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+
+  manager_->SetFolderPlacements({{folder_id, item_a}});
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(1));
+  ASSERT_TRUE(folders[0].after_item_id.has_value());
+  EXPECT_EQ(*folders[0].after_item_id, item_a);
+}
+
+TEST_F(PinnedFoldersManagerTest, EmptyAnchorMeansBeforeEveryItem) {
+  const std::string folder_id = manager_->AddFolder("Development");
+
+  manager_->SetFolderPlacements({{folder_id, std::string()}});
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(1));
+  ASSERT_TRUE(folders[0].after_item_id.has_value());
+  EXPECT_EQ(*folders[0].after_item_id, "");
+}
+
+TEST_F(PinnedFoldersManagerTest, PlacementSurvivesRestart) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  manager_->SetFolderPlacements({{folder_id, item_a}});
+
+  SimulateRestart();
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(1));
+  ASSERT_TRUE(folders[0].after_item_id.has_value());
+  EXPECT_EQ(*folders[0].after_item_id, item_a);
+}
+
+TEST_F(PinnedFoldersManagerTest, SetFolderPlacementsReordersFolders) {
+  const std::string folder_a = manager_->AddFolder("Frontend");
+  const std::string folder_b = manager_->AddFolder("Backend");
+
+  manager_->SetFolderPlacements({{folder_b, std::nullopt},
+                                 {folder_a, std::nullopt}});
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(2));
+  EXPECT_EQ(folders[0].id, folder_b);
+  EXPECT_EQ(folders[1].id, folder_a);
+}
+
+TEST_F(PinnedFoldersManagerTest, UnlistedFolderKeepsItsPlacement) {
+  const std::string folder_a = manager_->AddFolder("Frontend");
+  const std::string folder_b = manager_->AddFolder("Backend");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  manager_->SetFolderPlacements({{folder_a, item_a}, {folder_b, item_a}});
+
+  // A window that has not seen folder_b yet must not delete or displace it.
+  manager_->SetFolderPlacements({{folder_a, std::nullopt}});
+
+  const auto folders = manager_->GetFolders();
+  ASSERT_THAT(folders, SizeIs(2));
+  EXPECT_EQ(folders[0].id, folder_a);
+  EXPECT_FALSE(folders[0].after_item_id.has_value());
+  EXPECT_EQ(folders[1].id, folder_b);
+  ASSERT_TRUE(folders[1].after_item_id.has_value());
+  EXPECT_EQ(*folders[1].after_item_id, item_a);
+}
+
+TEST_F(PinnedFoldersManagerTest, SetFolderPlacementsToTheSameLayoutIsNoOp) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string item_a = items_->AddPinnedItem("https://a.com", "A");
+  manager_->SetFolderPlacements({{folder_id, item_a}});
+
+  observer_.Reset();
+  manager_->SetFolderPlacements({{folder_id, item_a}});
+
+  EXPECT_EQ(observer_.change_count(), 0);
+}
+
+TEST_F(PinnedFoldersManagerTest, PlacementLeavesMembershipAlone) {
+  const std::string folder_id = manager_->AddFolder("Development");
+  const std::string member = items_->AddPinnedItem("https://a.com", "A");
+  const std::string item_b = items_->AddPinnedItem("https://b.com", "B");
+  manager_->MoveItemToFolder(member, folder_id);
+
+  manager_->SetFolderPlacements({{folder_id, item_b}});
+
+  EXPECT_THAT(MembersOf(folder_id), ElementsAre(member));
+}
+
 // ── Unpin / dangling ids ─────────────────────────────────────────────────────
 
 TEST_F(PinnedFoldersManagerTest, RemoveItemFromAllFoldersLeavesNoDanglingId) {

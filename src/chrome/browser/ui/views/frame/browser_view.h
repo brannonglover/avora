@@ -22,6 +22,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/avora/avora_window_session_data.h"
 #include "chrome/browser/avora/avora_window_space.h"
+#include "chrome/browser/ui/animation/browser_animation_types.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
@@ -104,6 +105,7 @@ namespace avora {
 class AvoraQuickNavView;
 class AvoraLinkPreviewView;
 class AvoraToastView;
+class AvoraLoadingBarView;
 class AvoraSpaceGestureController;
 }  // namespace avora
 class VerticalTabStripRegionView;
@@ -817,6 +819,20 @@ class BrowserView : public BrowserWindow,
   // Avora transient confirmation toast, upper-right of the content area.
   void ShowAvoraToast(const std::u16string& message);
 
+  // Avora side nav show/hide (CMD+S).  Slides the whole sidebar -- header,
+  // tab strip and spaces bar -- out past the leading window edge while the
+  // page widens to fill the space, and back again.  Per-window and not
+  // persisted: it is a "get this out of my way for a moment" gesture.
+  void ToggleAvoraSidebar();
+  void SetAvoraSidebarHidden(bool hidden);
+  bool IsAvoraSidebarHidden() const { return avora_sidebar_hidden_; }
+
+  // Peeks the hidden sidebar back in over the page while the pointer is on the
+  // window's leading edge.  Separate from the hidden state: concealing leaves
+  // the sidebar hidden, it just stops showing it.
+  void RevealAvoraSidebarOverlay();
+  void ConcealAvoraSidebarOverlay();
+
   // Avora quick-nav overlay (CMD+T / CMD+L).
   void ShowAvoraQuickNav();
   void ShowAvoraQuickNavWithURL();
@@ -826,6 +842,44 @@ class BrowserView : public BrowserWindow,
   // from: it stays parked on that tab while the user works elsewhere and comes
   // back untouched when they return to it.
   void ShowAvoraLinkPreview(const GURL& url);
+
+  // Whether |preview| is in a state where it can be mounted at all: a live,
+  // still-attached tab of this window.  See the comment on the definition --
+  // this is the precondition the whole overlay lifecycle turns on.
+  bool CanMountAvoraLinkPreview(content::WebContents* preview) const;
+
+  // Mounts |preview| in MultiContentsView's secondary contents container at
+  // the overlay's card bounds and makes it the active tab.  The host tab
+  // stays live and visible in the primary container behind it.
+  void MountAvoraLinkPreview(content::WebContents* preview);
+
+  // Returns the secondary container to MultiContentsView without touching
+  // TabStripModel.  Safe from inside a tab-strip notification.
+  void TeardownAvoraOverlayContainer();
+
+  // Activates |contents|' tab on a fresh stack.
+  //
+  // THE INVARIANT: no overlay lifecycle method may mutate TabStripModel
+  // synchronously.  Several of them are reachable from
+  // UpdateAvoraLinkPreviewForActiveTab(), which runs at the tail of
+  // OnActiveTabChanged() -- i.e. inside a TabStripModel notification -- and
+  // re-entering the model there trips its ReentrancyCheck
+  // (tab_strip_model.cc's `Check failed: !*guard_flag`).  Posting is the same
+  // remedy ClosePreviewTabSoon() already uses for the close path, and a
+  // TabHandle resolves to null rather than dangling if the tab goes away
+  // first.
+  void ActivateAvoraTabSoon(content::WebContents* contents);
+  void ActivateAvoraTabNow(tabs::TabHandle handle);
+
+  // Returns the secondary container to MultiContentsView and hands activation
+  // back to |host_tab|, in that order.  Re-enters TabStripModel, so it must
+  // NOT be called from inside a tab-strip notification.  Safe to call when no overlay is
+  // mounted.  Does not close the preview tab; callers own that.
+  void UnmountAvoraLinkPreview(content::WebContents* host_tab);
+
+  // Keeps the contents container in step with the card as the overlay lays
+  // itself out.
+  void OnAvoraLinkPreviewCardBoundsChanged();
   void ShowAvoraLinkPreviewWithContents(
       content::WebContents* host_tab,
       std::unique_ptr<content::WebContents> contents,
@@ -1267,6 +1321,12 @@ class BrowserView : public BrowserWindow,
       avora_space_gesture_controller_;
   std::unique_ptr<avora::WindowSpaceState> avora_window_space_state_;
 
+  // Publishes the state above on this window's UnownedUserDataHost, so code
+  // holding only a BrowserWindowInterface -- the mini window, which is its own
+  // top-level widget -- can switch this window's Space.
+  std::optional<ui::ScopedUnownedUserData<avora::WindowSpaceState>>
+      avora_window_space_state_holder_;
+
   // Session data holder — stores the durable window GUID and active Space ID
   // on the BrowserWindowInterface::UnownedUserDataHost so that
   // BuildCommandsForBrowser can read them during session rebuilds.
@@ -1279,6 +1339,37 @@ class BrowserView : public BrowserWindow,
 
   void UpdateAvoraSidebarURL();
   void NavigateAvoraAddressBar(const std::u16string& text, bool new_tab);
+
+  // Avora side nav slide (CMD+S).  The animation value itself lives on the
+  // window's BrowserAnimationController; the layout reads it directly.  All
+  // that is kept here is which way the toggle is pointing, plus a
+  // subscription that re-runs layout on each animation frame.
+  bool avora_sidebar_hidden_ = false;
+  bool avora_sidebar_overlay_revealed_ = false;
+  base::CallbackListSubscription avora_sidebar_animation_subscription_;
+  void OnAvoraSidebarAnimationProgressed(
+      const BrowserAnimationController* controller,
+      BrowserAnimationUpdate update);
+
+  // Invisible strip along the window's leading gutter.  With the sidebar
+  // hidden that gutter is browser chrome rather than page, so a plain View
+  // parked there sees the pointer arrive without competing with the renderer
+  // for mouse events.
+  raw_ptr<views::View> avora_edge_hover_ = nullptr;
+
+  // While the overlay is revealed, watch for the pointer leaving the sidebar.
+  // A timer rather than exit events because the pointer's next stop is usually
+  // the page, whose own native view swallows the moves that would tell us.
+  base::RepeatingTimer avora_overlay_watch_timer_;
+  int avora_overlay_away_ticks_ = 0;
+  void OnAvoraOverlayWatchTick();
+
+  // True when the pointer is over the sidebar or the gutter that summons it.
+  bool IsPointerOverAvoraSidebarRegion() const;
+
+  // Traffic lights belong to the sidebar's nav row, so they follow it in and
+  // out -- including for a temporary overlay reveal.
+  void UpdateAvoraCaptionButtons();
   void ShowAvoraExtensionPopup(const std::string& extension_id);
 
   // Avora quick-nav overlay (CMD+T / CMD+L).
@@ -1287,12 +1378,35 @@ class BrowserView : public BrowserWindow,
   // Avora confirmation toast ("URL copied").
   raw_ptr<avora::AvoraToastView> avora_toast_ = nullptr;
 
+  // Avora page-load bar along the top edge of the window.  It replaces the
+  // favicon throbber, and follows whichever tab is active.
+  raw_ptr<avora::AvoraLoadingBarView> avora_loading_bar_ = nullptr;
+
   // Avora link preview overlay (target="_blank" interception).
   raw_ptr<avora::AvoraLinkPreviewView> avora_link_preview_ = nullptr;
-  void OnLinkPreviewOpenInNewTab(const GURL& url);
+
+  // True while the link preview is mounted in MultiContentsView's secondary
+  // contents container, which is also exactly while the preview is the
+  // intended active tab.  Distinguishes an activation the overlay asked for
+  // from a stray one that should promote the preview to an ordinary tab.
+  bool avora_overlay_hosts_preview_ = false;
+  // Turns the preview on screen into an ordinary foreground tab, keeping the
+  // live page rather than re-loading its URL.
+  void PromoteAvoraLinkPreviewToTab();
   // Shows the active tab's parked preview, or hides the overlay when that tab
   // has none.  Called on every active-tab change.
   void UpdateAvoraLinkPreviewForActiveTab();
+
+  // Turns |preview| back into an ordinary tab: detaches it from the overlay,
+  // drops its preview mark, and announces the change so the tab strip tags it
+  // into the active Space and draws its row.  A no-op for anything that is not
+  // a preview.
+  void PromoteAvoraLinkPreview(content::WebContents* preview);
+
+  // Turns |new_contents| back into an ordinary tab when the tab about to be
+  // activated is a link preview's.  Must run before the contents view is
+  // handed the new WebContents.
+  void PromoteAvoraLinkPreviewIfActivated(content::WebContents* new_contents);
 
   // Outward-projecting corners of the vertical tab strip.
   raw_ptr<CustomFloatingCorner> vertical_tab_strip_top_corner_ = nullptr;

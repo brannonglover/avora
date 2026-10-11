@@ -2,6 +2,8 @@ import("//build/config/features.gni")
 
 source_set("import") {
   sources = [
+    "arc_sidebar_parser.cc",
+    "arc_sidebar_parser.h",
     "avora_import_coordinator.cc",
     "avora_import_coordinator.h",
     "bookmark_import_types.h",
@@ -32,4 +34,25 @@ source_set("import") {
   if (is_mac) {
     frameworks = [ "Foundation.framework" ]
   }
+}
+
+# Avora's import unit tests.  Kept beside the code they cover; the binary that
+# runs them is //chrome/browser/avora:avora_unit_tests.
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "avora_import_coordinator_unittest.cc",
+    "chrome_bookmark_parser_unittest.cc",
+    "firefox_bookmark_parser_unittest.cc",
+    "html_bookmark_parser_unittest.cc",
+  ]
+
+  deps = [
+    ":import",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/test:test_support",
+    "//testing/gtest",
+  ]
 }

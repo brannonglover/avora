@@ -742,12 +742,12 @@ void VerticalTabStripRegionView::OnTabStripViewSet() {
   CHECK(separator_index.has_value());
   ReorderChildView(tab_strip_view(), separator_index.value() + 1);
 
-  // Avora: Move the New Tab (+) button inside the tab strip view so it sits
-  // between the pinned section / separator and the daily tabs section.
-  // The TabStripViewLayout positions it between the separator and the
-  // unpinned scroll view.
+  // Avora: Move the New Tab (+) button inside the side nav's scrolling
+  // surface so it sits between the pinned section / separator and the daily
+  // tabs section, and scrolls with them rather than staying pinned in place
+  // while the list moves underneath it.
   auto button_owned = RemoveChildViewT(bottom_button_container_);
-  tab_strip_view()->AddChildView(std::move(button_owned));
+  tab_strip_view()->AddSideNavView(std::move(button_owned));
   tab_strip_view()->SetNewTabButtonView(bottom_button_container_);
 
   // Avora: Provide the BrowserWindowInterface and per-window Space state to

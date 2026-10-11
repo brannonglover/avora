@@ -22,12 +22,18 @@ source_set("avora") {
     "avora_space_icon_picker.h",
     "avora_link_preview_tab_indicator.cc",
     "avora_link_preview_tab_indicator.h",
+    "avora_link_preview_tab_marker.cc",
+    "avora_link_preview_tab_marker.h",
     "avora_link_preview_tab_state.cc",
     "avora_link_preview_tab_state.h",
     "avora_link_preview_view.cc",
     "avora_link_preview_view.h",
+    "avora_loading_bar_view.cc",
+    "avora_loading_bar_view.h",
     "avora_lucide_icon.cc",
     "avora_lucide_icon.h",
+    "avora_mini_window.cc",
+    "avora_mini_window.h",
     "avora_live_folders_view.cc",
     "avora_live_folders_view.h",
     "avora_pinned_item_materializer.cc",
@@ -48,6 +54,13 @@ source_set("avora") {
     "avora_toast_view.h",
   ]
 
+  if (is_mac) {
+    sources += [
+      "avora_caption_buttons_mac.h",
+      "avora_caption_buttons_mac.mm",
+    ]
+  }
+
   deps = [
     "//base",
     "//chrome/browser/avora",
@@ -57,11 +70,14 @@ source_set("avora") {
     "//components/constrained_window",
     "//components/download/public/common:public",
     "//components/prefs",
+    "//components/url_formatter",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/color:color_headers",
     "//chrome/browser/ui/tabs:tab_strip",
+    "//components/tabs:public",
     "//components/favicon/core",
     "//components/favicon_base",
+    "//chrome/app/vector_icons",
     "//components/vector_icons",
     "//content/public/browser",
     "//extensions/browser",
@@ -72,9 +88,48 @@ source_set("avora") {
     "//ui/base/clipboard",
     "//ui/shell_dialogs",
     "//ui/events",
+    "//ui/display",
     "//ui/gfx",
+    "//ui/menus",
     "//ui/views",
     "//ui/views/controls/webview",
     "//url",
+  ]
+}
+
+# Avora view unit tests.  Run by //chrome/browser/avora:avora_unit_tests.
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "avora_pinned_item_materializer_unittest.cc" ]
+
+  deps = [
+    ":avora",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/avora",
+    "//chrome/test:test_support",
+    "//testing/gtest",
+  ]
+}
+
+# Avora browser tests.  Run by //chrome/browser/avora:avora_browser_tests.
+source_set("browser_tests") {
+  testonly = true
+
+  sources = [ "avora_link_preview_browsertest.cc" ]
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  deps = [
+    ":avora",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/ui/views/tabs/common",
+    "//chrome/test:test_support",
+    "//chrome/test:test_support_ui",
+    "//content/test:test_support",
+    "//net:test_support",
+    "//testing/gtest",
   ]
 }

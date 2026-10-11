@@ -45,12 +45,15 @@
 
 namespace {
 
-constexpr SkColor kLegacyBarBg = SkColorSetARGB(0xFF, 0x12, 0x14, 0x1A);
 constexpr int kLegacyBarHeight = 36;
 constexpr int kLegacyPillHeight = 26;
 constexpr int kLegacyPillCornerRadius = 13;
 
-constexpr SkColor kBarBg = SkColorSetRGB(0x14, 0x16, 0x1C);
+// The strip is the foot of the side nav, not a slab parked under it, so it
+// takes the sidebar's own fill (AvoraSidebarView's kAvoraSidebarBg, the same
+// colour AddAvoraColorMixer hands the frame and the vertical tab strip).
+// Anything darker draws a seam across the bottom of the nav.
+constexpr SkColor kBarBg = SkColorSetRGB(0x18, 0x1C, 0x20);
 
 // Nothing in the strip carries a resting background: an icon's own accent
 // colour is the only fill in the bar.  This is the transient wash drawn
@@ -327,7 +330,13 @@ T* FindDescendantOfType(views::View* root) {
 
 AvoraSpacesBarView::AvoraSpacesBarView(SpaceClickedCallback clicked_cb)
     : clicked_cb_(std::move(clicked_cb)) {
-  SetBackground(views::CreateSolidBackground(kLegacyBarBg));
+  SetBackground(views::CreateSolidBackground(kBarBg));
+  // Compositing layer, matching VerticalTabStripRegionView.  The page is a
+  // native view that draws above anything without one, so without this the
+  // spaces bar vanishes behind the page whenever the sidebar is peeked
+  // out over it.  The background above is opaque, so the layer hides the page
+  // beneath it completely.
+  SetPaintToLayer();
   SetPreferredSize(gfx::Size(0, kLegacyBarHeight));
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,

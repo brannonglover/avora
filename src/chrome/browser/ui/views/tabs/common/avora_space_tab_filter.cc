@@ -17,7 +17,10 @@
 #include "chrome/browser/avora/avora_window_session_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
+#include "chrome/browser/tab_list/tab_removed_reason.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "components/prefs/pref_service.h"
@@ -60,6 +63,7 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
       current_space_id_ = active->id;
     }
     item_store_ = std::make_unique<SidebarItemStore>(profile->GetPrefs());
+    item_store_->AddObserver(this);
 
     // Baseline for identity-change detection in OnSpacesChanged().
     RefreshSpaceProfileCache();
@@ -68,6 +72,13 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
   if (TabStripModel* model = GetModel()) {
     model->AddObserver(this);
   }
+
+  // Opening a preview hides a tab and promoting one reveals it, and neither
+  // is guaranteed to be followed by a TabStripModel notification this object
+  // would otherwise see in the right order.
+  link_preview_subscription_ = AddLinkPreviewStateChangedCallback(
+      base::BindRepeating(&AvoraSpaceTabFilter::OnLinkPreviewStateChanged,
+                          base::Unretained(this)));
 
   // Order matters: recover last session's GUID assignments before URL fallback,
   // both before AdoptUntaggedTabs(), and the pinned-item backfill last so it
@@ -112,6 +123,9 @@ AvoraSpaceTabFilter::~AvoraSpaceTabFilter() {
   }
   if (space_manager_) {
     space_manager_->RemoveObserver(this);
+  }
+  if (item_store_) {
+    item_store_->RemoveObserver(this);
   }
   if (TabStripModel* model = GetModel()) {
     model->RemoveObserver(this);
@@ -176,6 +190,19 @@ void AvoraSpaceTabFilter::OnTabStripModelChanged(
     return;
   }
 
+  // A tab the user closed should stop being remembered; a tab going away
+  // because its window is closing should not, since session restore brings it
+  // back and it has to land in the Space it left.
+  const bool tabs_removed = change.type() == TabStripModelChange::kRemoved &&
+                            !tab_strip_model->closing_all();
+  if (tabs_removed) {
+    for (const auto& removed : change.GetRemove()->contents) {
+      if (TabRemoveReasonUtils::WillDeleteTab(removed.remove_reason)) {
+        ForgetClosedTab(removed.tab);
+      }
+    }
+  }
+
   PruneClosedTabs();
   TabStripModel* model = GetModel();
   if (model) {
@@ -186,6 +213,13 @@ void AvoraSpaceTabFilter::OnTabStripModelChanged(
   // Before AdoptUntaggedTabs: session restore delivers tabs in batches after
   // construction, and each batch is a chance to reconnect a Favorite.
   ResolvePendingTabAssignments(/*sync_store=*/true);
+
+  // Chromium picks the post-close selection by strip index, which knows
+  // nothing about Spaces.  Correct it before RememberActiveTab() reads the
+  // active tab, so a foreign tab never gets recorded as this Space's own.
+  if (tabs_removed) {
+    EnsureActiveTabInCurrentSpace();
+  }
 
   if (selection.active_tab_changed()) {
     RememberActiveTab();
@@ -960,8 +994,57 @@ void AvoraSpaceTabFilter::SyncTabsToStore() {
     items.push_back(std::move(item));
   }
 
-  item_store_->ReplaceItemsOfType(SidebarItemType::kTabState, items,
+  // Records this window just wrote supersede their older selves; everything
+  // else in the profile-wide kTabState set belongs to a window or a
+  // not-yet-restored tab this one cannot see, and is carried through as it
+  // stands.  Only a tab closed here is actually dropped.
+  std::set<std::string> written;
+  for (const auto& item : items) {
+    written.insert(item.id);
+    // Reopened (Cmd+Shift+T) after being closed: it is a live tab again, so
+    // it stops being something to forget.
+    forgotten_tab_guids_.erase(item.id);
+  }
+
+  // A carried-forward record is refreshed by whichever window owns its tab on
+  // that window's next sync, so anything left un-refreshed for this long has
+  // no tab anywhere and no session old enough to restore it either.  Without
+  // the bound, every window close would leave its tabs' records behind
+  // permanently.
+  constexpr base::TimeDelta kCarryForwardLimit = base::Days(30);
+  const base::Time now = base::Time::Now();
+
+  std::vector<SidebarItem> merged;
+  for (const auto& existing : item_store_->GetAllItems()) {
+    if (existing.type != SidebarItemType::kTabState || existing.id.empty()) {
+      continue;
+    }
+    if (written.count(existing.id) || forgotten_tab_guids_.count(existing.id)) {
+      continue;
+    }
+    if (!existing.last_accessed_at.is_null() &&
+        now - existing.last_accessed_at > kCarryForwardLimit) {
+      continue;
+    }
+    merged.push_back(existing);
+  }
+  for (auto& item : items) {
+    merged.push_back(std::move(item));
+  }
+
+  item_store_->ReplaceItemsOfType(SidebarItemType::kTabState, merged,
                                   /*notify=*/false);
+}
+
+void AvoraSpaceTabFilter::ForgetClosedTab(tabs::TabInterface* tab) {
+  content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+  if (!contents) {
+    return;
+  }
+  const std::string guid = GetTabGuid(contents);
+  if (!guid.empty()) {
+    forgotten_tab_guids_.insert(guid);
+  }
 }
 
 void AvoraSpaceTabFilter::RestoreTagsFromStore() {
@@ -1033,6 +1116,13 @@ void AvoraSpaceTabFilter::AdoptUntaggedTabs() {
     }
     const tabs::TabHandle handle = tab->GetHandle();
     if (tab_space_.find(handle) != tab_space_.end()) {
+      continue;
+    }
+    // A link preview is a glance, not a daily tab.  Leaving it untagged is
+    // what keeps it out of SyncTabsToStore() and the Today sweep, both of
+    // which only ever look at tagged tabs.  It is tagged the moment it is
+    // promoted, because promotion drops the mark.
+    if (IsLinkPreviewTab(tab->GetContents())) {
       continue;
     }
     if (ShouldDeferSpaceAssignment(tab)) {
@@ -1133,6 +1223,15 @@ void AvoraSpaceTabFilter::RememberActiveTab() {
     return;
   }
 
+  // A link preview is the active tab for as long as its overlay is open, but
+  // it is a glance rather than the Space's tab.  Recording it would make the
+  // Space restore to a preview that has since been closed, and would lose the
+  // host the user was actually working in -- so the host stays the remembered
+  // tab right through the overlay's lifetime.
+  if (IsLinkPreviewTab(tab->GetContents())) {
+    return;
+  }
+
   // Don't record a tab that belongs to some other Space; that would happen
   // mid-switch and would corrupt the outgoing Space's memory.
   const auto it = tab_space_.find(tab->GetHandle());
@@ -1180,7 +1279,92 @@ void AvoraSpaceTabFilter::RestoreActiveTabFor(const std::string& space_id) {
   }
 }
 
+void AvoraSpaceTabFilter::EnsureActiveTabInCurrentSpace() {
+  TabStripModel* model = GetModel();
+  if (!model || current_space_id_.empty() || model->empty()) {
+    return;
+  }
+
+  const int count = model->count();
+  const int active = model->active_index();
+  if (active < 0 || active >= count) {
+    return;
+  }
+
+  const auto is_candidate = [&](int index) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(index);
+    if (!tab) {
+      return false;
+    }
+    // A link preview can legitimately hold the selection: while its overlay is
+    // open it is the page the user is interacting with, and making it the real
+    // active tab is what lets extension APIs and Chromium's per-tab UI resolve
+    // to the card.  It stops being a valid resting place once it is orphaned
+    // -- its host gone, so no overlay is showing it and nothing else will move
+    // the selection off it.
+    content::WebContents* contents = tab->GetContents();
+    if (contents && IsLinkPreviewTab(contents)) {
+      content::WebContents* const host = GetLinkPreviewHostTab(contents);
+      if (!host || GetLinkPreviewContents(host) != contents) {
+        return false;
+      }
+    }
+    // Untagged tabs belong to every Space, so one staying selected is right.
+    const auto it = tab_space_.find(tab->GetHandle());
+    return it == tab_space_.end() || it->second.empty() ||
+           it->second == current_space_id_;
+  };
+
+  if (is_candidate(active)) {
+    return;
+  }
+
+  // Walk outwards from where the selection landed, so the user ends up beside
+  // the tab they closed rather than at whichever of this Space's tabs happens
+  // to sit first in the strip.
+  for (int offset = 1; offset < count; ++offset) {
+    for (const int index : {active + offset, active - offset}) {
+      if (index >= 0 && index < count && is_candidate(index)) {
+        model->ActivateTab(model->GetTabAtIndex(index));
+        return;
+      }
+    }
+  }
+
+  // The close emptied this Space; RestoreActiveTabFor() opens it a new tab.
+  RestoreActiveTabFor(current_space_id_);
+}
+
 // ── Visibility ──────────────────────────────────────────────────────────────
+
+void AvoraSpaceTabFilter::OnLinkPreviewStateChanged(
+    content::WebContents* host_tab) {
+  // The callback list is profile-wide, so most notifications belong to some
+  // other window's strip and there is nothing here to re-draw.
+  TabStripModel* model = GetModel();
+  if (applying_ || !model || !host_tab ||
+      model->GetIndexOfWebContents(host_tab) == TabStripModel::kNoTab) {
+    return;
+  }
+  // Promotion is the edge that needs the tagging pass: the tab stopped being
+  // a preview, so AdoptUntaggedTabs() claims it for the current Space instead
+  // of leaving it untagged and therefore visible in every Space.  No store
+  // sync -- that is a pref write, and the next ordinary tab event will carry
+  // the new tag out anyway.
+  ResolvePendingTabAssignments(/*sync_store=*/false);
+  ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::RefreshTabVisibility() {
+  ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::OnSidebarItemsChanged() {
+  // Only the visibility rules are re-run: the store is the source of truth
+  // for what is pinned, and nothing here writes back to it, so this cannot
+  // feed itself.
+  ApplyVisibility();
+}
 
 void AvoraSpaceTabFilter::ApplyVisibility() {
   if (!tab_strip_view_ || current_space_id_.empty()) {
@@ -1233,6 +1417,13 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
       // A favorite's tab is represented by its tile in the favorites row, so
       // it never also gets a row in either tab-strip container.
       if (visible && live_contents && IsFavoriteTab(live_contents)) {
+        visible = false;
+      }
+
+      // A link preview's tab is represented by the overlay card drawn over
+      // the content area, so it gets no row either.  It is an untagged tab,
+      // so the Space rule above left it visible.
+      if (visible && live_contents && IsLinkPreviewTab(live_contents)) {
         visible = false;
       }
 

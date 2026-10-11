@@ -10,8 +10,8 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/timer/timer.h"
 #include "chrome/browser/avora/avora_favorites.h"
+#include "chrome/browser/avora/avora_omnibox_bridge.h"
 #include "chrome/browser/avora/avora_window_space.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event.h"
@@ -20,10 +20,6 @@
 
 class Browser;
 class BrowserWindowInterface;
-
-namespace avora {
-class SearchSuggestProvider;
-}  // namespace avora
 
 namespace gfx {
 class ImageSkia;
@@ -138,19 +134,30 @@ class AvoraQuickNavView : public views::View,
   // Load the favicon for the input field inline icon.
   void LoadInputFavicon(const std::string& url);
 
-  // Called when a favorite icon is clicked.
-  void OnFavoriteClicked(const std::string& url);
+  // Called when a row is chosen, by click or by Enter.  `value` is the row's
+  // commit value: a URL for navigations, the raw query for searches.
+  void OnRowChosen(const std::string& value);
 
-  // Fetch search suggestions for the current query (called after debounce).
-  void FetchSuggestions(const std::string& query);
+  // Replace the list contents with Chromium's ranked matches.
+  void RebuildMatchList(const std::vector<OmniboxSuggestion>& suggestions);
 
-  // Callback from SearchSuggestProvider.
-  void OnSuggestionsReceived(const std::string& query,
-                             std::vector<std::string> suggestions);
+  // Callback from OmniboxBridge.  Arrives once per autocomplete pass, so it
+  // may fire several times for a single keystroke.
+  void OnOmniboxResults(const OmniboxResults& results);
 
-  // Replace the list contents with search suggestions.
-  void RebuildSuggestionList(const std::string& query,
-                             const std::vector<std::string>& suggestions);
+  // Arc-style type-ahead: place `user_text + completion` in the field with the
+  // completion selected, so the next keystroke replaces it.
+  void ApplyInlineCompletion(const std::u16string& user_text,
+                             const std::u16string& completion,
+                             const GURL& completion_url);
+
+  // Whether the field still holds `user_text`, either bare or followed by a
+  // selected completion we put there.  False once the user has typed past it,
+  // which is what makes a late autocomplete pass safe to drop.
+  bool CanTypeAhead(const std::u16string& user_text) const;
+
+  // Restore the field's inline icon to the search glyph.
+  void ResetInputIcon();
 
   raw_ptr<BrowserWindowInterface> browser_;
   QuickNavCommitCallback commit_cb_;
@@ -181,16 +188,27 @@ class AvoraQuickNavView : public views::View,
   // Keyboard selection index (-1 = none).
   int selected_index_ = -1;
 
-  // URLs in display order, for keyboard navigation.
-  std::vector<std::string> row_urls_;
+  // Commit values in display order, for keyboard navigation: the destination
+  // URL for navigation rows, the raw query for search rows.
+  std::vector<std::string> row_values_;
 
   std::unique_ptr<FavoritesManager> favorites_manager_;
   raw_ptr<avora::WindowSpaceState> window_space_state_ = nullptr;
 
-  // Search suggestion support.
-  std::unique_ptr<SearchSuggestProvider> suggest_provider_;
-  base::OneShotTimer suggest_timer_;
-  bool showing_suggestions_ = false;
+  // Autocomplete support.  The bridge owns Chromium's AutocompleteController
+  // and hands back plain Avora structs; this view does all the drawing.
+  std::unique_ptr<OmniboxBridge> omnibox_bridge_;
+
+  // True while the list is showing autocomplete matches rather than the
+  // favorites shown for an empty field.
+  bool showing_matches_ = false;
+
+  // What the user has actually typed, excluding any completion we appended.
+  std::u16string user_text_;
+
+  // Set when the last key pressed was Backspace or Delete.  Type-ahead is
+  // suppressed for that pass so deleting a character does not put it back.
+  bool deleting_ = false;
 
   base::CancelableTaskTracker cancelable_task_tracker_;
   base::WeakPtrFactory<AvoraQuickNavView> weak_factory_{this};

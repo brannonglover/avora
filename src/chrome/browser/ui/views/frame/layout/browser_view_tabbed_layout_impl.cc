@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/animations/avora_sidebar_animations.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
@@ -35,6 +36,7 @@
 #include "chrome/browser/ui/views/frame/shadow_frame_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
+#include "chrome/browser/ui/views/avora/avora_loading_bar_view.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
@@ -45,6 +47,7 @@
 #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_view.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/outsets.h"
 #include "ui/gfx/geometry/rect.h"
@@ -60,6 +63,11 @@
 #endif
 
 namespace {
+
+// Width of the strip along the window's leading edge that peeks a hidden
+// sidebar back in.  Matches the content card's gutter, so the target is the
+// whole visible margin rather than an invisible sliver of it.
+constexpr int kAvoraEdgeHoverWidth = 14;
 
 // Minimum area next to caption buttons to use as a grab handle.
 constexpr int kVerticalTabsGrabHandleSize = 40;
@@ -124,6 +132,23 @@ struct BrowserViewTabbedLayoutImpl::HorizontalLayout {
   int vertical_tab_strip_width = 0;
   int side_panel_width = 0;
   int min_content_width = 0;
+
+  // Avora: how far the side nav has slid out past the leading window edge
+  // (CMD+S).  `vertical_tab_strip_width` above has already had this subtracted
+  // out, so it is the *on-screen* width that everything to the right flows
+  // against; the sidebar itself is laid out this much wider and this much
+  // further left, so it slides rather than squashing.
+  int avora_sidebar_slide = 0;
+
+  // 0.0 with the side nav fully out, 1.0 with it fully hidden.  The content
+  // card reads this to widen its leading inset as the sidebar leaves.
+  double avora_sidebar_hidden_fraction = 0.0;
+
+  // Width the sidebar surrendered to the page.  Adding it back to
+  // `vertical_tab_strip_width` gives the sidebar's own, unchanged width --
+  // which is how a hover reveal can put the sidebar back on screen without
+  // the page giving the space back.
+  int avora_sidebar_reserved_cut = 0;
 
   // The padding placed around a number of UI elements when the side panel is
   // present.
@@ -516,6 +541,43 @@ BrowserViewTabbedLayoutImpl::CalculateHorizontalLayout(
     layout.side_panel_width += toolbar_height_flex_amount;
   }
 
+  // Avora: CMD+S slides the side nav out past the leading edge of the window.
+  // Take the hidden portion out of the reserved width here, at the very end,
+  // so that the sidebar is sized and flexed exactly as it would be on-screen
+  // and only the space it gives up flows to the toolbar and the page.
+  if (layout_data_->tab_strip_type == TabStripType::kVertical) {
+    const double hidden_fraction =
+        delegate()
+            .GetAnimationController()
+            ->GetCurrentValue(AvoraSidebarAnimations::kSidebar,
+                              AvoraSidebarAnimations::kHiddenFraction)
+            .value_or(0.0);
+    const double overlay_fraction =
+        delegate()
+            .GetAnimationController()
+            ->GetCurrentValue(AvoraSidebarAnimations::kSidebar,
+                              AvoraSidebarAnimations::kOverlayFraction)
+            .value_or(0.0);
+
+    layout.avora_sidebar_hidden_fraction = std::clamp(hidden_fraction, 0.0, 1.0);
+
+    // What the page gets back depends only on whether the sidebar is hidden.
+    // A hover reveal deliberately does not claw it back, which is what makes
+    // the revealed sidebar an overlay rather than a second layout.
+    layout.avora_sidebar_reserved_cut = base::ClampRound(
+        layout.vertical_tab_strip_width * layout.avora_sidebar_hidden_fraction);
+    layout.vertical_tab_strip_width -= layout.avora_sidebar_reserved_cut;
+
+    // Where the sidebar is drawn, on the other hand, is whatever the two
+    // animations agree on: hiding takes it out, revealing brings it back.
+    const double on_screen =
+        1.0 - layout.avora_sidebar_hidden_fraction *
+                  (1.0 - std::clamp(overlay_fraction, 0.0, 1.0));
+    layout.avora_sidebar_slide = base::ClampRound(
+        (layout.vertical_tab_strip_width + layout.avora_sidebar_reserved_cut) *
+        (1.0 - on_screen));
+  }
+
   return layout;
 }
 
@@ -805,11 +867,18 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
         last_vertical_tab_strip_width_ = vertical_tab_strip_width;
       }
 
+      // Avora: give the sidebar back the width it surrendered to the CMD+S
+      // slide and push its leading edge out of the window by the same amount.
+      // Its on-screen width is unchanged, so it travels off the edge instead
+      // of narrowing, and everything inside it rides along untouched.
+      const int avora_sidebar_slide = horizontal_layout.avora_sidebar_slide;
+
       vertical_tab_strip_bounds =
-          gfx::Rect(params.visual_client_area.x(),
+          gfx::Rect(params.visual_client_area.x() - avora_sidebar_slide,
                     params.visual_client_area.y() +
                         vertical_tab_strip_animation.top_offset,
-                    vertical_tab_strip_width,
+                    vertical_tab_strip_width +
+                        horizontal_layout.avora_sidebar_reserved_cut,
                     params.visual_client_area.height() -
                         vertical_tab_strip_animation.top_offset);
 
@@ -819,8 +888,12 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
             gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
       }
 
-      const int inset_amount = horizontal_layout.vertical_tab_strip_width -
-                               GetVerticalTabStripContentOverlap();
+      // Never negative: the seam overlap is worth a DIP of the tabstrip, but
+      // once the CMD+S slide has taken the whole width there is nothing left
+      // to overlap and the contents must not spill past the window edge.
+      const int inset_amount =
+          std::max(0, horizontal_layout.vertical_tab_strip_width -
+                          GetVerticalTabStripContentOverlap());
       params.InsetHorizontal(inset_amount, /*leading=*/true);
 
       // Let the vertical tab strip animate out over the content.
@@ -841,8 +914,20 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     // sits at the top; Chromium's vertical tab strip region (with its own
     // top/bottom containers for collapse, tab search, new tab) fills the
     // middle; and the spaces bar sits at the bottom.
+    //
+    // Avora: once the CMD+S slide has swallowed the sidebar's whole width
+    // there is nothing of it left on-screen, so the region and both of its
+    // Avora bookends go invisible.  Clipping alone would leave them focusable
+    // and hit-testable just off the edge; this genuinely takes the side nav
+    // and everything in it out of the window.
+    const bool avora_sidebar_showing =
+        horizontal_layout.avora_sidebar_slide <
+        horizontal_layout.vertical_tab_strip_width +
+            horizontal_layout.avora_sidebar_reserved_cut;
+
     const bool avora_active =
         layout_data_->tab_strip_type == TabStripType::kVertical &&
+        avora_sidebar_showing &&
         !is_fullscreen(layout_data_->window_state);
 
     gfx::Rect avora_header_bounds;
@@ -873,7 +958,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
 
     layout.AddChild(views().vertical_tab_strip_region_view,
                     adjusted_tab_strip_bounds,
-                    layout_data_->tab_strip_type == TabStripType::kVertical);
+                    layout_data_->tab_strip_type == TabStripType::kVertical &&
+                        avora_sidebar_showing);
 
     if (views().avora_sidebar_header &&
         IsParentedTo(views().avora_sidebar_header, views().browser_view)) {
@@ -904,6 +990,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     gfx::Rect corner_bounds;
     const bool top_corner_visible =
         layout_data_->tab_strip_type == TabStripType::kVertical &&
+        horizontal_layout.vertical_tab_strip_width > 0 &&
+        horizontal_layout.avora_sidebar_slide == 0 &&
         vertical_tab_strip_animation.top_corner > 0.0;
 
     // The top corner is drawn when the tabstrip goes all the way to the top.
@@ -927,6 +1015,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     gfx::Rect corner_bounds;
     const bool bottom_corner_visible =
         layout_data_->tab_strip_type == TabStripType::kVertical &&
+        horizontal_layout.vertical_tab_strip_width > 0 &&
+        horizontal_layout.avora_sidebar_slide == 0 &&
         vertical_tab_strip_animation.bottom_corner > 0.0;
     if (bottom_corner_visible) {
       auto preferred =
@@ -1219,8 +1309,18 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   int content_height = params.visual_client_area.height();
   if (layout_data_->tab_strip_type == TabStripType::kVertical &&
       !is_fullscreen(layout_data_->window_state)) {
-    content_left += kAvoraContentLeftInset;
+    // The narrow leading inset only earns its keep while there is a sidebar to
+    // sit close to.  As CMD+S slides the side nav away it widens to match the
+    // trailing inset, so a hidden sidebar leaves the card evenly inset on both
+    // sides rather than pinned against the window edge.
+    content_left += base::ClampRound(gfx::Tween::DoubleValueBetween(
+        horizontal_layout.avora_sidebar_hidden_fraction,
+        kAvoraContentLeftInset, kAvoraContentInset));
     content_right -= kAvoraContentInset;
+
+    // The caption buttons sit in the sidebar's nav row and are hidden along
+    // with it (see BrowserView::SetAvoraSidebarHidden), so nothing up top
+    // needs clearing and the card keeps an even inset on all four sides.
     content_y += kAvoraContentInset;
     content_height -= 2 * kAvoraContentInset;
   }
@@ -1414,6 +1514,34 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
         content_y + kToastMargin, toast_size.width(), toast_size.height());
     layout.AddChild(views().avora_toast, toast_bounds,
                     views().avora_toast->GetVisible());
+  }
+
+  // Avora: the page-load bar rides the very top edge of the window, across its
+  // full width -- above the sidebar and the content card both, since it
+  // reports on the window rather than on any one of them.  It is kept laid out
+  // at all times and simply paints nothing when idle, so a load that starts
+  // between layout passes never draws a frame at stale bounds.  Content
+  // fullscreen is the exception: there the page owns the whole window.
+  if (views().avora_loading_bar &&
+      IsParentedTo(views().avora_loading_bar, views().browser_view)) {
+    const gfx::Rect& window = browser_params.visual_client_area;
+    layout.AddChild(
+        views().avora_loading_bar,
+        gfx::Rect(window.x(), window.y(), window.width(),
+                  avora::AvoraLoadingBarView::kPreferredHeight),
+        !is_fullscreen(layout_data_->window_state));
+  }
+
+  // Avora: the leading-edge hover strip lives in the gutter the hidden sidebar
+  // left behind.  BrowserView decides when it is visible; the layout only has
+  // to park it there.
+  if (views().avora_edge_hover &&
+      IsParentedTo(views().avora_edge_hover, views().browser_view)) {
+    const gfx::Rect& window = browser_params.visual_client_area;
+    layout.AddChild(views().avora_edge_hover,
+                    gfx::Rect(window.x(), window.y(), kAvoraEdgeHoverWidth,
+                              window.height()),
+                    views().avora_edge_hover->GetVisible());
   }
 
   return layout;

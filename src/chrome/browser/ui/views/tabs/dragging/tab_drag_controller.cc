@@ -1360,10 +1360,10 @@ TabDragController::GetDragTargetForPoint(gfx::Point point_in_screen) {
         // handles visual drag movement and model reordering.
         auto* inner_strip = static_cast<TabStripView*>(
             browser_view->tab_strip_view()->GetTabStripView());
-        views::ScrollView* unpinned_scroll =
-            inner_strip ? inner_strip->unpinned_tabs_scroll_view() : nullptr;
-        if (unpinned_scroll &&
-            unpinned_scroll->GetBoundsInScreen().Contains(point_in_screen)) {
+        const gfx::Rect daily_bounds =
+            inner_strip ? inner_strip->GetDailyListBoundsInScreen()
+                        : gfx::Rect();
+        if (daily_bounds.Contains(point_in_screen)) {
           if (TabDragTarget* candidate =
                   GetTabDragPointResolver()->GetDragTarget(
                       *browser_view, point_in_screen)) {

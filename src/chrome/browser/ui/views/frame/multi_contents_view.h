@@ -46,8 +46,23 @@ namespace views {
 class WebView;
 }  // namespace views
 
-// MultiContentsView shows up to two contents web views side by side, and
-// manages their layout relative to each other.
+// MultiContentsView shows up to two contents web views and manages their
+// layout relative to each other.
+//
+// The second contents container has two arrangements, distinguished by
+// SecondaryContentsMode:
+//
+//   kSplit   -- the two containers tile the available space with a resize
+//               handle between them.  This is Chromium's split view.
+//   kOverlay -- the primary container keeps the whole available space and the
+//               secondary container floats above it at caller-supplied bounds.
+//               Avora's Window Overlay uses this to show a link preview as a
+//               card over the page that spawned it.
+//
+// Code that cares only about "a second container is visible" -- focus routing
+// between containers, for instance -- should ask HasSecondaryContents().
+// IsInSplitView() means the split arrangement specifically, and continues to
+// gate split geometry, split chrome and the split entry affordances.
 class MultiContentsView
     : public views::View,
       public views::ResizeAreaDelegate,
@@ -57,6 +72,14 @@ class MultiContentsView
 
  public:
   using FocusableViewMap = base::flat_map<std::string, views::View*>;
+
+  // How the secondary contents container is currently being used.  See the
+  // class comment.
+  enum class SecondaryContentsMode {
+    kNone,
+    kSplit,
+    kOverlay,
+  };
 
   struct ViewSizes {
     int start = 0;
@@ -93,8 +116,40 @@ class MultiContentsView
   void SetBackgroundRadii(const gfx::RoundedCornersF& radii);
   const gfx::RoundedCornersF& GetBackgroundRadii() const;
 
-  // Returns true if more than one WebContents is displayed.
+  // Returns true if more than one WebContents is displayed, in either
+  // secondary-contents arrangement.
+  bool HasSecondaryContents() const {
+    return secondary_mode_ != SecondaryContentsMode::kNone;
+  }
+
+  SecondaryContentsMode secondary_contents_mode() const {
+    return secondary_mode_;
+  }
+
+  // Returns true only for the split arrangement.  Callers that merely need to
+  // know whether a second container is visible want HasSecondaryContents().
   bool IsInSplitView() const;
+
+  // The container that occupies the whole available space.  In kOverlay this
+  // is the one behind the card, which is not the active container; prefer it
+  // over GetActiveContentsContainerView() for anything that means "the
+  // full-bleed contents area".
+  ContentsContainerView* GetPrimaryContentsContainerView() const;
+
+  // Shows |contents| in the secondary container as a floating card at
+  // |bounds|, in this view's coordinates, with |radii| corners.  Switches the
+  // mode to kOverlay.  The embedder owns the card's geometry and radii, so
+  // this view imposes neither.
+  void ShowOverlayContents(content::WebContents* contents,
+                           const gfx::Rect& bounds,
+                           const gfx::RoundedCornersF& radii);
+
+  // Repositions the card.  Only valid while in kOverlay.
+  void SetOverlayContentsBounds(const gfx::Rect& bounds);
+
+  // Detaches the card's contents and returns to kNone.  No-op unless in
+  // kOverlay, so it is safe to call unconditionally during teardown.
+  void HideOverlayContents();
 
   // Show the split view without set any WebContents and update the size and
   // layout of contents views based on `visual_data`, this is used to prepare
@@ -262,6 +317,11 @@ class MultiContentsView
 
   int GetInactiveIndex() const;
 
+  // Asserts that secondary_mode_ agrees with the view state it replaced, so a
+  // future split-view change that toggles resize_area_ directly cannot leave
+  // the mode stale.
+  void CheckSecondaryModeInvariant() const;
+
   void OnWebContentsFocused(views::WebView*);
   void OnNtpFooterFocused(views::WebView*);
   void OnActorOverlayFocused(views::WebView*);
@@ -328,6 +388,18 @@ class MultiContentsView
 
   // The index in contents_views_ of the active contents view.
   int active_index_ = 0;
+
+  // Which arrangement the secondary container is in.  Kept in step with
+  // resize_area_ visibility, which IsInSplitView() used to be derived from;
+  // CheckSecondaryModeInvariant() asserts they agree.
+  SecondaryContentsMode secondary_mode_ = SecondaryContentsMode::kNone;
+
+  // Card bounds for kOverlay, in this view's coordinates.  Set iff the mode is
+  // kOverlay.
+  std::optional<gfx::Rect> overlay_contents_bounds_;
+
+  // Corner radii the embedder asked for on the kOverlay card.
+  gfx::RoundedCornersF overlay_contents_radii_;
 
   // Current ratio of |contents_views_|'s first ContentsContainerView's width /
   // overall contents view width.

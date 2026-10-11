@@ -47,6 +47,7 @@ namespace avora {
 // arbitrary tab.
 class AvoraSpaceTabFilter : public TabStripModelObserver,
                             public SpaceManagerObserver,
+                            public SidebarItemStore::Observer,
                             public WindowSpaceState::Observer {
  public:
   AvoraSpaceTabFilter(BrowserWindowInterface* browser,
@@ -73,6 +74,33 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // AvoraPinnedSectionView renders it beside, rather than instead of, the
   // persisted item for the same URL.
   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+
+  // Re-runs the daily-list visibility rules immediately.
+  //
+  // ApplyVisibility() normally rides on a TabStripModel or Space
+  // notification.  A tab's kPinned marker is WebContents user data, though,
+  // and setting it (MarkPinnedItemTab) raises nothing at all -- so a caller
+  // that marks or unmarks a tab outside those events has to say so here, or
+  // the tab keeps whatever visibility it had until some unrelated event
+  // happens to re-apply the rules.  Dropping a tab onto a pinned folder is
+  // exactly that case: it marks the tab without pinning it natively, so no
+  // OnTabPinnedStateChanged() follows (see tab_drag_handler.cc).
+  void RefreshTabVisibility();
+
+  // Re-runs tagging and the visibility rules when any tab gains or loses a
+  // link preview.  A preview's own tab is hidden from the daily list and
+  // untagged; promoting it reverses both.
+  void OnLinkPreviewStateChanged(content::WebContents* host_tab);
+
+  // SidebarItemStore::Observer:
+  //
+  // Removing a kPinned record (UnpinAndRemovePinnedItem) unmarks the tab, and
+  // an unmarked tab belongs back in the daily list.  When the tab was never
+  // natively pinned -- anything filed into a folder by drag -- there is no
+  // SetTabPinned() to unwind, so no OnTabPinnedStateChanged() announces it
+  // and the tab would stay hidden: gone from the pinned section and still
+  // missing from the daily list, with its page open the whole time.
+  void OnSidebarItemsChanged() override;
 
   // SpaceManagerObserver:
   void OnSpacesChanged() override;
@@ -137,12 +165,37 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // to it, else opens a fresh tab so the Space is never empty on entry.
   void RestoreActiveTabFor(const std::string& space_id);
 
+  // Pulls the selection back into the active Space when a close has pushed it
+  // out.
+  //
+  // Every Space's tabs share the one TabStripModel, so the tab Chromium
+  // selects after a close -- its neighbour by strip index -- can just as
+  // easily belong to another Space.  That tab's row is hidden here, so the
+  // window ends up showing a page with nothing selected beside it, and the
+  // page is one the user filed under a different Space.  Re-selects the
+  // nearest tab that does belong, and falls back to RestoreActiveTabFor()
+  // when the close emptied the Space.
+  void EnsureActiveTabInCurrentSpace();
+
   // Shows tabs in the active Space and hides the rest.
   void ApplyVisibility();
 
-  // Writes the current tab set to SidebarItemStore as kTabState items keyed by
-  // Avora tab GUID, so Space and Favorite ownership outlives the process.
+  // Writes this window's tab set to SidebarItemStore as kTabState items keyed
+  // by Avora tab GUID, so Space and Favorite ownership outlives the process.
+  //
+  // Merges rather than replaces: kTabState is a profile-wide record set and
+  // this window sees only its own strip, so records it does not speak for --
+  // another window's tabs, and its own tabs that session restore has not
+  // finished delivering -- are carried through untouched.  Rewriting the
+  // whole set from one window's partial view is what used to drop a tab's
+  // Space on the next launch and let it be re-adopted by whichever Space
+  // happened to be showing.
   void SyncTabsToStore();
+
+  // Notes that |tab| is being closed for good, so SyncTabsToStore() stops
+  // carrying its record forward.  Not called when the whole window is going
+  // away: those tabs come back on the next launch and must keep their Space.
+  void ForgetClosedTab(tabs::TabInterface* tab);
 
   // Loads persisted kTabState claims once.
   void EnsureTabStateClaimsLoaded();
@@ -237,12 +290,21 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // GUIDs already matched to a live tab this session.
   std::set<std::string> claimed_tab_guids_;
 
+  // GUIDs of tabs this window closed outright.  Their kTabState records are
+  // dropped on the next sync instead of being preserved as another window's.
+  std::set<std::string> forgotten_tab_guids_;
+
   std::set<tabs::TabHandle> discard_observed_tabs_;
   std::map<tabs::TabHandle, base::CallbackListSubscription>
       discard_subscriptions_;
 
   base::RepeatingTimer today_tab_sweep_timer_;
   base::CallbackListSubscription session_restore_subscription_;
+
+  // Fires when any tab in the profile gains or loses a link preview; a
+  // preview's own tab is hidden from the daily list, so both edges change
+  // what this filter should be drawing.
+  base::CallbackListSubscription link_preview_subscription_;
 };
 
 }  // namespace avora

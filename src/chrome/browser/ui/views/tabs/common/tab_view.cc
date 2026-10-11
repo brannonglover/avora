@@ -62,6 +62,7 @@
 #include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/tabs/public/tab_network_state.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkRRect.h"
@@ -1132,9 +1133,15 @@ void TabView::UpdateAvoraLinkPreviewIndicator() {
 void TabView::UpdateTitle(std::u16string title,
                           bool should_render_loading_title) {
   if (should_render_loading_title) {
-    title = icon_->GetShowingLoadingAnimation()
-                ? l10n_util::GetStringUTF16(IDS_TAB_LOADING_TITLE)
-                : CoreTabHelper::GetDefaultTitle();
+    // Avora: the favicon no longer carries a throbber -- load state lives in
+    // the bar along the top of the window -- so a tab that has not sent a
+    // title yet reads the network state directly rather than asking the icon
+    // whether it happens to be spinning.
+    const bool is_loading =
+        tab_data_.network_state != tabs::TabNetworkState::kNone &&
+        tab_data_.network_state != tabs::TabNetworkState::kError;
+    title = is_loading ? l10n_util::GetStringUTF16(IDS_TAB_LOADING_TITLE)
+                       : CoreTabHelper::GetDefaultTitle();
   } else {
     title = WindowMetadataController::FormatTitleForDisplay(title);
   }

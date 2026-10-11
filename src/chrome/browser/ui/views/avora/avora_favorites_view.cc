@@ -182,12 +182,13 @@ class FavoriteContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
 // ---------------------------------------------------------------------------
 
 FavoriteButton::FavoriteButton(
+    const std::string& id,
     const std::string& url,
     const std::string& title,
     base::RepeatingCallback<void(const std::string&)> on_click,
     base::RepeatingCallback<void(const std::string&, const gfx::Point&)>
         on_context)
-    : url_(url), title_(title), on_context_(std::move(on_context)) {
+    : id_(id), url_(url), title_(title), on_context_(std::move(on_context)) {
   SetImageHorizontalAlignment(ALIGN_CENTER);
   SetImageVerticalAlignment(ALIGN_MIDDLE);
   SetTooltipText(base::UTF8ToUTF16(title.empty() ? url : title));
@@ -210,14 +211,26 @@ void FavoriteButton::SetActive(bool active) {
 
 void FavoriteButton::OnPaintBackground(gfx::Canvas* canvas) {
   constexpr SkColor kBgNormal = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
+  constexpr SkColor kBgHovered = SkColorSetARGB(0x33, 0xFF, 0xFF, 0xFF);
   constexpr SkColor kBgActive = SkColorSetARGB(0x40, 0x6E, 0xA8, 0xFF);
+  constexpr SkColor kBgActiveHovered = SkColorSetARGB(0x59, 0x6E, 0xA8, 0xFF);
   constexpr SkColor kBorderActive = SkColorSetARGB(0x90, 0x6E, 0xA8, 0xFF);
 
   const float r = static_cast<float>(AvoraFavoritesView::kButtonRadius);
 
+  const bool hovered = GetState() == views::Button::STATE_HOVERED ||
+                       GetState() == views::Button::STATE_PRESSED;
+
+  SkColor fill_color;
+  if (is_active_) {
+    fill_color = hovered ? kBgActiveHovered : kBgActive;
+  } else {
+    fill_color = hovered ? kBgHovered : kBgNormal;
+  }
+
   cc::PaintFlags fill_flags;
   fill_flags.setAntiAlias(true);
-  fill_flags.setColor(is_active_ ? kBgActive : kBgNormal);
+  fill_flags.setColor(fill_color);
   fill_flags.setStyle(cc::PaintFlags::kFill_Style);
   canvas->DrawRoundRect(GetLocalBounds(), r, fill_flags);
 
@@ -340,26 +353,38 @@ void AvoraFavoritesView::UpdateActiveState() {
     return;
   }
   TabStripModel* tab_strip = browser_->GetTabStripModel();
+  content::WebContents* active =
+      tab_strip ? tab_strip->GetActiveWebContents() : nullptr;
+
+  // Identity, not URL: a Favorite is focused only when the active tab is the
+  // tab that Favorite owns.  Comparing URLs lit the Favorite up for any tab
+  // on the same site, so an unrelated page deep inside a favorited host made
+  // the Favorite look focused alongside the daily tab that actually was.
+  const std::string active_favorite_id =
+      active ? GetFavoriteIdForTab(active) : std::string();
+
+  // A restored tab carries no mark until AvoraSpaceTabFilter's adoption pass
+  // claims it, which can land after this view's last update.  Until then fall
+  // back to the Favorite's exact target - never to its host, which is the
+  // comparison that caused the bug above.
   GURL active_url;
-  if (tab_strip) {
-    content::WebContents* active = tab_strip->GetActiveWebContents();
-    if (active) {
-      active_url = active->GetLastCommittedURL();
-      if (active_url.is_empty()) {
-        active_url = active->GetVisibleURL();
-      }
+  if (active && active_favorite_id.empty()) {
+    active_url = active->GetLastCommittedURL();
+    if (active_url.is_empty()) {
+      active_url = active->GetVisibleURL();
     }
   }
 
   for (views::View* child : children()) {
     auto* btn = static_cast<FavoriteButton*>(child);
-    if (btn) {
-      GURL fav_url(btn->url());
-      bool match = (active_url.spec() == btn->url()) ||
-                   (fav_url.has_host() && active_url.has_host() &&
-                    fav_url.host() == active_url.host());
-      btn->SetActive(match);
+    if (!btn) {
+      continue;
     }
+    const bool match = active_favorite_id.empty()
+                           ? (!active_url.is_empty() &&
+                              active_url.spec() == btn->url())
+                           : (btn->id() == active_favorite_id);
+    btn->SetActive(match);
   }
 }
 
@@ -534,7 +559,7 @@ void AvoraFavoritesView::RebuildGrid() {
   auto favorites = favorites_manager_->GetFavorites();
   for (const auto& entry : favorites) {
     auto* button = AddChildView(std::make_unique<FavoriteButton>(
-        entry.url, entry.title,
+        entry.id, entry.url, entry.title,
         base::BindRepeating(&AvoraFavoritesView::OnFavoriteClicked,
                             base::Unretained(this)),
         base::BindRepeating(&AvoraFavoritesView::OnFavoriteContextMenu,

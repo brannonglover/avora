@@ -8,7 +8,9 @@
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
+class BrowserWindowInterface;
 class PrefService;
 
 namespace avora {
@@ -26,6 +28,11 @@ namespace avora {
 // should instead query WindowSpaceState::active_space_id().
 class WindowSpaceState : public SpaceManagerObserver {
  public:
+  // Published on the owning window's UnownedUserDataHost by BrowserView (see
+  // GetWindowSpaceState below).  The object itself stays owned by BrowserView;
+  // the host only borrows it.
+  DECLARE_USER_DATA(WindowSpaceState);
+
   class Observer : public base::CheckedObserver {
    public:
     // The active Space for this browser window has changed.
@@ -87,6 +94,15 @@ class WindowSpaceState : public SpaceManagerObserver {
   std::string active_space_id_;
   base::ObserverList<Observer> observers_;
 };
+
+// The Space state of |browser|'s window, or null for a window with no Avora
+// views (and therefore no Space of its own).
+//
+// This exists so surfaces that hold a BrowserWindowInterface but live outside
+// the browser window's view hierarchy -- the mini window, which is its own
+// top-level widget -- can switch a window's Space without depending on
+// BrowserView.
+WindowSpaceState* GetWindowSpaceState(BrowserWindowInterface* browser);
 
 }  // namespace avora
 

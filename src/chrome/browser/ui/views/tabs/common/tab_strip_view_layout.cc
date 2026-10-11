@@ -11,10 +11,6 @@
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
-#include "chrome/browser/ui/views/avora/avora_favorites_view.h"
-#include "chrome/browser/ui/views/avora/avora_imported_section_view.h"
-#include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
-#include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/horizontal/tab_scroll_button_container.h"
 #include "ui/views/controls/scroll_view.h"
@@ -190,226 +186,39 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
   if (!size_bounds.width().is_bounded()) {
     return layouts;
   }
+  const int width = size_bounds.width().value();
 
-  const int region_horizontal_padding =
-      GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
-
-  const int region_vertical_padding = GetLayoutConstant(
-      LayoutConstant::kVerticalTabStripCollapsedVerticalPadding);
-
-  int y = 0;
-
-  // Avora: Layout order is [Favorites] → [Live Folders] → [Pinned] → [Daily].
-  constexpr int kSectionGap = 8;
-
-  // 1. Favorites grid at the very top.
-  avora::AvoraFavoritesView* favorites_view =
-      tab_strip_view->GetFavoritesView();
-  if (favorites_view) {
-    const int favorites_height =
-        favorites_view->GetPreferredSize(size_bounds).height();
-    gfx::Rect favorites_bounds(0, y, size_bounds.width().value(),
-                                favorites_height);
-    layouts.child_layouts.emplace_back(favorites_view,
-                                       favorites_view->GetVisible(),
-                                       favorites_bounds);
-    if (favorites_view->GetVisible() && favorites_height > 0) {
-      y += favorites_height + kSectionGap;
-    }
+  // Avora: every section of the side nav -- Favorites, Live Folders, the
+  // pinned and imported sections, the Space label, the new-tab button and the
+  // daily tab list -- now lives inside the unpinned ScrollView's contents
+  // (AvoraSideNavContentsLayout), so this layout has a single job: give that
+  // scroll view the whole strip.  The contents are free to be taller than the
+  // viewport, and that overflow is what scrolls, as one surface.
+  //
+  // Upstream stacked the sections here, above the scroll view, and handed the
+  // scroll view only what was left.  That is what made the nav scroll in two
+  // pieces, and what let the viewport be sized past the bottom of the window.
+  //
+  // Chromium's pinned scroll view and its separator are unused in Avora --
+  // standalone pinned tabs are drawn by AvoraPinnedSectionView -- so they are
+  // laid out hidden and empty rather than given any space.
+  layouts.child_layouts.emplace_back(pinned_tabs_scroll_view, false,
+                                     gfx::Rect());
+  if (tabs_separator) {
+    layouts.child_layouts.emplace_back(tabs_separator, false, gfx::Rect());
   }
 
-  // 2. Live Folders directly below favorites.  Contributes nothing when the
-  // active Space has no Live Folders, so the pinned rows sit tight against
-  // favorites for everyone who hasn't connected a provider.
-  avora::AvoraLiveFoldersView* live_folders_view =
-      tab_strip_view->GetLiveFoldersView();
-  if (live_folders_view) {
-    const int live_folders_height =
-        live_folders_view->GetPreferredSize(size_bounds).height();
-    gfx::Rect live_folders_bounds(0, y, size_bounds.width().value(),
-                                  live_folders_height);
-    layouts.child_layouts.emplace_back(live_folders_view,
-                                       live_folders_view->GetVisible(),
-                                       live_folders_bounds);
-    if (live_folders_view->GetVisible() && live_folders_height > 0) {
-      y += live_folders_height;
-    }
-  }
+  // Bounded is the real case: the region view hands the strip the space it
+  // has.  Unbounded only comes up in a preferred-size query, where the
+  // natural height of the contents is the honest answer.
+  const int height =
+      size_bounds.height().is_bounded()
+          ? size_bounds.height().value()
+          : unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
 
-  // 2a. Pinned section (folders) below the Live Folders.
-  avora::AvoraPinnedSectionView* pinned_section_view =
-      tab_strip_view->GetPinnedSectionView();
-  if (pinned_section_view) {
-    const int pinned_section_height =
-        pinned_section_view->GetPreferredSize(size_bounds).height();
-    gfx::Rect pinned_section_bounds(0, y, size_bounds.width().value(),
-                                     pinned_section_height);
-    layouts.child_layouts.emplace_back(pinned_section_view,
-                                       pinned_section_view->GetVisible(),
-                                       pinned_section_bounds);
-    if (pinned_section_view->GetVisible() && pinned_section_height > 0) {
-      y += pinned_section_height;
-    }
-  }
-
-  // 2c. Imported section (bookmarks from external browsers), below pinned.
-  // Collapses to zero height when the active Space has no imported data or
-  // when the user has collapsed the section.
-  avora::AvoraImportedSectionView* imported_section_view =
-      tab_strip_view->GetImportedSectionView();
-  if (imported_section_view) {
-    const int imported_height =
-        imported_section_view->GetPreferredSize(size_bounds).height();
-    gfx::Rect imported_bounds(0, y, size_bounds.width().value(),
-                              imported_height);
-    layouts.child_layouts.emplace_back(imported_section_view,
-                                       imported_section_view->GetVisible(),
-                                       imported_bounds);
-    if (imported_section_view->GetVisible() && imported_height > 0) {
-      y += imported_height;
-    }
-  }
-
-  // 2d. Fading separator between imported/pinned section and daily section.
-  views::Separator* pinned_separator = tab_strip_view->GetPinnedSeparator();
-  if (pinned_separator) {
-    y += kSectionGap;
-    int sep_width =
-        size_bounds.width().value() - 2 * region_horizontal_padding;
-    int sep_x = region_horizontal_padding;
-    gfx::Rect pinned_sep_bounds(sep_x, y, sep_width,
-                                 pinned_separator->GetPreferredSize().height());
-    layouts.child_layouts.emplace_back(pinned_separator, true,
-                                       pinned_sep_bounds);
-    y += pinned_sep_bounds.height() + kSectionGap;
-  }
-
-  // Determine container preferred heights.
-  views::SizeBounds pinned_tab_container_size_bounds =
-      size_bounds.Inset(gfx::Insets::TLBR(0, region_horizontal_padding, 0, 0));
-  // Avora: Pinned tabs are rendered inside AvoraPinnedSectionView, so
-  // the native pinned scroll view is hidden — treat its height as 0.
-  const bool pinned_hidden = !pinned_tabs_scroll_view->GetVisible();
-  const int pinned_preferred_height =
-      pinned_hidden ? 0
-                    : pinned_tabs_scroll_view
-                          ->GetPreferredSize(pinned_tab_container_size_bounds)
-                          .height();
-  const int unpinned_preferred_height =
-      unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
-
-  const bool should_show_separator = pinned_preferred_height != 0 &&
-                                     unpinned_preferred_height != 0;
-
-  // If the height is bounded, calculate the available space for laying out the
-  // pinned and unpinned containers.
-  int remaining_height = 0;
-  if (size_bounds.height().is_bounded()) {
-    remaining_height = size_bounds.height().value();
-    if (pinned_preferred_height != 0 && unpinned_preferred_height != 0) {
-      remaining_height -= region_vertical_padding;
-    }
-    if (should_show_separator) {
-      remaining_height -=
-          tabs_separator->GetPreferredSize().height() + region_vertical_padding;
-    }
-    // Clamp the remaining height to 0 if we have less space.
-    remaining_height = std::max(remaining_height, 0);
-  }
-
-  // Place the pinned container.
-  int pinned_container_height = pinned_preferred_height;
-  if (size_bounds.height().is_bounded()) {
-    int min_pinned_height = 0;
-    if (const auto* pinned_container =
-            tab_strip_view->GetPinnedTabsContainer()) {
-      min_pinned_height = pinned_container->GetMinimumSize().height();
-    }
-    pinned_container_height = CalculatePinnedContainerMainAxisSize(
-        pinned_preferred_height, unpinned_preferred_height, remaining_height,
-        min_pinned_height);
-    remaining_height -= pinned_container_height;
-  }
-  gfx::Rect pinned_container_bounds(
-      region_horizontal_padding, y,
-      pinned_tab_container_size_bounds.width().value(),
-      pinned_container_height);
-  layouts.child_layouts.emplace_back(pinned_tabs_scroll_view,
-                                     pinned_tabs_scroll_view->GetVisible(),
-                                     pinned_container_bounds);
-
-  if (pinned_container_bounds.height()) {
-    y += pinned_container_bounds.height();
-    // Add padding only if there are pinned and unpinned tabs.
-    if (unpinned_preferred_height != 0) {
-      y += region_vertical_padding;
-    }
-  }
-
-  // Place the tabs separator if visible.
-  gfx::Rect separator_bounds;
-  if (should_show_separator) {
-    int separator_width =
-        size_bounds.width().value() - 2 * region_horizontal_padding;
-    int separator_x = region_horizontal_padding;
-    separator_bounds = gfx::Rect(separator_x, y, separator_width,
-                                 tabs_separator->GetPreferredSize().height());
-    y += separator_bounds.height() + region_vertical_padding;
-  }
-  layouts.child_layouts.emplace_back(tabs_separator, should_show_separator,
-                                     separator_bounds);
-
-  // 3. "Default Space" label marks the start of the daily section.
-  views::View* space_name_view = tab_strip_view->GetSpaceNameView();
-  if (space_name_view) {
-    y += kSectionGap;
-    const int space_name_height =
-        space_name_view->GetPreferredSize(size_bounds).height();
-    gfx::Rect space_name_bounds(0, y, size_bounds.width().value(),
-                                 space_name_height);
-    layouts.child_layouts.emplace_back(space_name_view,
-                                       space_name_view->GetVisible(),
-                                       space_name_bounds);
-    if (space_name_view->GetVisible() && space_name_height > 0) {
-      y += space_name_height;
-    }
-  }
-
-  // 4. New Tab button, below the space name label.
-  views::View* new_tab_button = tab_strip_view->GetNewTabButtonView();
-  if (new_tab_button) {
-    const int button_height =
-        new_tab_button->GetPreferredSize(size_bounds).height();
-    gfx::Rect button_bounds(0, y, size_bounds.width().value(), button_height);
-    layouts.child_layouts.emplace_back(new_tab_button,
-                                       new_tab_button->GetVisible(),
-                                       button_bounds);
-    if (button_height > 0) {
-      y += button_height;
-    }
-  }
-
-  // Place the unpinned container using the entire available width, we do not
-  // inset the x value by `region_horizontal_padding` here because, when the tab
-  // strip is collapsed, tab groups need to draw the group colored line in this
-  // space.
-  gfx::Rect unpinned_container_bounds(0, y, size_bounds.width().value(),
-                                      unpinned_preferred_height);
-  if (size_bounds.height().is_bounded()) {
-    int min_unpinned_height = 0;
-    if (const auto* unpinned_container =
-            tab_strip_view->GetUnpinnedTabsContainer()) {
-      min_unpinned_height = unpinned_container->GetMinimumSize().height();
-    }
-    unpinned_container_bounds.set_height(
-        std::max(std::min(unpinned_container_bounds.height(), remaining_height),
-                 min_unpinned_height));
-  }
   layouts.child_layouts.emplace_back(unpinned_tabs_scroll_view,
                                      unpinned_tabs_scroll_view->GetVisible(),
-                                     unpinned_container_bounds);
-
-  layouts.host_size = gfx::Size(size_bounds.width().value(),
-                                unpinned_container_bounds.bottom());
+                                     gfx::Rect(0, 0, width, height));
+  layouts.host_size = gfx::Size(width, height);
   return layouts;
 }

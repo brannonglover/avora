@@ -54,6 +54,12 @@ class ChromiumBookmarkParser {
   static base::FilePath DefaultChromeDataDir();
   static base::FilePath DefaultEdgeDataDir();
 
+  // Arc is Chromium-based and keeps a standard Chromium user-data
+  // directory, so its Bookmarks files parse with this same class.  Note
+  // the layout differs from Chrome/Edge on macOS: Arc nests profiles
+  // under a "User Data" subdirectory, the way Chromium does on Windows.
+  static base::FilePath DefaultArcDataDir();
+
   // Scans |data_dir| for profile directories that contain a Bookmarks
   // file.  Reads profile display names from Local State if available.
   //

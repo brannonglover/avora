@@ -271,6 +271,28 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
   </translations>
   <release seq="1">
     <messages fallback_to_english="true">
+
+      <!-- Avora: menu-bar entry for importing Arc's Spaces and pinned tabs.
+           Lives here rather than generated_resources.grd so the Avora overlay
+           does not have to carry that whole file. -->
+      <message name="IDS_AVORA_IMPORT_ARC_MAC" desc="File menu item to import Spaces and pinned tabs from the Arc browser.">
+        Import Spaces &amp; Pins from Arc&#8230;
+      </message>
+
+      <!-- Avora: View-menu entry for sliding the side nav out of the way.
+           Carried here for the same reason as the Arc import string: it
+           keeps the overlay off generated_resources.grd. -->
+      <message name="IDS_AVORA_TOGGLE_SIDEBAR_MAC" desc="View menu item that slides the side navigation out of the window so the page fills it, and back again.">
+        Toggle Sidebar
+      </message>
+
+      <!-- Avora: app-menu entry for taking over as the system default
+           browser.  Upstream's IDS_SET_BROWSER_AS_DEFAULT_MENU_ITEM is
+           sentence case and hardcodes "Chromium", neither of which suits the
+           macOS menu bar, so Avora carries its own Title Case variant. -->
+      <message name="IDS_AVORA_SET_DEFAULT_BROWSER_MAC" desc="App menu item that makes this browser the system default browser. $1 is the product name.">
+        Make <ph name="PRODUCT_NAME">$1<ex>Avora</ex></ph> Your Default Browser
+      </message>
       <!-- Settings specific strings -->
       <if expr="not is_android">
         <part file="settings_chromium_strings.grdp" />

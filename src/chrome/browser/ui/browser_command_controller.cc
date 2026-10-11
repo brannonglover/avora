@@ -92,6 +92,13 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/avora/avora_import_provenance.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_pinned_items.h"
+#include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/import/arc_sidebar_parser.h"
+#include "chrome/browser/avora/import/avora_import_coordinator.h"
+#include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -1320,6 +1327,27 @@ void BrowserCommandController::HandleCommandWithDisposition(
 #endif  // !BUILDFLAG(IS_ANDROID)
       break;
     }
+    case IDC_AVORA_TOGGLE_SIDEBAR: {
+      // Slides the side nav out of the window (and the page across to fill
+      // it), or back in.  Per-window, so it acts on this browser's view only.
+      if (auto* bv = BrowserView::GetBrowserViewForBrowser(browser_)) {
+        bv->ToggleAvoraSidebar();
+      }
+      break;
+    }
+    case IDC_AVORA_IMPORT_ARC: {
+      // Opens the one import dialog that covers every browser -- Chrome, Edge,
+      // Firefox, Safari and Arc.  Arc appears there as its own source; see
+      // AvoraImportDialogView.
+      BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(
+          browser_);
+      if (browser_view && browser_view->GetWindowSpaceState()) {
+        avora::AvoraImportDialogView::Show(browser_,
+                                           browser_view->GetWindowSpaceState());
+      }
+      break;
+    }
+
     case IDC_IMPORT_SETTINGS:
       ShowImportDialog(browser_);
       break;
@@ -1905,6 +1933,16 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(
       IDC_BOOKMARKS_MENU, (!guest_session && !profile()->IsSystemProfile()));
   command_updater_->UpdateCommandEnabled(IDC_SAVED_TAB_GROUPS_MENU, true);
+  // Avora: Arc import is available whenever there is a real profile to import
+  // into.  Whether Arc is actually installed is discovered at execution time,
+  // so the menu item stays clickable and reports rather than being silently
+  // greyed out on a machine that has never run Arc.
+  command_updater_->UpdateCommandEnabled(
+      IDC_AVORA_IMPORT_ARC, (!guest_session && !profile()->IsSystemProfile()));
+  // Avora: hiding the side nav is always available.  Windows that have no
+  // sidebar to hide (no vertical tab strip) simply do nothing, which keeps the
+  // View menu item from flickering between enabled and greyed out.
+  command_updater_->UpdateCommandEnabled(IDC_AVORA_TOGGLE_SIDEBAR, true);
   command_updater_->UpdateCommandEnabled(
       IDC_RECENT_TABS_MENU, (!guest_session && !profile()->IsSystemProfile() &&
                              !profile()->IsIncognitoProfile()));

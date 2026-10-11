@@ -11,6 +11,7 @@
 
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/to_address.h"
@@ -26,6 +27,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/avora_space_tab_filter.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_link_drop_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
@@ -372,10 +374,11 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
   auto* tab_strip_view = views::AsViewClass<TabStripView>(
       tab_strip_region_view_->GetTabStripView());
   if (tab_strip_view) {
-    auto* unpinned_scroll = tab_strip_view->unpinned_tabs_scroll_view();
+    const gfx::Rect daily_bounds =
+        tab_strip_view->GetDailyListBoundsInScreen();
     bool in_avora_drop_zone = false;
-    if (unpinned_scroll && unpinned_scroll->GetVisible()) {
-      int daily_top = unpinned_scroll->GetBoundsInScreen().y();
+    if (!daily_bounds.IsEmpty()) {
+      int daily_top = daily_bounds.y();
       gfx::Rect strip_bounds = tab_strip_view->GetBoundsInScreen();
       if (screen_location.y() < daily_top &&
           screen_location.x() >= strip_bounds.x() &&
@@ -427,9 +430,9 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
 
         if (!over_pinned) {
           auto* fav = tab_strip_view->GetFavoritesView();
-          if (unpinned_scroll && fav) {
+          if (!daily_bounds.IsEmpty() && fav) {
             int top = fav->GetBoundsInScreen().bottom();
-            int bottom = unpinned_scroll->GetBoundsInScreen().y();
+            int bottom = daily_bounds.y();
             gfx::Rect gap(fav->GetBoundsInScreen().x(), top,
                           fav->GetBoundsInScreen().width(), bottom - top);
             over_pinned = gap.Contains(screen_location);
@@ -438,11 +441,30 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
 
         pinned_section->SetDropHighlighted(over_pinned);
         if (over_pinned) {
-          std::string folder_id =
-              pinned_section->GetFolderIdAtScreenPoint(screen_location);
-          pinned_section->HighlightFolder(folder_id);
+          // Give the section a real row to move, once, on first entry: from
+          // then on the reflow is the same code an in-section row drag runs.
+          if (!pinned_section->has_external_row_drag() && drag_controller_) {
+            const auto& session = drag_controller_->GetSessionData();
+            if (!session.tab_drag_data_.empty() &&
+                session.tab_drag_data_[0].contents) {
+              pinned_section->BeginExternalRowDrag(
+                  session.tab_drag_data_[0].contents);
+            }
+          }
+          pinned_section->SetExternalRowDragInSection(true);
+          pinned_section->UpdateExternalRowDrag(screen_location);
+          if (!pinned_section->has_external_row_drag()) {
+            // No stand-in (multi-tab drag, or the section is not ready), so
+            // fall back to drawing the landing spot.
+            pinned_section->SetExternalDropPoint(screen_location);
+          }
+        } else if (pinned_section->has_external_row_drag()) {
+          // Left the section: take the row back out of the list so it stops
+          // showing a placement, but keep it alive so re-entering picks up
+          // where it left off instead of rebuilding.
+          pinned_section->SetExternalRowDragInSection(false);
         } else {
-          pinned_section->ClearHighlight();
+          pinned_section->ClearExternalDrop();
         }
       }
     } else {
@@ -452,6 +474,11 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
       if (pinned_section) {
         pinned_section->SetDropHighlighted(false);
         pinned_section->ClearHighlight();
+        // The drag is back below the nav's drop zone -- in the daily list it
+        // came from -- which is just as much "not in this section" as being
+        // over the favorites grid is.  Both have to put the stand-in away, or
+        // it sits here showing a placement for a drag that has left.
+        pinned_section->SetExternalRowDragInSection(false);
       }
       auto* favorites = tab_strip_view->GetFavoritesView();
       if (favorites) {
@@ -929,7 +956,7 @@ void TabDragHandlerImpl::StoppedDragging() {
   bool drop_on_pinned = false;
   bool drop_on_unpinned = false;
   bool was_dragging_pinned = false;
-  std::vector<int> favorite_indices_to_close;
+  std::vector<base::WeakPtr<content::WebContents>> favorited_to_close;
   std::set<content::WebContents*> favorited_contents;
 
   auto* tab_strip_view = views::AsViewClass<TabStripView>(
@@ -964,11 +991,7 @@ void TabDragHandlerImpl::StoppedDragging() {
               }
             }
             favorited_contents.insert(tab_data.contents);
-            int idx = tab_strip_model_->GetIndexOfWebContents(
-                tab_data.contents);
-            if (idx != TabStripModel::kNoTab) {
-              favorite_indices_to_close.push_back(idx);
-            }
+            favorited_to_close.push_back(tab_data.contents->GetWeakPtr());
           }
         }
       }
@@ -985,17 +1008,43 @@ void TabDragHandlerImpl::StoppedDragging() {
           in_pinned_zone = true;
         }
         if (!in_pinned_zone) {
-          auto* unpinned_scroll = tab_strip_view->unpinned_tabs_scroll_view();
+          const gfx::Rect daily_bounds =
+              tab_strip_view->GetDailyListBoundsInScreen();
           auto* fav = tab_strip_view->GetFavoritesView();
-          if (unpinned_scroll && fav) {
+          if (!daily_bounds.IsEmpty() && fav) {
             int top = fav->GetBoundsInScreen().bottom();
-            int bottom = unpinned_scroll->GetBoundsInScreen().y();
+            int bottom = daily_bounds.y();
             gfx::Rect gap(fav->GetBoundsInScreen().x(), top,
                           fav->GetBoundsInScreen().width(), bottom - top);
             in_pinned_zone = gap.Contains(drop_point);
           }
         }
-        if (in_pinned_zone && pinned_section) {
+        if (in_pinned_zone && pinned_section &&
+            pinned_section->has_external_row_drag()) {
+          // A stand-in row has been showing exactly where this lands, so the
+          // drop is that preview committed: folder membership and top-level
+          // position both come from what the section previewed, rather than
+          // being re-derived from the drop point here and risking a landing
+          // spot that disagrees with what the drag just showed.
+          drop_on_folder = true;
+          std::string item_id;
+          if (!drag_data.tab_drag_data_.empty() &&
+              drag_data.tab_drag_data_[0].contents) {
+            content::WebContents* contents =
+                drag_data.tab_drag_data_[0].contents;
+            avora::PinAndCreatePinnedItem(
+                /*tab_strip=*/nullptr,
+                pinned_section->GetPinnedItemsManager(), contents);
+            item_id = avora::GetPinnedItemIdForTab(contents);
+          }
+          pinned_section->EndExternalRowDrag(/*commit=*/true, item_id);
+          // The tab now carries a kPinned marker, which is what hides it from
+          // the daily list -- but marking is WebContents user data and raises
+          // no notification, so without this it renders twice.
+          if (auto* filter = tab_strip_view->GetSpaceTabFilter()) {
+            filter->RefreshTabVisibility();
+          }
+        } else if (in_pinned_zone && pinned_section) {
           std::string folder_id =
               pinned_section->GetFolderIdAtScreenPoint(drop_point);
           if (!folder_id.empty()) {
@@ -1023,6 +1072,17 @@ void TabDragHandlerImpl::StoppedDragging() {
                 mgr->MoveItemToFolder(item_id, folder_id);
               }
             }
+
+            // The tabs now carry a kPinned marker, which is what hides them
+            // from the daily list -- but marking is WebContents user data
+            // and raises no notification, and nothing was natively pinned
+            // here, so no OnTabPinnedStateChanged() is coming either.
+            // Without this the tab renders twice: once in the folder, and
+            // once still sitting in the daily list, which reads as the drop
+            // having failed.
+            if (auto* filter = tab_strip_view->GetSpaceTabFilter()) {
+              filter->RefreshTabVisibility();
+            }
           } else {
             // Dropped on the pinned section but not on a folder — pin the tab.
             drop_on_pinned = true;
@@ -1033,15 +1093,14 @@ void TabDragHandlerImpl::StoppedDragging() {
       // Check pinned/unpinned sections.
       was_dragging_pinned = IsDraggingPinnedTabs();
       auto* pinned_scroll = tab_strip_view->pinned_tabs_scroll_view();
-      auto* unpinned_scroll = tab_strip_view->unpinned_tabs_scroll_view();
       if (!drop_on_pinned) {
         drop_on_pinned = pinned_scroll &&
                          pinned_scroll->GetBoundsInScreen().Contains(
                              drop_point);
       }
       drop_on_unpinned =
-          !drop_on_folder && unpinned_scroll &&
-          unpinned_scroll->GetBoundsInScreen().Contains(drop_point);
+          !drop_on_folder &&
+          tab_strip_view->GetDailyListBoundsInScreen().Contains(drop_point);
     }
   }
 
@@ -1084,14 +1143,35 @@ void TabDragHandlerImpl::StoppedDragging() {
   }
 
   // Avora: Close tabs that were moved to favorites.
-  if (drop_on_favorites && !favorite_indices_to_close.empty()) {
-    std::sort(favorite_indices_to_close.rbegin(),
-              favorite_indices_to_close.rend());
-    for (int idx : favorite_indices_to_close) {
-      tab_strip_model_->CloseWebContentsAt(
-          idx, TabCloseTypes::CLOSE_USER_GESTURE |
-                   TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
-    }
+  // IMPORTANT: closing must be deferred for the same reason SetTabPinned() is
+  // below. CloseWebContentsAt() destroys the tab synchronously, and the
+  // resulting TabStripModel notification reaches the animating layout manager,
+  // which calls back into IsViewDragging() -> ViewFromTabSlot(). The drag
+  // session is still alive at that point and its attached_views() still name
+  // the slot view for the tab we just destroyed, so ViewFromTabSlot()
+  // dereferences the freed TabInterface. PostTask so the closes run after the
+  // drag session is torn down, and hold WeakPtrs rather than indices, which
+  // the deferral would leave stale.
+  if (drop_on_favorites && !favorited_to_close.empty()) {
+    TabStripModel* model_ptr = &*tab_strip_model_;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](TabStripModel* model,
+               std::vector<base::WeakPtr<content::WebContents>> to_close) {
+              for (auto& weak_contents : to_close) {
+                if (!weak_contents) {
+                  continue;
+                }
+                int idx = model->GetIndexOfWebContents(weak_contents.get());
+                if (idx != TabStripModel::kNoTab) {
+                  model->CloseWebContentsAt(
+                      idx, TabCloseTypes::CLOSE_USER_GESTURE |
+                               TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+                }
+              }
+            },
+            base::Unretained(model_ptr), std::move(favorited_to_close)));
   }
 
   // Avora: Pin or unpin tabs based on where the drag ended.

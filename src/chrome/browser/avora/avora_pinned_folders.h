@@ -4,6 +4,7 @@
 #define CHROME_BROWSER_AVORA_AVORA_PINNED_FOLDERS_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,26 @@ struct PinnedFolder {
   // kPinned item ids, in this folder's display order. An id here is never
   // also referenced by another folder; see MoveItemToFolder().
   std::vector<std::string> ordered_item_ids;
+
+  // Where this folder sits among the Space's *top-level* pinned items: the
+  // id of the item it is drawn after.  An empty string draws it before every
+  // item, and nullopt -- the default, and what every folder had before
+  // folders could be placed at all -- draws it after every item, which is
+  // where folders have always gone.
+  //
+  // An item id rather than a position, so the placement survives pins being
+  // added and removed around it: a count would silently shift the folder
+  // every time a pin above it appeared or went away.  An anchor naming an
+  // item that is gone (unpinned, or filed into a folder) falls back to the
+  // default, which is the only place it could safely be drawn anyway.
+  std::optional<std::string> after_item_id;
+};
+
+// One folder's place in the Space's top-level layout; see
+// PinnedFoldersManager::SetFolderPlacements().
+struct FolderPlacement {
+  std::string folder_id;
+  std::optional<std::string> after_item_id;
 };
 
 // Pinned folders belonging to the *active* Space.
@@ -110,6 +131,17 @@ class PinnedFoldersManager : public SpaceManagerObserver {
   // Absolute position within the Space's folder list.
   void ReorderFolder(const std::string& folder_id, int new_index);
 
+  // Rewrites where folders sit among the top-level pinned items: |placements|
+  // is the folder list in display order, each entry carrying the item its
+  // folder follows (see PinnedFolder::after_item_id).  Folders left out of
+  // the list keep their current placement and are appended after the listed
+  // ones.
+  //
+  // Both halves of a folder's placement -- its order among folders and its
+  // anchor among items -- move together in one write, because they are one
+  // piece of information: the layout the user just arranged.
+  void SetFolderPlacements(const std::vector<FolderPlacement>& placements);
+
   // Moves |pinned_item_id| into |folder_id|, first removing it from
   // whichever folder (if any) currently contains it -- an item belongs to
   // at most one folder at a time.  An empty |folder_id| moves the item back
@@ -125,6 +157,20 @@ class PinnedFoldersManager : public SpaceManagerObserver {
                           const std::string& pinned_item_id,
                           int new_index);
 
+  // Places |pinned_item_id| at |index| within |folder_id| -- the positional
+  // counterpart of MoveItemToFolder(), which can only append.  An empty
+  // |folder_id| takes the item out of every folder, back to top-level, where
+  // ordering lives in PinnedItemsManager instead.
+  //
+  // |index| counts positions in the destination folder *after* the item has
+  // been taken out of it, so dragging an item downwards inside its own
+  // folder needs no caller-side adjustment.  It is a single write, so a drop
+  // never parks the item at the end of the folder for a frame before jumping
+  // to where it was actually dropped.
+  void MoveItemToFolderAt(const std::string& pinned_item_id,
+                          const std::string& folder_id,
+                          int index);
+
   // Scrubs |pinned_item_id| from every folder's membership without
   // promoting it anywhere -- for when the item itself is being deleted
   // (unpinned), so no dangling id is ever left behind.  Safe to call
@@ -135,14 +181,34 @@ class PinnedFoldersManager : public SpaceManagerObserver {
   // top-level item (or not a pinned item at all).
   std::string GetFolderIdForItem(const std::string& pinned_item_id) const;
 
-  // Custom display titles for pinned tabs (keyed by URL).  Unrelated to
-  // folder membership: this serves only the native-pinned-tab rendering
-  // path (a live WebContents with no backing kPinned item), which has no
-  // PinnedItemEntry::title of its own to rename.  A folder member always
-  // has one, via PinnedItemsManager.
-  std::string GetCustomTabTitle(const std::string& url) const;
-  void SetCustomTabTitle(const std::string& url, const std::string& title);
-  void ClearCustomTabTitle(const std::string& url);
+  // Custom display titles for pinned rows, by storage key.  Unrelated to
+  // folder membership: this serves the rename gesture on a row, which has
+  // nowhere else to put a name (a natively pinned tab has no backing
+  // kPinned item at all, and a pinned item's own title is the page's, not
+  // the user's).
+  //
+  // Prefer the item-keyed pair below.  These take the raw key, which for
+  // everything written before renames were keyed by item id is a URL.
+  std::string GetCustomTabTitle(const std::string& key) const;
+  void SetCustomTabTitle(const std::string& key, const std::string& title);
+  void ClearCustomTabTitle(const std::string& key);
+
+  // A rename belongs to the pinned item, never to a URL.  Two pins routinely
+  // sit on the same page without being the same pin -- an SSO landing page,
+  // a dashboard root, two accounts on one service -- and keying their names
+  // by URL made renaming either one rename both.  Item ids cannot collide
+  // that way.
+  //
+  // |fallback_url| covers the two cases an id cannot: a row with no kPinned
+  // record behind it (|item_id| empty), which has only its URL to be known
+  // by, and names written before this was keyed by id.  Pass the pin's own
+  // persisted target, never the live tab's current URL -- the latter is
+  // exactly the key that collides.
+  std::string GetCustomTitleForItem(const std::string& item_id,
+                                    const std::string& fallback_url) const;
+  void SetCustomTitleForItem(const std::string& item_id,
+                             const std::string& fallback_url,
+                             const std::string& title);
 
   // The Space these pinned folders belong to.
   std::string GetActiveSpaceId() const;

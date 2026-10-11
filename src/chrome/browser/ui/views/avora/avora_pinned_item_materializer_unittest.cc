@@ -15,6 +15,8 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/testing_pref_service.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
@@ -516,6 +518,151 @@ TEST_F(AvoraPinnedItemMaterializerTest,
   // recreated/closed/navigated by any of the organizational changes above.
   EXPECT_EQ(window_a_->GetIndexOfWebContents(raw_a), 0);
   EXPECT_EQ(GetPinnedItemIdForTab(raw_a), item_id);
+}
+
+// ── Target drift ────────────────────────────────────────────────────────────
+//
+// A pinned item's URL is the destination the user chose; the tab
+// materializing it is free to browse away from that destination and back.
+// These pin down where the line between "still there" and "away" sits, since
+// it is what the sidebar's away marker and its return click both key off.
+
+// A pinned tab sitting on the page it was pinned for.
+content::WebContents* PinnedTabAt(TabStripModel* window,
+                                  content::WebContents* contents,
+                                  PinnedItemsManager* items,
+                                  const GURL& url) {
+  content::WebContentsTester::For(contents)->NavigateAndCommit(url);
+  PinAndCreatePinnedItem(window, items, contents);
+  return contents;
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, TabOnItsTargetIsNotAway) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+
+  EXPECT_EQ(GetPinnedTargetForTab(pinned_items_manager_.get(), raw),
+            GURL("https://example.com/"));
+  EXPECT_FALSE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, TabNavigatedToAnotherSiteIsAway) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://other.test/article"));
+
+  EXPECT_TRUE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+  // The item itself is untouched -- that is what makes the way back exist.
+  EXPECT_EQ(GetPinnedTargetForTab(pinned_items_manager_.get(), raw),
+            GURL("https://example.com/"));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, DeeperPageOnTheSameSiteIsAway) {
+  // Deliberate: the pin names a page, not a site, so an inbox pinned at its
+  // root is "away" once it is showing a single message -- and one click gets
+  // back to the root.
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://example.com/inbox/42"));
+
+  EXPECT_TRUE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, FragmentAloneIsNotAway) {
+  EXPECT_TRUE(IsAtPinnedTarget(GURL("https://example.com/docs"),
+                               GURL("https://example.com/docs#section-2")));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, HttpsUpgradeIsNotAway) {
+  // The site upgraded the connection; the user did not go anywhere.
+  EXPECT_TRUE(IsAtPinnedTarget(GURL("http://example.com/"),
+                               GURL("https://example.com/")));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, QueryStringIsAway) {
+  EXPECT_FALSE(IsAtPinnedTarget(GURL("https://example.com/search"),
+                                GURL("https://example.com/search?q=cats")));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, UncommittedTabCountsAsArrived) {
+  // A row is built the moment its tab is inserted, before the first
+  // navigation commits.  Treating that frame as "away" would flash the
+  // marker on every pin the user opens.
+  EXPECT_TRUE(IsAtPinnedTarget(GURL("https://example.com/"), GURL()));
+  EXPECT_TRUE(
+      IsAtPinnedTarget(GURL("https://example.com/"), GURL("about:blank")));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, TabBackingNoPinnedItemHasNoTarget) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://example.com/"));
+  window_a_->AppendWebContents(std::move(contents), true);
+
+  EXPECT_FALSE(
+      GetPinnedTargetForTab(pinned_items_manager_.get(), raw).is_valid());
+  EXPECT_FALSE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, UnpinnedTabIsNeverAway) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://other.test/"));
+  ASSERT_TRUE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+
+  UnpinAndRemovePinnedItem(window_a_.get(), pinned_items_manager_.get(),
+                           pinned_folders_manager_.get(), raw);
+
+  // No item, no target, nothing to be away from -- the page just stays open.
+  EXPECT_FALSE(HasLeftPinnedTarget(pinned_items_manager_.get(), raw));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, ReturnNavigatesBackToTheTarget) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+  content::WebContentsTester::For(raw)->NavigateAndCommit(
+      GURL("https://other.test/article"));
+
+  ReturnTabToPinnedTarget(pinned_items_manager_.get(), raw);
+
+  content::NavigationEntry* pending = raw->GetController().GetPendingEntry();
+  ASSERT_TRUE(pending);
+  EXPECT_EQ(pending->GetURL(), GURL("https://example.com/"));
+}
+
+TEST_F(AvoraPinnedItemMaterializerTest, ReturnFromTheTargetIsANoOp) {
+  auto contents = CreateWebContents();
+  content::WebContents* raw = contents.get();
+  window_a_->AppendWebContents(std::move(contents), true);
+  PinnedTabAt(window_a_.get(), raw, pinned_items_manager_.get(),
+              GURL("https://example.com/"));
+
+  ReturnTabToPinnedTarget(pinned_items_manager_.get(), raw);
+
+  // No reload, no second entry: a row that is already home does nothing.
+  EXPECT_FALSE(raw->GetController().GetPendingEntry());
+  EXPECT_EQ(raw->GetController().GetEntryCount(), 1);
 }
 
 }  // namespace

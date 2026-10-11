@@ -6,31 +6,20 @@
 
 namespace avora {
 
-namespace {
-
-// Must match the string in chrome/common/pref_names.h
-// (prefs::kVerticalTabsUncollapsedWidth).
-constexpr char kVerticalTabsUncollapsedWidth[] =
-    "vertical_tab_strip_uncollapsed_width";
-
-}  // namespace
-
-void ApplyBrowserDefaults(PrefService* prefs) {
-  if (!prefs) {
+void ApplyBrowserDefaults(PrefService* pref_service) {
+  if (!pref_service) {
     return;
   }
 
-  // Only override the sidebar width when it is still at Chromium's stock
-  // default (240 px).  This is a one-time migration: once the value is
-  // changed (either here or by the user dragging the resize handle) it
-  // will no longer match the stock default and will be left alone.
-  const PrefService::Preference* pref =
-      prefs->FindPreference(kVerticalTabsUncollapsedWidth);
-  if (pref && prefs->GetInteger(kVerticalTabsUncollapsedWidth) ==
-                  kChromiumDefaultSidebarWidth) {
-    prefs->SetInteger(kVerticalTabsUncollapsedWidth,
-                      kAvoraDefaultSidebarWidth);
-  }
+  // Nothing to do yet.  Note for anyone adding to this: writing a pref here
+  // cannot change a window's initial vertical-tab-strip width.  This runs
+  // from the AvoraSidebarView constructor, which is *after*
+  // BrowserWindowFeatures has already read the pref into
+  // VerticalTabStripStateController, and that controller writes its own
+  // snapshot back over the pref as soon as the window becomes active.  The
+  // sidebar's launch width is set by
+  // tabs::kVerticalTabStripDefaultUncollapsedWidth in
+  // chrome/browser/ui/tabs/vertical_tab_strip_state.h instead.
 }
 
 }  // namespace avora

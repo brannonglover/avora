@@ -7,11 +7,14 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/functional/callback.h"
+#include "base/task/cancelable_task_tracker.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
+#include "chrome/browser/avora/avora_nav_history.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -20,13 +23,25 @@
 class Profile;
 
 namespace views {
+class Button;
 class ImageButton;
 class Label;
+class LabelButton;
 class Textfield;
 }  // namespace views
 
 // Callback invoked for nav-button presses: back, forward, reload.
 using AvoraNavCallback = base::RepeatingClosure;
+
+// Supplies the session-history entries behind or ahead of the active tab, for
+// the menu a nav button opens when it is held down.
+using AvoraNavHistoryProvider =
+    base::RepeatingCallback<std::vector<avora::NavHistoryEntry>(
+        avora::NavHistoryDirection)>;
+
+// Callback invoked when the user picks an entry out of a nav history menu.
+// The int is the entry's navigation-controller index.
+using AvoraNavHistoryActivateCallback = base::RepeatingCallback<void(int)>;
 
 // Callback invoked when the user clicks an extension icon in the manage bubble.
 using AvoraExtensionClickCallback =
@@ -57,9 +72,12 @@ class AvoraSidebarView : public views::View,
   static constexpr int kSpacesBarHeight = 40;
 
   AvoraSidebarView(Profile* profile,
+                   AvoraNavCallback toggle_sidebar_cb,
                    AvoraNavCallback back_cb,
                    AvoraNavCallback forward_cb,
                    AvoraNavCallback reload_cb,
+                   AvoraNavHistoryProvider nav_history_provider,
+                   AvoraNavHistoryActivateCallback nav_history_activate_cb,
                    AvoraExtensionClickCallback extension_click_cb,
                    AvoraNavCallback extensions_cb,
                    AvoraNavCallback webstore_cb,
@@ -72,6 +90,7 @@ class AvoraSidebarView : public views::View,
   views::View* nav_row() { return nav_row_; }
   views::View* address_chip_row() { return address_chip_row_; }
   views::ImageButton* manage_button() { return manage_button_; }
+  views::Button* toggle_sidebar_button() { return toggle_sidebar_button_; }
 
   // Update the URL displayed in the address chip.
   void SetURL(const std::u16string& url_text);
@@ -97,15 +116,20 @@ class AvoraSidebarView : public views::View,
  private:
   raw_ptr<views::View> nav_row_ = nullptr;
   raw_ptr<views::ImageButton> manage_button_ = nullptr;
-  raw_ptr<views::ImageButton> back_button_ = nullptr;
-  raw_ptr<views::ImageButton> forward_button_ = nullptr;
-  raw_ptr<views::ImageButton> reload_button_ = nullptr;
+  // Sits immediately right of the window's traffic lights; the discoverable
+  // twin of CMD+S.
+  raw_ptr<views::Button> toggle_sidebar_button_ = nullptr;
+  raw_ptr<views::Button> back_button_ = nullptr;
+  raw_ptr<views::Button> forward_button_ = nullptr;
+  raw_ptr<views::Button> reload_button_ = nullptr;
   raw_ptr<views::View> address_chip_row_ = nullptr;
   raw_ptr<views::View> address_chip_bg_ = nullptr;
   raw_ptr<views::Label> address_label_ = nullptr;
   raw_ptr<views::Textfield> address_field_ = nullptr;
 
   raw_ptr<Profile> profile_;
+  AvoraNavHistoryProvider nav_history_provider_;
+  AvoraNavHistoryActivateCallback nav_history_activate_cb_;
   AvoraExtensionClickCallback extension_click_cb_;
   AvoraNavCallback extensions_cb_;
   AvoraNavCallback webstore_cb_;
@@ -118,11 +142,26 @@ class AvoraSidebarView : public views::View,
   // Show the manage bubble anchored to the manage button.
   void ShowManageBubble();
 
+  // Show the session-history menu for one of the nav buttons, anchored to that
+  // button.  Does nothing when there is no history in that direction.
+  void ShowNavHistoryMenu(avora::NavHistoryDirection direction);
+
+  // Fills in a history row's icon from the favicon service.  Session history
+  // only carries a favicon for pages that loaded one in this tab during this
+  // run, so most rows — anything session-restored, or visited long enough ago
+  // that the tab has moved on — need this second source.  |row| is weak: the
+  // menu is usually gone by the time the service answers.
+  void LoadNavHistoryFavicon(base::WeakPtr<views::LabelButton> row,
+                             const GURL& url);
+
   // Show the inline textfield for URL editing.
   void BeginEditing();
 
   // Hide the textfield and revert to the label.
   void EndEditing();
+
+  // Keeps favicon lookups from outliving this view.
+  base::CancelableTaskTracker favicon_task_tracker_;
 
   // Spaces support — owns the SpaceManager; the bar itself is placed by
   // BrowserView and can call space_manager() to upgrade to managed mode.

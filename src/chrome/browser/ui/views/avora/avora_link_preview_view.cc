@@ -11,6 +11,8 @@
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkRRect.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
@@ -24,14 +26,13 @@
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/view_targeter.h"
 
 namespace avora {
 
 namespace {
 
 constexpr SkColor kBackdropColor = SkColorSetARGB(0x99, 0x10, 0x10, 0x18);
-constexpr SkColor kCardBg = SkColorSetARGB(0xFF, 0x1E, 0x22, 0x2A);
-constexpr SkColor kCardBorder = SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF);
 constexpr SkColor kButtonBg = SkColorSetARGB(0xCC, 0x28, 0x2C, 0x34);
 constexpr SkColor kButtonHoverBg = SkColorSetARGB(0xFF, 0x38, 0x3C, 0x46);
 constexpr SkColor kButtonIconColor = SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5);
@@ -39,37 +40,42 @@ constexpr SkColor kButtonIconColor = SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5);
 // Total width reserved for the button column to the right of the card.
 constexpr int kButtonColumnWidth = 56;  // kButtonSize + gap
 
-class RoundedBackground : public views::Background {
+// Dims the whole overlay except for a rounded hole where the card sits.  The
+// page is drawn by a contents container beneath this view, so the backdrop
+// must leave that rect alone rather than tinting the preview.
+class BackdropBackground : public views::Background {
  public:
-  RoundedBackground(SkColor fill, SkColor border, int radius)
-      : fill_(fill), border_(border), radius_(radius) {}
+  BackdropBackground(SkColor fill, int radius) : fill_(fill), radius_(radius) {}
+
+  void set_hole(const gfx::Rect& hole) { hole_ = hole; }
 
   void Paint(gfx::Canvas* canvas, views::View* view) const override {
-    const gfx::Rect bounds = view->GetLocalBounds();
-    const float r = static_cast<float>(radius_);
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(fill_);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
 
-    cc::PaintFlags fill_flags;
-    fill_flags.setAntiAlias(true);
-    fill_flags.setColor(fill_);
-    fill_flags.setStyle(cc::PaintFlags::kFill_Style);
-    canvas->DrawRoundRect(bounds, r, fill_flags);
-
-    if (SkColorGetA(border_) > 0) {
-      cc::PaintFlags border_flags;
-      border_flags.setAntiAlias(true);
-      border_flags.setColor(border_);
-      border_flags.setStyle(cc::PaintFlags::kStroke_Style);
-      border_flags.setStrokeWidth(1.0f);
-      gfx::RectF br(bounds);
-      br.Inset(0.5f);
-      canvas->DrawRoundRect(br, r, border_flags);
+    if (hole_.IsEmpty()) {
+      canvas->DrawRect(view->GetLocalBounds(), flags);
+      return;
     }
+
+    // Clip the card's rounded rect out of the dim rather than painting around
+    // it, so the page beneath shows through at full contrast with a clean
+    // anti-aliased edge.
+    const float r = static_cast<float>(radius_);
+    canvas->Save();
+    canvas->sk_canvas()->clipRRect(
+        SkRRect::MakeRectXY(gfx::RectToSkRect(hole_), r, r),
+        SkClipOp::kDifference, /*do_anti_alias=*/true);
+    canvas->DrawRect(view->GetLocalBounds(), flags);
+    canvas->Restore();
   }
 
  private:
   SkColor fill_;
-  SkColor border_;
   int radius_;
+  gfx::Rect hole_;
 };
 
 class HoverImageButton : public views::ImageButton {
@@ -106,18 +112,23 @@ END_METADATA
 
 AvoraLinkPreviewView::AvoraLinkPreviewView(
     BrowserWindowInterface* browser,
-    LinkPreviewOpenCallback open_cb,
+    LinkPreviewPromoteCallback promote_cb,
     LinkPreviewDismissCallback dismiss_cb)
     : browser_(browser),
-      open_cb_(std::move(open_cb)),
+      promote_cb_(std::move(promote_cb)),
       dismiss_cb_(std::move(dismiss_cb)) {
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
 
+  // Needed for DoesIntersectRect() below, which is what lets events over the
+  // card reach the contents container hosting the page.
+  SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
+
   auto backdrop = std::make_unique<views::View>();
   backdrop->SetPaintToLayer();
   backdrop->layer()->SetFillsBoundsOpaquely(false);
-  backdrop->SetBackground(views::CreateSolidBackground(kBackdropColor));
+  backdrop->SetBackground(
+      std::make_unique<BackdropBackground>(kBackdropColor, kCardCornerRadius));
   backdrop->SetCanProcessEventsWithinSubtree(false);
   backdrop_ = AddChildView(std::move(backdrop));
 
@@ -129,13 +140,7 @@ AvoraLinkPreviewView::AvoraLinkPreviewView(
   BuildUI();
 }
 
-AvoraLinkPreviewView::~AvoraLinkPreviewView() {
-  // The preview outlives this view whenever the window closes before its tabs
-  // do, so hand it back with no delegate rather than a dangling one.
-  if (attached_preview_) {
-    attached_preview_->SetDelegate(nullptr);
-  }
-}
+AvoraLinkPreviewView::~AvoraLinkPreviewView() = default;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -154,7 +159,8 @@ void AvoraLinkPreviewView::AttachPreview(content::WebContents* host_tab,
                        : base::WeakPtr<content::WebContents>();
   attached_preview_ = preview;
   previewed_url_ = url;
-  preview->SetDelegate(this);
+  // No SetDelegate(): the preview is a tab, so the browser is already its
+  // delegate and must stay that way.
   content::WebContentsObserver::Observe(preview);
 
   // Make visible and lay out BEFORE attaching the WebContents so the WebView
@@ -165,25 +171,44 @@ void AvoraLinkPreviewView::AttachPreview(content::WebContents* host_tab,
     card_->DeprecatedLayoutImmediately();
   }
 
-  if (web_view_) {
-    web_view_->SetWebContents(preview);
-  }
+  // The page is mounted by the embedder into the contents container at
+  // card_bounds(); nothing is attached here.  Visibility is still set here,
+  // because the preview is not yet the tab strip's foreground tab at this
+  // point -- the embedder activates it immediately after.
   preview->WasShown();
 
-  RequestFocus();
+  if (card_bounds_changed_) {
+    card_bounds_changed_.Run();
+  }
+}
+
+gfx::Rect AvoraLinkPreviewView::card_bounds() const {
+  return card_ ? card_->bounds() : gfx::Rect();
+}
+
+// static
+gfx::RoundedCornersF AvoraLinkPreviewView::card_radii() {
+  return gfx::RoundedCornersF(kCardCornerRadius);
+}
+
+bool AvoraLinkPreviewView::DoesIntersectRect(const views::View* target,
+                                             const gfx::Rect& rect) const {
+  // Let events over the card fall through to the contents container below,
+  // which is where the page actually lives.  The buttons sit outside the
+  // card's rect, so they keep receiving events normally.
+  if (target == this && card_ && card_->bounds().Contains(rect)) {
+    return false;
+  }
+  return views::ViewTargeterDelegate::DoesIntersectRect(target, rect);
 }
 
 void AvoraLinkPreviewView::DetachPreview() {
   SetVisible(false);
-  if (web_view_) {
-    web_view_->SetWebContents(nullptr);
-  }
-  if (attached_preview_) {
-    attached_preview_->SetDelegate(nullptr);
-    if (!attached_preview_->IsBeingDestroyed()) {
-      // Park it the way a background tab is parked: alive, but not painting.
-      attached_preview_->WasHidden();
-    }
+  // The page was never attached here, so there is nothing to release: the
+  // embedder unmounts it from the contents container.
+  if (attached_preview_ && !attached_preview_->IsBeingDestroyed()) {
+    // Back to being an ordinary background tab: alive, but not painting.
+    attached_preview_->WasHidden();
   }
   content::WebContentsObserver::Observe(nullptr);
   attached_preview_ = nullptr;
@@ -242,26 +267,10 @@ void AvoraLinkPreviewView::OnBoundsChanged(
   LayoutCard();
 }
 
-// ── WebContentsDelegate ─────────────────────────────────────────────────────
-
-content::WebContents* AvoraLinkPreviewView::AddNewContents(
-    content::WebContents* source,
-    std::unique_ptr<content::WebContents> new_contents,
-    const GURL& target_url,
-    WindowOpenDisposition disposition,
-    const blink::mojom::WindowFeatures& window_features,
-    bool user_gesture,
-    bool* was_blocked) {
-  if (open_cb_ && target_url.is_valid()) {
-    open_cb_.Run(target_url);
-  }
-  return nullptr;
-}
-
 // ── WebContentsObserver ─────────────────────────────────────────────────────
 
 void AvoraLinkPreviewView::WebContentsDestroyed() {
-  // The host tab took the preview down with it.  Drop the pointer first so the
+  // The preview tab was closed underneath us.  Drop the pointer first so the
   // detach path does not touch a half-destroyed WebContents.
   attached_preview_ = nullptr;
   DetachPreview();
@@ -270,25 +279,13 @@ void AvoraLinkPreviewView::WebContentsDestroyed() {
 // ── Private helpers ─────────────────────────────────────────────────────────
 
 void AvoraLinkPreviewView::BuildUI() {
+  // Geometry anchor only.  The page is hosted by MultiContentsView's
+  // secondary contents container, positioned at these bounds, which draws the
+  // page and its rounded corners itself; anything painted here would cover
+  // it.  Kept as a view so the buttons and the backdrop's hole have one
+  // source of truth for the card's rect.
   auto card = std::make_unique<views::View>();
-  card->SetPaintToLayer();
-  card->layer()->SetFillsBoundsOpaquely(false);
-  card->layer()->SetRoundedCornerRadius(
-      gfx::RoundedCornersF(kCardCornerRadius));
-
-  card->SetBackground(std::make_unique<RoundedBackground>(
-      kCardBg, kCardBorder, kCardCornerRadius));
-
-  card->SetLayoutManager(std::make_unique<views::FillLayout>());
-
-  Profile* profile = browser_->GetProfile();
-  auto wv = std::make_unique<views::WebView>(profile);
-  wv->SetPaintToLayer();
-  wv->layer()->SetFillsBoundsOpaquely(false);
-  wv->layer()->SetRoundedCornerRadius(
-      gfx::RoundedCornersF(kCardCornerRadius));
-  web_view_ = card->AddChildView(std::move(wv));
-
+  card->SetCanProcessEventsWithinSubtree(false);
   card_ = AddChildView(std::move(card));
 
   // Buttons live to the right of the card, completely outside the WebView
@@ -320,9 +317,9 @@ void AvoraLinkPreviewView::BuildUI() {
   open_btn->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   open_btn->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   open_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
-  open_btn->SetAccessibleName(u"Open in new tab");
+  open_btn->SetAccessibleName(u"Open in a tab");
   open_btn->SetCallback(base::BindRepeating(
-      &AvoraLinkPreviewView::OnOpenInNewTabClicked,
+      &AvoraLinkPreviewView::OnPromoteToTabClicked,
       weak_factory_.GetWeakPtr()));
   open_tab_button_ = AddChildView(std::move(open_btn));
 }
@@ -336,6 +333,8 @@ void AvoraLinkPreviewView::LayoutCard() {
   if (host.IsEmpty()) {
     return;
   }
+
+  const gfx::Rect previous_card = card_->bounds();
 
   if (backdrop_) {
     backdrop_->SetBoundsRect(gfx::Rect(host));
@@ -375,6 +374,17 @@ void AvoraLinkPreviewView::LayoutCard() {
         gfx::Rect(btn_x, btn_y + kButtonSize + kButtonSpacing,
                    kButtonSize, kButtonSize));
   }
+
+  // Punch the card out of the backdrop so the page beneath shows through
+  // undimmed, and tell the embedder where to put the contents container.
+  if (backdrop_) {
+    static_cast<BackdropBackground*>(backdrop_->GetBackground())
+        ->set_hole(card_->bounds());
+    backdrop_->SchedulePaint();
+  }
+  if (card_->bounds() != previous_card && card_bounds_changed_) {
+    card_bounds_changed_.Run();
+  }
 }
 
 void AvoraLinkPreviewView::OnCloseClicked() {
@@ -383,13 +393,14 @@ void AvoraLinkPreviewView::OnCloseClicked() {
   }
 }
 
-void AvoraLinkPreviewView::OnOpenInNewTabClicked() {
-  GURL url = previewed_url_;
-  if (dismiss_cb_) {
-    dismiss_cb_.Run();
-  }
-  if (open_cb_ && url.is_valid()) {
-    open_cb_.Run(url);
+void AvoraLinkPreviewView::OnPromoteToTabClicked() {
+  // Deliberately no dismiss_cb_ here: dismissing closes the preview tab, and
+  // the whole point of expanding is that the page survives the gesture with
+  // everything the user typed, scrolled or loaded still in place.  The
+  // promotion path detaches this overlay itself as the preview becomes the
+  // active tab.
+  if (promote_cb_) {
+    promote_cb_.Run();
   }
 }
 

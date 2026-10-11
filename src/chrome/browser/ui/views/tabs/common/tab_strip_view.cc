@@ -50,6 +50,7 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/layout_manager_base.h"
 #include "ui/views/layout/layout_types.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/canvas.h"
@@ -103,6 +104,102 @@ bool IsVerticalOrientation(const TabCollectionNode* collection_node) {
   return collection_node &&
          collection_node->orientation() == TabStripOrientation::kVertical;
 }
+
+
+// Avora: lays out the side nav as one continuous scrolling surface.
+//
+// Every section sits in here alongside the daily tab list, inside the
+// unpinned ScrollView's contents, so the whole nav scrolls together instead
+// of the tab list scrolling underneath a fixed header.  Chromium's own
+// arrangement -- sections above the scroll view, only tabs inside it -- is
+// what made the nav scroll in two pieces.
+//
+// Heights here are natural, never clamped to the viewport: this view is
+// scroll contents, so it is meant to be taller than what is on screen.  That
+// overflow is precisely what the ScrollView scrolls, and clamping it to fit
+// is what makes a list stop scrolling while still running off the bottom of
+// the window.
+class AvoraSideNavContentsLayout : public views::LayoutManagerBase {
+ public:
+  explicit AvoraSideNavContentsLayout(TabStripView* strip) : strip_(strip) {}
+  AvoraSideNavContentsLayout(const AvoraSideNavContentsLayout&) = delete;
+  AvoraSideNavContentsLayout& operator=(const AvoraSideNavContentsLayout&) =
+      delete;
+  ~AvoraSideNavContentsLayout() override = default;
+
+ protected:
+  views::ProposedLayout CalculateProposedLayout(
+      const views::SizeBounds& size_bounds) const override {
+    views::ProposedLayout layouts;
+    // ScrollView asks for a preferred size before it has a viewport width to
+    // offer; fall back to the width we were last laid out at so the sections
+    // can still measure themselves against something real.
+    const int width = size_bounds.width().is_bounded()
+                          ? size_bounds.width().value()
+                          : host_view()->width();
+    if (!strip_ || width <= 0) {
+      return layouts;
+    }
+    // Deliberately unbounded vertically -- see the class comment.
+    const views::SizeBounds child_bounds(width, views::SizeBound());
+
+    constexpr int kSectionGap = 8;
+    const int horizontal_padding =
+        GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
+
+    int y = 0;
+    auto stack = [&](views::View* view, int gap_before, int gap_after) {
+      if (!view) {
+        return;
+      }
+      if (view->GetVisible()) {
+        y += gap_before;
+      }
+      const int height = view->GetPreferredSize(child_bounds).height();
+      layouts.child_layouts.emplace_back(view, view->GetVisible(),
+                                         gfx::Rect(0, y, width, height));
+      if (view->GetVisible() && height > 0) {
+        y += height + gap_after;
+      }
+    };
+
+    // Order is [Favorites] -> [Live Folders] -> [Pinned] -> [Imported] ->
+    // [Space label] -> [New tab] -> [Daily], matching what the tab strip
+    // laid out before these views moved in here.
+    stack(strip_->GetFavoritesView(), 0, kSectionGap);
+    stack(strip_->GetLiveFoldersView(), 0, 0);
+    stack(strip_->GetPinnedSectionView(), 0, 0);
+    stack(strip_->GetImportedSectionView(), 0, 0);
+
+    if (views::View* separator = strip_->GetPinnedSeparator()) {
+      y += kSectionGap;
+      const gfx::Rect separator_bounds(
+          horizontal_padding, y, width - 2 * horizontal_padding,
+          separator->GetPreferredSize().height());
+      layouts.child_layouts.emplace_back(separator, true, separator_bounds);
+      y += separator_bounds.height() + kSectionGap;
+    }
+
+    stack(strip_->GetSpaceNameView(), kSectionGap, 0);
+    stack(strip_->GetNewTabButtonView(), 0, 0);
+
+    // The daily tab list closes out the surface.
+    if (views::View* container = strip_->GetUnpinnedTabsContainer()) {
+      const int height = container->GetPreferredSize(child_bounds).height();
+      layouts.child_layouts.emplace_back(container, container->GetVisible(),
+                                         gfx::Rect(0, y, width, height));
+      if (container->GetVisible()) {
+        y += height;
+      }
+    }
+
+    layouts.host_size = gfx::Size(width, y);
+    return layouts;
+  }
+
+ private:
+  raw_ptr<TabStripView> strip_;
+};
 
 }  // namespace
 
@@ -247,6 +344,16 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
   unpinned_tabs_scroll_view_ = AddChildView(std::make_unique<views::ScrollView>(
       views::ScrollView::ScrollWithLayers::kEnabled));
   SetScrollViewProperties(unpinned_tabs_scroll_view_);
+
+  if (IsVerticalOrientation(collection_node_)) {
+    // Avora: one scrolling surface for the whole side nav.  Created up front
+    // so the sections have somewhere to land no matter whether SetBrowser()
+    // or the collection's first container arrives first.
+    side_nav_contents_ = unpinned_tabs_scroll_view_->SetContents(
+        std::make_unique<views::View>());
+    side_nav_contents_->SetLayoutManager(
+        std::make_unique<AvoraSideNavContentsLayout>(this));
+  }
 
   if (!IsVerticalOrientation(collection_node_)) {
     unpinned_tab_scroll_type_recorder_ =
@@ -518,6 +625,14 @@ UnpinnedTabContainerView* TabStripView::GetUnpinnedTabsContainer() const {
   return unpinned_tabs_container_view_;
 }
 
+gfx::Rect TabStripView::GetDailyListBoundsInScreen() const {
+  const views::View* container = unpinned_tabs_container_view_;
+  if (!container || !container->GetVisible()) {
+    return gfx::Rect();
+  }
+  return container->GetBoundsInScreen();
+}
+
 TabScrollButtonContainer* TabStripView::GetScrollButtonContainer() const {
   return tab_scroll_button_container_;
 }
@@ -538,17 +653,17 @@ void TabStripView::SetBrowser(BrowserWindowInterface* browser,
   // can position it at the top.
   auto favorites =
       std::make_unique<avora::AvoraFavoritesView>(browser, window_space_state);
-  favorites_view_ = AddChildViewAt(std::move(favorites), 0);
+  favorites_view_ = static_cast<avora::AvoraFavoritesView*>(
+      AddSideNavView(std::move(favorites)));
 
   // Avora: Live Folders (provider-owned rows such as GitHub pull requests)
   // sit directly under favorites, above the pinned section: their contents
   // change on their own, so they are what the user is most likely to be
   // checking for.  The view collapses to zero height in Spaces that have no
   // Live Folders.
-  live_folders_view_ = AddChildViewAt(
-      std::make_unique<avora::AvoraLiveFoldersView>(browser,
-                                                     window_space_state),
-      1);
+  live_folders_view_ = static_cast<avora::AvoraLiveFoldersView*>(
+      AddSideNavView(std::make_unique<avora::AvoraLiveFoldersView>(
+          browser, window_space_state)));
 
   // Avora: Hide the native Chromium pinned tab container. Standalone
   // pinned tabs are rendered inside AvoraPinnedSectionView instead.
@@ -559,25 +674,25 @@ void TabStripView::SetBrowser(BrowserWindowInterface* browser,
   // Create the pinned section view with folder support.
   auto pinned_section = std::make_unique<avora::AvoraPinnedSectionView>(
       browser, window_space_state);
-  pinned_section_view_ = AddChildViewAt(std::move(pinned_section), 2);
+  pinned_section_view_ = static_cast<avora::AvoraPinnedSectionView*>(
+      AddSideNavView(std::move(pinned_section)));
 
   // Avora: Imported bookmarks from external browsers, below pinned.
   // Collapsed by default; zero height when the active Space has no imports.
-  imported_section_view_ = AddChildViewAt(
-      std::make_unique<avora::AvoraImportedSectionView>(browser,
-                                                         window_space_state),
-      3);
+  imported_section_view_ = static_cast<avora::AvoraImportedSectionView*>(
+      AddSideNavView(std::make_unique<avora::AvoraImportedSectionView>(
+          browser, window_space_state)));
 
   // Fading separator between imported/pinned section and daily section.
-  pinned_separator_ = AddChildViewAt(std::make_unique<FadingSeparator>(), 4);
+  pinned_separator_ = static_cast<views::Separator*>(
+      AddSideNavView(std::make_unique<FadingSeparator>()));
 
   // Avora: the active Space's name, below favorites.  AvoraSpaceLabelView
   // reads the active Space from WindowSpaceState and refreshes itself when it
   // changes or when a Space is renamed.
-  space_name_view_ = AddChildViewAt(
+  space_name_view_ = AddSideNavView(
       std::make_unique<avora::AvoraSpaceLabelView>(browser,
-                                                    window_space_state),
-      5);
+                                                    window_space_state));
 
   // Avora: scope the daily tab list to the active Space.  Created last so the
   // containers it filters already exist.
@@ -608,7 +723,16 @@ void TabStripView::ShowDragGhost(const gfx::Point& screen_point,
     label->SetEnabledColor(SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5));
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetElideBehavior(gfx::ELIDE_TAIL);
-    ghost->AddChildView(std::move(label));
+    drag_ghost_label_ = ghost->AddChildView(std::move(label));
+
+    // The ghost positions itself, in SetBounds() below, so it must sit outside
+    // whatever layout its parent runs.  The root view in particular fills its
+    // children to the whole window (RootView calls SetUseDefaultFillLayout),
+    // which would stretch this translucent card with the tab title in it over
+    // the entire browser on the next layout pass -- and then snap it back on
+    // the following mouse move, reading as a flicker that is really the two
+    // sizings taking turns.
+    ghost->SetProperty(views::kViewIgnoredByLayoutKey, true);
 
     // Add the ghost to the widget's root view so it paints above
     // everything and is not clipped by any scroll view.
@@ -619,6 +743,12 @@ void TabStripView::ShowDragGhost(const gfx::Point& screen_point,
     } else {
       drag_ghost_view_ = AddChildView(std::move(ghost));
     }
+  }
+
+  // The view is reused across drags, so the title has to be restated; only the
+  // first drag of a session would otherwise be labelled correctly.
+  if (drag_ghost_label_) {
+    drag_ghost_label_->SetText(title);
   }
 
   // Position the ghost in screen coordinates converted to the root view.
@@ -707,11 +837,24 @@ bool TabStripView::IsPositionInWindowCaption(const gfx::Point& point) {
   return true;
 }
 
+views::View* TabStripView::AddSideNavView(std::unique_ptr<views::View> view) {
+  if (side_nav_contents_) {
+    return side_nav_contents_->AddChildView(std::move(view));
+  }
+  return AddChildView(std::move(view));
+}
+
 views::View* TabStripView::AddScrollViewContents(
     std::unique_ptr<views::View> view) {
   if (auto* container =
           views::AsViewClass<UnpinnedTabContainerView>(view.get())) {
     unpinned_tabs_container_view_ = container;
+    // Avora: the daily list is one section of the side nav surface, not the
+    // whole of the scroll view's contents.  SetContents() here would throw
+    // away every section already in there.
+    if (side_nav_contents_) {
+      return side_nav_contents_->AddChildView(std::move(view));
+    }
     return unpinned_tabs_scroll_view_->SetContents(std::move(view));
   }
   // `view` should only ever be UnpinnedTabContainerView or
@@ -725,6 +868,13 @@ views::View* TabStripView::AddScrollViewContents(
 void TabStripView::RemoveScrollViewContents(views::View* view) {
   if (views::IsViewClass<UnpinnedTabContainerView>(view)) {
     unpinned_tabs_container_view_ = nullptr;
+    if (side_nav_contents_) {
+      // Dropping the returned handle destroys it, which is what
+      // SetContents(nullptr) did for this view before.
+      std::unique_ptr<views::View> removed =
+          side_nav_contents_->RemoveChildViewT(view);
+      return;
+    }
     unpinned_tabs_scroll_view_->SetContents(nullptr);
     return;
   }
