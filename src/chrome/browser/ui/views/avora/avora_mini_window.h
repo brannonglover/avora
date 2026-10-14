@@ -4,205 +4,212 @@
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_MINI_WINDOW_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "chrome/browser/avora/avora_space.h"
-#include "content/public/browser/web_contents_delegate.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
-#include "content/public/browser/web_contents_observer.h"
-#include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/menus/simple_menu_model.h"
-#include "ui/views/controls/textfield/textfield_controller.h"
-#include "ui/views/view.h"
+#include "chrome/browser/avora/avora_window_session_data.h"
+#include "chrome/browser/avora/avora_window_space.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
+class BrowserWindowInterface;
 class Profile;
 
-namespace views {
-class ImageButton;
-class Label;
-class LabelButton;
-class MenuRunner;
-class Textfield;
-class WebView;
-}  // namespace views
+namespace content {
+class WebContents;
+}
 
 namespace avora {
 
-class AvoraToastView;
+// The mini window's geometry.  Big enough to actually read a page in -- a mini
+// window is a page without a tab strip, not a peephole -- and with a floor the
+// window manager enforces, so it cannot be dragged down to a sliver where the
+// toolbar has nowhere to lay itself out.
+inline constexpr int kMiniWindowDefaultWidth = 1400;
+inline constexpr int kMiniWindowDefaultHeight = 1080;
+inline constexpr int kMiniWindowMinWidth = 480;
+inline constexpr int kMiniWindowMinHeight = 400;
 
 // Opens |url| in Avora's mini window, creating the window or reusing the one
 // already open.  This is where links arriving from outside Avora land: a link
 // clicked in Mail or Slack is a glance, not a commitment, so it gets a window
 // of its own instead of a tab in the user's working set.
 //
-// Deliberately does not create a browser window.  A mini window can be the
+// The mini window deliberately does not become a tabbed window.  It can be the
 // only Avora window on screen; a tabbed window is created only if the user
 // commits the link to a Space and none exists to receive it.
 void ShowMiniWindow(Profile* profile, const GURL& url);
 
-// Whether a mini window is currently open.
+// Whether a mini window is currently open.  False from the moment the window
+// is asked to close, so a window still running its unload handlers is never
+// offered up for reuse.
 bool IsMiniWindowShowing();
 
 // Closes the mini window if one is open.  No-op otherwise.
 void CloseMiniWindow();
 
+// The open mini window's browser, or null when none is open (or the open one
+// is already on its way out).
+BrowserWindowInterface* GetMiniWindowBrowser();
+
+// Whether |browser| is a mini window.  Tolerates null.  Reads the marker the
+// mini window publishes on its own window, so it answers for any browser
+// window without this component having to be asked about a specific one.
+bool IsMiniWindow(const BrowserWindowInterface* browser);
+
+// The Space a mini window opened right now would belong to: the Space of the
+// tabbed window the user was last in -- far and away the likeliest destination
+// for the link -- else the profile-wide active Space.
+std::string PreferredMiniWindowSpaceId(Profile* profile);
+
 // The Spaces the mini window offers, in the order it offers them: |preferred|
-// first -- the Space of the window the user was last in, which is far and away
-// the likeliest destination -- then the rest in Space order.  An empty or
-// unknown |preferred| leaves the order untouched.
+// first, then the rest in Space order.  An empty or unknown |preferred| leaves
+// the order untouched.
 std::vector<Space> OrderMiniWindowSpaces(const std::vector<Space>& spaces,
                                          const std::string& preferred);
 
-// Contents of the mini window: a nav row, an address bar, and a Space selector
-// over a single page.
-//
-// The page is an ordinary WebContents that Avora owns outright -- it never
-// enters a TabStripModel -- so this view is its delegate and draws every piece
-// of chrome around it.  Committing the page to a Space does not hand this
-// WebContents over: Spaces have their own storage partitions, and a page
-// loaded in one identity cannot be re-parented into another.  The destination
-// Space opens the URL fresh instead.
-class MiniWindowView : public views::View,
-                       public content::WebContentsDelegate,
-                       public content::WebContentsObserver,
-                       public views::TextfieldController {
-  METADATA_HEADER(MiniWindowView, views::View)
+// The Spaces the open mini window offers, already ordered.  Empty when no mini
+// window is open.
+std::vector<Space> MiniWindowOrderedSpaces();
 
+// Commits the open mini window's page to |space_id|, opening it as a new tab
+// there and closing the mini window.  Creates a tabbed window only when there
+// is none to receive the tab.  No-op when no mini window is open.
+void SendMiniWindowToSpace(const std::string& space_id);
+
+// Marks a browser window as Avora's mini window.  Published by
+// MiniWindowController on its own window's UnownedUserDataHost, which is what
+// lets code holding nothing but a BrowserWindowInterface* recognise one.
+class MiniWindowState {
  public:
-  // Window geometry.  Big enough to actually read a page in -- a mini window
-  // is a page without a tab strip, not a peephole.
-  static constexpr int kDefaultWidth = 1200;
-  static constexpr int kDefaultHeight = 800;
-  static constexpr int kMinWidth = 480;
-  static constexpr int kMinHeight = 400;
+  DECLARE_USER_DATA(MiniWindowState);
 
-  // Toolbar metrics.
-  static constexpr int kToolbarHeight = 48;
-  static constexpr int kToolbarHPadding = 10;
-  static constexpr int kToolbarItemGap = 6;
-  static constexpr int kNavButtonSize = 30;
-  static constexpr int kNavIconSize = 18;
-  static constexpr int kChipHeight = 32;
-  static constexpr int kChipCornerRadius = 10;
-  static constexpr int kSpaceButtonMaxWidth = 160;
-  static constexpr int kSpaceIconSize = 16;
-  static constexpr int kSpaceMenuButtonWidth = 22;
-  static constexpr int kSpaceMenuIconSize = 14;
+  MiniWindowState();
+  ~MiniWindowState();
+};
 
-  MiniWindowView(Profile* profile, const GURL& url);
-  MiniWindowView(const MiniWindowView&) = delete;
-  MiniWindowView& operator=(const MiniWindowView&) = delete;
-  ~MiniWindowView() override;
+// The mini window: a browser window of its own, holding exactly one tab.
+//
+// The page used to be a free-standing WebContents this component owned
+// outright, with no Browser and no TabStripModel behind it.  That cost the
+// mini window everything Chromium keys off window and tab-strip membership.
+// ExtensionTabUtil::GetTabById walks the strips of the windows in
+// WindowControllerList, so chrome.tabs could not resolve the page at all and
+// every extension that round-trips through that API -- password managers above
+// all -- failed inside the mini window even though its content scripts had
+// been injected.  chrome.action.openPopup() failed for the same reason one
+// level up: with no browser window to be the active one, an extension asking
+// to show its popup was told there was no window to show it in, which is how a
+// click on 1Password's locked padlock came to do nothing at all.  It is the
+// same lesson the link preview learned (see LinkPreviewTabState): a page that
+// is not a tab in a window is not a page extensions can work with.
+//
+// Being a real browser window also hands the page a Browser as its
+// WebContentsDelegate, so web-modal dialogs, permission prompts and downloads
+// behave here exactly as they do anywhere else, with nothing hosted by hand.
+//
+// The window is a TYPE_POPUP browser, which is what keeps it out of the way of
+// the rest of Avora: ProfileBrowserCollection::FindTabbedBrowser skips it, so
+// it can never become its own send-to-a-Space target or stand in for the
+// window whose Space the selector offers first.  A popup's tab strip also
+// refuses new tabs once it holds one (see WindowCanOpenTabs), which is what
+// keeps a one-page window one page without any policing here.
+//
+// At most one mini window exists.  A second external link re-points the open
+// one rather than stacking another on screen -- unless the link belongs to a
+// different Space than the open window's identity, in which case the window is
+// replaced, because a tab pinned to one Space's storage partition cannot host
+// another's.
+class MiniWindowController {
+ public:
+  // The open mini window's controller, or null when none is open.
+  static MiniWindowController* Get();
+
+  // Creates the window and points it at |url|.  Check browser() afterwards:
+  // window creation can be refused (profile shutdown, policy), and a
+  // controller without a window is inert.
+  MiniWindowController(Profile* profile, const GURL& url);
+  MiniWindowController(const MiniWindowController&) = delete;
+  MiniWindowController& operator=(const MiniWindowController&) = delete;
+  ~MiniWindowController();
+
+  // The window, or null once it has been asked to close.  Never a window that
+  // is already scheduled for deletion, so a caller cannot navigate or reuse a
+  // window that is on its way out.
+  BrowserWindowInterface* browser() const;
+
+  Profile* profile() const { return profile_; }
+
+  // The Space whose identity this window's tab is pinned to.  Fixed for the
+  // window's lifetime: the tab's storage partition is chosen when the tab is
+  // created and preserved across every navigation it makes afterwards.
+  const std::string& space_id() const { return space_id_; }
+
+  // What the window is showing -- the URL a Space would receive.
+  GURL current_url() const;
+
+  content::WebContents* web_contents() const;
 
   // Points the window at |url|, replacing whatever it was showing.
   void NavigateTo(const GURL& url);
 
-  // What the window is showing now -- the URL a Space would receive.
-  GURL current_url() const;
+  void ShowAndFocus();
 
-  content::WebContents* web_contents_for_testing() { return contents_.get(); }
+  // Opens current_url() as a new tab in |space_id| and closes this window.
+  void SendToSpace(const std::string& space_id);
 
-  // views::View:
-  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+  // Asks the window to close.  The mini window stops being the open one
+  // immediately; the window itself goes away once it has run its unload
+  // handlers, and this controller with it.
+  void Close();
 
-  // views::TextfieldController:
-  bool HandleKeyEvent(views::Textfield* sender,
-                      const ui::KeyEvent& key_event) override;
-
-  // content::WebContentsDelegate:
-  content::WebContents* OpenURLFromTab(
-      content::WebContents* source,
-      const content::OpenURLParams& params,
-      base::OnceCallback<void(content::NavigationHandle&)>
-          navigation_handle_callback) override;
-  content::WebContents* AddNewContents(
-      content::WebContents* source,
-      std::unique_ptr<content::WebContents> new_contents,
-      const GURL& target_url,
-      WindowOpenDisposition disposition,
-      const blink::mojom::WindowFeatures& window_features,
-      bool user_gesture,
-      bool* was_blocked) override;
-  bool HandleKeyboardEvent(
-      content::WebContents* source,
-      const input::NativeWebKeyboardEvent& event) override;
-  void NavigationStateChanged(content::WebContents* source,
-                              content::InvalidateTypes changed_flags) override;
-  void LoadingStateChanged(content::WebContents* source,
-                           bool should_show_loading_ui) override;
-  void CloseContents(content::WebContents* source) override;
-
-  // content::WebContentsObserver:
-  void DidStartLoading() override;
-  void DidStopLoading() override;
-  void TitleWasSet(content::NavigationEntry* entry) override;
+  // Transitional, for the web-modal browser tests written against the
+  // pre-Browser mini window.  Checkpoint 5 retires both.
+  content::WebContents* web_contents_for_testing() { return web_contents(); }
 
  private:
-  void BuildUI();
+  void OnBrowserDidClose(BrowserWindowInterface* browser);
 
-  // Nav row.
-  void OnBackPressed();
-  void OnForwardPressed();
-  void OnReloadPressed();
-  void UpdateNavButtons();
-
-  // Address bar.  The URL shows as a label until clicked, then becomes a
-  // textfield -- the same two-state chip the sidebar uses.
-  void BeginEditingAddress();
-  void EndEditingAddress();
-  void UpdateAddress();
-  void UpdateWindowTitle();
-
-  // Copies the page's URL and confirms with the same toast the main window
-  // shows, so Cmd-Shift-C means one thing across Avora.
-  void CopyUrlToClipboard();
-  void ShowToast(const std::u16string& message);
-
-  // Space selector.  The picker commits to the Space it is showing; the
-  // dropdown beside it is how the user aims somewhere else.
-  void OnSpaceButtonPressed();
-  void ShowSpaceMenu();
-  void UpdateSpaceButton();
-  // The Space a click would commit to when the user does not pick one: the
-  // Space of the most recently active window, else the global active Space.
-  std::string PreferredSpaceId() const;
-  std::vector<Space> OrderedSpaces() const;
-  // Opens current_url() as a new daily tab in |space_id| and closes this
-  // window.  Creates a tabbed window only when there is none to receive it.
-  void SendToSpace(const std::string& space_id);
+  // Drops everything published on the window's host and stops observing it.
+  // Called while the window is still alive, so no registration outlives the
+  // host it was made on.
+  void Detach();
 
   const raw_ptr<Profile> profile_;
 
-  // The page.  Owned here rather than by the WebView so the mini window is
-  // unambiguously its owner, matching how the link preview holds its own.
-  std::unique_ptr<content::WebContents> contents_;
+  // Cleared the moment the window is closing -- before the window is actually
+  // gone -- so nothing here can hand out a browser that is mid-teardown.
+  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
 
-  raw_ptr<views::WebView> web_view_ = nullptr;
-  raw_ptr<views::ImageButton> back_button_ = nullptr;
-  raw_ptr<views::ImageButton> forward_button_ = nullptr;
-  raw_ptr<views::ImageButton> reload_button_ = nullptr;
-  raw_ptr<views::View> address_chip_ = nullptr;
-  raw_ptr<views::Label> address_label_ = nullptr;
-  raw_ptr<views::Textfield> address_field_ = nullptr;
-  raw_ptr<AvoraToastView> toast_ = nullptr;
-  raw_ptr<views::View> space_chip_ = nullptr;
-  raw_ptr<views::LabelButton> space_button_ = nullptr;
-  raw_ptr<views::ImageButton> space_menu_button_ = nullptr;
+  // The Space identity of the window, and the two objects that publish it.
+  // Both have to be in place before the first navigation: a new tab's storage
+  // partition is resolved from AvoraWindowSessionData (see
+  // GetSiteInstanceForNewAvoraTab), so a tab created before this is published
+  // lands in whichever Space happened to be active globally.
+  std::string space_id_;
+  std::unique_ptr<WindowSpaceState> space_state_;
+  std::optional<ui::ScopedUnownedUserData<WindowSpaceState>> space_state_holder_;
+  AvoraWindowSessionData session_data_;
+  std::optional<ui::ScopedUnownedUserData<AvoraWindowSessionData>>
+      session_data_holder_;
+  MiniWindowState mini_window_state_;
+  std::optional<ui::ScopedUnownedUserData<MiniWindowState>>
+      mini_window_state_holder_;
 
-  std::unique_ptr<ui::SimpleMenuModel> space_menu_model_;
-  std::unique_ptr<ui::SimpleMenuModel::Delegate> space_menu_delegate_;
-  std::unique_ptr<views::MenuRunner> space_menu_runner_;
+  base::CallbackListSubscription browser_close_subscription_;
 
-  // Sends key events the page did not consume back through the focus manager,
-  // which is what lets a window accelerator fire while the page has focus.
-  views::UnhandledKeyboardEventHandler unhandled_key_handler_;
-
-  base::WeakPtrFactory<MiniWindowView> weak_factory_{this};
+  bool closing_ = false;
 };
+
+// Transitional alias and accessor for the browser tests written against the
+// pre-Browser mini window, which reached the page through the contents view.
+// Checkpoint 5 retires both along with those tests' workaround.
+using MiniWindowView = MiniWindowController;
+MiniWindowView* GetMiniWindowViewForTesting();
 
 }  // namespace avora
 

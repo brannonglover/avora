@@ -184,6 +184,14 @@ struct BrowserWindowCreateParams {
   // same Space the user was in when the session ended.
   std::string avora_active_space_id;
 
+  // Avora: this window is the mini window -- the one-page window external
+  // links land in (see avora::ShowMiniWindow).  Read during BrowserView
+  // construction, which is why it travels in the create params rather than
+  // being published on the window afterwards: the mini window builds its own
+  // chrome in place of the standard popup location bar, and that decision is
+  // made while the view is being assembled.
+  bool avora_mini_window = false;
+
 #if BUILDFLAG(IS_CHROMEOS)
   // If set, the browser should be created on the display given by
   // `display_id`.

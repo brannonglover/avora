@@ -201,6 +201,8 @@
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_view.h"
 #include "chrome/browser/ui/views/avora/avora_loading_bar_view.h"
+#include "chrome/browser/ui/views/avora/avora_mini_extensions_container.h"
+#include "chrome/browser/ui/views/avora/avora_mini_toolbar_view.h"
 #include "chrome/browser/ui/views/avora/avora_toast_view.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
@@ -1000,6 +1002,38 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   toolbar_ = top_container_->AddChildView(
       std::make_unique<ToolbarView>(browser_.get(), this));
 
+  // Avora: the mini window carries its own chrome -- nav row, address chip and
+  // Space selector -- in place of the location bar a popup window would
+  // otherwise show.  The standard toolbar stays constructed and simply never
+  // shows: a window without one is a shape much of Chromium does not expect,
+  // and IsToolbarVisible() answers for its existence rather than its
+  // visibility.
+  if (BrowserInitState::From(&*browser_)->create_params().avora_mini_window) {
+    toolbar_->SetVisible(false);
+    avora_mini_toolbar_ = top_container_->AddChildView(
+        std::make_unique<avora::AvoraMiniToolbarView>(
+            browser_.get(),
+            base::BindRepeating(
+                [](BrowserView* browser_view, const std::u16string& text) {
+                  // Resolved and navigated exactly as the main window's
+                  // address bar resolves and navigates it.
+                  browser_view->NavigateAvoraAddressBar(text,
+                                                        /*new_tab=*/false);
+                },
+                base::Unretained(this))));
+    // Cmd-Shift-C confirms with the same toast the main window shows; every
+    // copy-URL entry point funnels through chrome::CopyURL, which asks the
+    // browser view for it.
+    avora_toast_ = AddChildView(std::make_unique<avora::AvoraToastView>());
+
+    // The window's ExtensionsContainer.  A popup window has none -- its
+    // ToolbarView returns before building one -- which is what made
+    // chrome.action.openPopup() refuse to show anything in the mini window.
+    avora_mini_extensions_container_ =
+        std::make_unique<avora::AvoraMiniExtensionsContainer>(
+            browser_.get(), avora_mini_toolbar_);
+  }
+
   top_container_separator_ = top_container_->AddChildView(
       ContentsSeparator::CreateContentsSeparator());
   top_container_separator_->SetProperty(views::kElementIdentifierKey,
@@ -1084,7 +1118,9 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
               base::Unretained(this)),
           base::BindRepeating(
               [](BrowserView* bv, const std::string& extension_id) {
-                bv->ShowAvoraExtensionPopup(extension_id);
+                bv->ShowAvoraExtensionPopup(extension_id,
+                                            /*anchor_override=*/nullptr,
+                                            ShowPopupCallback());
               },
               base::Unretained(this)),
           base::BindRepeating(
@@ -1414,6 +1450,7 @@ BrowserView::~BrowserView() {
   avora_link_preview_ = nullptr;
   avora_quick_nav_ = nullptr;
   avora_toast_ = nullptr;
+  avora_mini_toolbar_ = nullptr;
 
   // Disconnect BrowserView's own observer before child views are destroyed.
   if (avora_window_space_state_) {
@@ -5531,6 +5568,7 @@ void BrowserView::AddedToWidget() {
   layout_views.avora_quick_nav = avora_quick_nav_;
   layout_views.avora_link_preview = avora_link_preview_;
   layout_views.avora_toast = avora_toast_;
+  layout_views.avora_mini_toolbar = avora_mini_toolbar_;
   layout_views.avora_loading_bar = avora_loading_bar_;
   // LINT.ThenChange(//chrome/browser/ui/views/frame/layout/browser_view_layout.h:BrowserViewLayoutViews)
 
@@ -6655,45 +6693,66 @@ void BrowserView::UpdateAvoraSidebarURL() {
   avora_sidebar_header_->SetURL(base::UTF8ToUTF16(host));
 }
 
-void BrowserView::ShowAvoraExtensionPopup(const std::string& extension_id) {
+extensions::ExtensionViewHost* BrowserView::ShowAvoraExtensionPopup(
+    const std::string& extension_id,
+    views::View* anchor_override,
+    ShowPopupCallback callback) {
   auto* profile = GetProfile();
   auto* registry = extensions::ExtensionRegistry::Get(profile);
-  if (!registry) return;
+  if (!registry) return nullptr;
   const auto* ext = registry->enabled_extensions().GetByID(extension_id);
-  if (!ext) return;
+  if (!ext) return nullptr;
   auto* action_mgr = extensions::ExtensionActionManager::Get(profile);
-  if (!action_mgr) return;
+  if (!action_mgr) return nullptr;
   auto* action = action_mgr->GetExtensionAction(*ext);
-  if (!action) return;
+  if (!action) return nullptr;
+  // The window's own active tab, which for the mini window is its one page.
+  // Everything downstream -- the popup URL, and the tab the extension sees
+  // itself acting on -- is keyed off this, so a popup opened here can only
+  // ever be about this window's tab.
   auto* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  if (!web_contents) return;
+  if (!web_contents) return nullptr;
   int tab_id = sessions::SessionTabHelper::IdForTab(web_contents).id();
-  if (!action->HasPopup(tab_id)) return;
+  if (!action->HasPopup(tab_id)) return nullptr;
   GURL popup_url = action->GetPopupUrl(tab_id);
 
+  // Hosted against this browser, so the popup's own chrome.tabs and
+  // chrome.windows calls resolve to this window and its Space's partition.
   auto host = extensions::ExtensionViewHostFactory::CreatePopupHost(
       *ext, popup_url, browser());
-  if (!host) return;
+  if (!host) return nullptr;
+  extensions::ExtensionViewHost* const host_ptr = host.get();
 
-  views::View* anchor =
-      avora_sidebar_header_ ? avora_sidebar_header_->manage_button() : nullptr;
-  if (!anchor) return;
+  // |anchor_override| is how the mini window hangs the popup from its own
+  // toolbar; the main window anchors to the sidebar's manage button.
+  views::View* anchor = anchor_override;
+  if (!anchor) {
+    anchor =
+        avora_sidebar_header_ ? avora_sidebar_header_->manage_button() : nullptr;
+  }
+  if (!anchor) return nullptr;
 
   ExtensionPopup::ShowPopup(
       browser(), std::move(host), views::BubbleAnchor(anchor),
       views::BubbleBorder::TOP_LEFT, PopupShowAction::kShow,
-      base::BindOnce([](extensions::ExtensionHost*) {
-        // Activate the popup widget right after it's shown so that it becomes
-        // the active widget in the tree.  This prevents the immediate close
-        // caused by the main browser window being active after the manage
-        // bubble tears down, while still allowing click-outside-to-close to
-        // work normally afterwards.
-        auto* popup = ExtensionPopup::last_popup_for_testing();
-        if (popup && popup->GetWidget()) {
-          popup->GetWidget()->Activate();
-        }
-      }));
+      base::BindOnce(
+          [](ShowPopupCallback callback, extensions::ExtensionHost* host) {
+            // Activate the popup widget right after it's shown so that it
+            // becomes the active widget in the tree.  This prevents the
+            // immediate close caused by the browser window being active after
+            // the anchor's own bubble tears down, while still allowing
+            // click-outside-to-close to work normally afterwards.
+            auto* popup = ExtensionPopup::last_popup_for_testing();
+            if (popup && popup->GetWidget()) {
+              popup->GetWidget()->Activate();
+            }
+            if (callback) {
+              std::move(callback).Run(host);
+            }
+          },
+          std::move(callback)));
+  return host_ptr;
 }
 
 void BrowserView::NavigateAvoraAddressBar(const std::u16string& text,

@@ -45,6 +45,7 @@ BrowserWindowCreateParams BrowserWindowCreateParams::Clone() const {
   clone.focused_tab_group_id = focused_tab_group_id;
   clone.avora_window_guid = avora_window_guid;
   clone.avora_active_space_id = avora_active_space_id;
+  clone.avora_mini_window = avora_mini_window;
 #if BUILDFLAG(IS_CHROMEOS)
   clone.display_id = display_id;
 #endif

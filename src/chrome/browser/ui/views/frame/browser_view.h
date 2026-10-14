@@ -21,6 +21,7 @@
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/avora/avora_window_session_data.h"
+#include "chrome/browser/ui/extensions/extension_popup_types.h"
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/animation/browser_animation_types.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -101,7 +102,13 @@ class TopControlsSlideController;
 class TopControlsSlideControllerTest;
 class AvoraSidebarView;
 class AvoraSpacesBarView;
+namespace extensions {
+class ExtensionViewHost;
+}  // namespace extensions
+
 namespace avora {
+class AvoraMiniExtensionsContainer;
+class AvoraMiniToolbarView;
 class AvoraQuickNavView;
 class AvoraLinkPreviewView;
 class AvoraToastView;
@@ -819,6 +826,21 @@ class BrowserView : public BrowserWindow,
   // Avora transient confirmation toast, upper-right of the content area.
   void ShowAvoraToast(const std::u16string& message);
 
+  // The mini window's chrome, or null for every other kind of window.
+  avora::AvoraMiniToolbarView* avora_mini_toolbar() {
+    return avora_mini_toolbar_;
+  }
+
+  // Shows |extension_id|'s popup for this window's active tab, anchored to
+  // |anchor_override| or, when that is null, to the sidebar's manage button.
+  // Returns the popup's host, or null when there is nothing to show (no such
+  // extension, no action, no popup for this tab, or no anchor).  |callback|
+  // runs when the popup has been shown, after the activation step below.
+  extensions::ExtensionViewHost* ShowAvoraExtensionPopup(
+      const std::string& extension_id,
+      views::View* anchor_override,
+      ShowPopupCallback callback);
+
   // Avora side nav show/hide (CMD+S).  Slides the whole sidebar -- header,
   // tab strip and spaces bar -- out past the leading window edge while the
   // page widens to fill the space, and back again.  Per-window and not
@@ -1370,13 +1392,21 @@ class BrowserView : public BrowserWindow,
   // Traffic lights belong to the sidebar's nav row, so they follow it in and
   // out -- including for a temporary overlay reveal.
   void UpdateAvoraCaptionButtons();
-  void ShowAvoraExtensionPopup(const std::string& extension_id);
 
   // Avora quick-nav overlay (CMD+T / CMD+L).
   raw_ptr<avora::AvoraQuickNavView> avora_quick_nav_ = nullptr;
 
   // Avora confirmation toast ("URL copied").
   raw_ptr<avora::AvoraToastView> avora_toast_ = nullptr;
+
+  // Avora mini window chrome, in place of the standard popup location bar.
+  // Non-null only for the mini window (see avora::ShowMiniWindow).
+  raw_ptr<avora::AvoraMiniToolbarView> avora_mini_toolbar_ = nullptr;
+
+  // The mini window's ExtensionsContainer.  Owned here so it lives exactly as
+  // long as the window it is registered on; non-null only for the mini window.
+  std::unique_ptr<avora::AvoraMiniExtensionsContainer>
+      avora_mini_extensions_container_;
 
   // Avora page-load bar along the top edge of the window.  It replaces the
   // favicon throbber, and follows whichever tab is active.

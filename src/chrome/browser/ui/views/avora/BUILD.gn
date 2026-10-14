@@ -32,6 +32,10 @@ source_set("avora") {
     "avora_loading_bar_view.h",
     "avora_lucide_icon.cc",
     "avora_lucide_icon.h",
+    "avora_mini_extensions_container.cc",
+    "avora_mini_extensions_container.h",
+    "avora_mini_toolbar_view.cc",
+    "avora_mini_toolbar_view.h",
     "avora_mini_window.cc",
     "avora_mini_window.h",
     "avora_live_folders_view.cc",
@@ -71,6 +75,7 @@ source_set("avora") {
     "//components/download/public/common:public",
     "//components/prefs",
     "//components/url_formatter",
+    "//components/web_modal",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/color:color_headers",
     "//chrome/browser/ui/tabs:tab_strip",
@@ -117,7 +122,14 @@ source_set("unit_tests") {
 source_set("browser_tests") {
   testonly = true
 
-  sources = [ "avora_link_preview_browsertest.cc" ]
+  sources = [
+    "avora_link_preview_browsertest.cc",
+    "avora_mini_window_browsertest.cc",
+    "avora_mini_window_extensions_browsertest.cc",
+    "avora_mini_window_identity_browsertest.cc",
+    "avora_mini_window_lifecycle_browsertest.cc",
+    "avora_mini_window_toolbar_browsertest.cc",
+  ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
@@ -125,11 +137,24 @@ source_set("browser_tests") {
     ":avora",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/avora",
+    "//chrome/browser/extensions",
+    "//chrome/browser/sessions:test_support",
+    "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/views/tabs/common",
+    "//components/keep_alive_registry",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
+    "//chrome/test/base:interactive_test_utils",
+    "//components/constrained_window",
+    "//components/sessions",
+    "//components/web_modal",
     "//content/test:test_support",
+    "//extensions:test_support",
+    "//extensions/browser",
+    "//extensions/common",
     "//net:test_support",
     "//testing/gtest",
+    "//ui/views",
   ]
 }

@@ -106,6 +106,10 @@ struct BrowserViewLayoutViews {
   // Avora page-load bar, pinned to the top edge of the window.
   raw_ptr<views::View> avora_loading_bar = nullptr;
 
+  // Avora mini window chrome, laid out where a popup window's location bar
+  // would go.  Non-null only for the mini window.
+  raw_ptr<views::View> avora_mini_toolbar = nullptr;
+
   // LINT.ThenChange(//chrome/browser/ui/views/frame/browser_view.cc:BrowserViewLayoutViews)
 
   // These views are dynamically set.

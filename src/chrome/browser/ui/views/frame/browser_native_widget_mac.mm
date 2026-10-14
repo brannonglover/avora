@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/views/avora/avora_mini_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #import "chrome/browser/ui/cocoa/browser_window_command_handler.h"
 #import "chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.h"
@@ -423,9 +424,16 @@ void BrowserNativeWidgetMac::ValidateUserInterfaceItem(
     case IDC_SHOW_AS_TAB: {
       // Hide this menu option if the window is tabbed or is the devtools
       // window.
+      //
+      // Avora: the mini window is hidden here too.  It is a popup window, so
+      // this option would otherwise offer to turn it into a tab -- but its
+      // page is pinned to one Space's storage partition and a tab cannot be
+      // re-parented into another identity, which is what avora::SendToSpace
+      // and the Space chip exist to do properly.
       result->new_hidden_state =
           browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-          browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS;
+          browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS ||
+          avora::IsMiniWindow(browser);
       break;
     }
     case IDC_ROUTE_MEDIA: {

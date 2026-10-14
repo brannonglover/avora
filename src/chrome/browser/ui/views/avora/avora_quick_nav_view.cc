@@ -778,20 +778,23 @@ void AvoraQuickNavView::LayoutCard() {
   int card_width = std::min(host.width() - 64, kCardMaxWidth);
   int card_x = (host.width() - card_width) / 2;
 
-  int content_height = kCardPaddingTop + kInputHeight + kCardPaddingBottom;
+  const int collapsed_height =
+      kCardPaddingTop + kInputHeight + kCardPaddingBottom;
+
+  int content_height = collapsed_height;
   if (grid_container_ && grid_container_->GetVisible()) {
     int num_rows = static_cast<int>(grid_container_->children().size());
     int list_height = kListTopPadding + num_rows * (kRowHeight + 2);
     content_height += list_height;
   }
 
-  int max_card_height = host.height() - 80;
-  int card_height = std::min(content_height, max_card_height);
-  card_height = std::max(card_height,
-                         kCardPaddingTop + kInputHeight + kCardPaddingBottom);
-
-  int card_y = (host.height() - card_height) * 2 / 5;
+  // Anchor the top edge where the collapsed card sits so the input field stays
+  // put while results grow and shrink the card downward.
+  int card_y = (host.height() - collapsed_height) * 2 / 5;
   card_y = std::max(card_y, 40);
+
+  int max_card_height = std::max(collapsed_height, host.height() - card_y - 40);
+  int card_height = std::min(content_height, max_card_height);
 
   card_->SetBoundsRect(
       gfx::Rect(card_x, card_y, card_width, card_height));
