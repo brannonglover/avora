@@ -33,14 +33,22 @@ devtools_ui_module("style_intelligence") {
     "StackingSnapshot.ts",
     "StyleIntelligenceModel.ts",
     "StyleIntelligencePane.ts",
+    "StyleStudioDom.ts",
+    "StyleStudioPicker.ts",
+    "StyleStudioTarget.ts",
+    "StyleStudioTargeting.ts",
+    "StyleStudioView.ts",
   ]
 
   deps = [
     "../../core/common:bundle",
     "../../core/i18n:bundle",
+    "../../core/platform:bundle",
     "../../core/sdk:bundle",
+    "../../generated",
     "../../models/bindings:bundle",
     "../../models/computed_style:bundle",
+    "../../ui/kit:bundle",
     "../../ui/legacy:bundle",
     "../../ui/lit:bundle",
     "../../ui/visual_logging:bundle",
@@ -94,7 +102,13 @@ devtools_ui_module("unittests") {
     "StackingBoundary.test.ts",
     "StackingChain.test.ts",
     "StackingReasons.test.ts",
+    "StyleStudioPicker.test.ts",
+    "StyleStudioTarget.test.ts",
+    "StyleStudioTargeting.test.ts",
   ]
 
-  deps = [ ":bundle" ]
+  deps = [
+    ":bundle",
+    "../../ui/legacy:bundle",
+  ]
 }

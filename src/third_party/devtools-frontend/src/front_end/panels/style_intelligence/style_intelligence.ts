@@ -18,6 +18,11 @@ import './StackingReasons.js';
 import './StackingSnapshot.js';
 import './StyleIntelligenceModel.js';
 import './StyleIntelligencePane.js';
+import './StyleStudioDom.js';
+import './StyleStudioPicker.js';
+import './StyleStudioTarget.js';
+import './StyleStudioTargeting.js';
+import './StyleStudioView.js';
 
 import * as Diagnostics from './Diagnostics.js';
 import * as ElementSummary from './ElementSummary.js';
@@ -32,6 +37,11 @@ import * as StackingReasons from './StackingReasons.js';
 import * as StackingSnapshot from './StackingSnapshot.js';
 import * as StyleIntelligenceModel from './StyleIntelligenceModel.js';
 import * as StyleIntelligencePane from './StyleIntelligencePane.js';
+import * as StyleStudioDom from './StyleStudioDom.js';
+import * as StyleStudioPicker from './StyleStudioPicker.js';
+import * as StyleStudioTarget from './StyleStudioTarget.js';
+import * as StyleStudioTargeting from './StyleStudioTargeting.js';
+import * as StyleStudioView from './StyleStudioView.js';
 
 export {
   Diagnostics,
@@ -47,4 +57,9 @@ export {
   StackingSnapshot,
   StyleIntelligenceModel,
   StyleIntelligencePane,
+  StyleStudioDom,
+  StyleStudioPicker,
+  StyleStudioTarget,
+  StyleStudioTargeting,
+  StyleStudioView,
 };

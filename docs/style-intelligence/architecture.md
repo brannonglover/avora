@@ -11,7 +11,7 @@ The feature lives in `src/third_party/devtools-frontend/src/front_end/panels/sty
 | Piece | Role |
 | --- | --- |
 | `style_intelligence-meta.ts` | Registers the Elements sidebar view `elements.style-intelligence` (“Intelligence”, order 2, permanent). |
-| `StyleIntelligencePane.ts` | Selected-node tracking, loading states, Highlight / Inspect / Source, and rendering. |
+| `StyleIntelligencePane.ts` | Selected-node tracking, loading states, Highlight / Inspect / Source, and rendering. The pane has two tabs: **Explain** (everything in this document) and **Studio** (see `style-studio.md`). |
 | `StyleIntelligenceModel.ts` | Node-scoped reads from CSSModel and DOMModel. No document snapshot. |
 | `ElementSummary.ts` | Identity, measured geometry, layout statements, directly used custom properties. |
 | `LayoutExplanation.ts` | Structured width, height, X, and Y explanations. |

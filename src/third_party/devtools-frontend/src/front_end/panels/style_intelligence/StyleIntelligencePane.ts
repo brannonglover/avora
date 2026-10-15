@@ -32,6 +32,10 @@ import {captureStackingSnapshot, loadStackingChain} from './StackingChainLoader.
 import {applySnapshot, type SnapshotNodeRecord} from './StackingSnapshot.js';
 import styleIntelligencePaneStyles from './styleIntelligencePane.css.js';
 import {identityForNode, type StyleIntelligenceLoad, StyleIntelligenceModel} from './StyleIntelligenceModel.js';
+import {bindStudioToSelection, observeInspectPicks, selectionForNode} from './StyleStudioDom.js';
+import {StudioPickTracker} from './StyleStudioPicker.js';
+import {StyleStudioTargeting} from './StyleStudioTargeting.js';
+import {renderStudioPanel, type StudioViewInput, type StudioViewOutput} from './StyleStudioView.js';
 
 const UIStrings = {
   /**
@@ -90,12 +94,33 @@ const UIStrings = {
    * @description Accessible name for the element diagram.
    */
   diagramLabel: 'Element nesting diagram',
+  /**
+   * @description Accessible name for the tabs at the top of Style Intelligence.
+   */
+  intelligenceViews: 'Intelligence views',
+  /**
+   * @description Tab that explains the layout of the selected element.
+   */
+  explain: 'Explain',
+  /**
+   * @description Tab for Style Studio, where styling changes are targeted.
+   */
+  studio: 'Studio',
 } as const;
 const str_ = i18n.i18n.registerUIStrings('panels/style_intelligence/StyleIntelligencePane.ts', UIStrings);
 const i18nString = i18n.i18n.getLocalizedString.bind(undefined, str_);
 
 type PanePhase = 'empty'|'loading'|'ready'|'failed'|'unavailable';
+/** Explain is the read-only explanation; Studio is the styling tool. */
+export type PaneTab = 'explain'|'studio';
+const PANE_TABS: readonly PaneTab[] = ['explain', 'studio'];
 type LayeringPhase = 'idle'|'loading'|'ready'|'failed';
+
+/**
+ * The existing Elements inspect mode. Studio's picker drives this action rather
+ * than running an inspect mode of its own.
+ */
+const PICK_ACTION_ID = 'elements.toggle-element-search';
 
 /** Delay before the ancestor walk starts, so fast reselection does not thrash it. */
 const LAYERING_START_DELAY = 120;
@@ -118,6 +143,8 @@ interface ViewInput {
   issues: number;
   layeringPhase: LayeringPhase;
   hasSummary: boolean;
+  tab: PaneTab;
+  studio: StudioViewInput;
 }
 
 interface ViewOutput {
@@ -125,35 +152,82 @@ interface ViewOutput {
   hideHighlight: () => void;
   inspectNode: (nodeId: number) => void;
   revealDeclaration: (declarationId: number) => void;
+  selectTab: (tab: PaneTab) => void;
+  studio: StudioViewOutput;
 }
 
 type View = (input: ViewInput, output: ViewOutput, target: HTMLElement) => void;
 
 export const DEFAULT_VIEW: View = (input, output, target) => {
+  // clang-format off
+  render(html`
+    ${renderTabs(input.tab, output)}
+    <div class="tab-panel" role="tabpanel" id="tab-panel-${input.tab}" aria-labelledby="tab-${input.tab}">
+      ${input.tab === 'studio' ? renderStudioTab(input, output) : renderExplain(input, output)}
+    </div>`, target);
+  // clang-format on
+};
+
+function tabLabel(tab: PaneTab): string {
+  return tab === 'studio' ? i18nString(UIStrings.studio) : i18nString(UIStrings.explain);
+}
+
+/** A WAI-ARIA tablist: arrow keys, Home, and End move between tabs and select them. */
+function renderTabs(selected: PaneTab, output: ViewOutput): TemplateResult {
+  const onKeyDown = (event: KeyboardEvent): void => {
+    const index = PANE_TABS.indexOf(selected);
+    let next: PaneTab|null = null;
+    if (event.key === 'ArrowRight') {
+      next = PANE_TABS[(index + 1) % PANE_TABS.length];
+    } else if (event.key === 'ArrowLeft') {
+      next = PANE_TABS[(index - 1 + PANE_TABS.length) % PANE_TABS.length];
+    } else if (event.key === 'Home') {
+      next = PANE_TABS[0];
+    } else if (event.key === 'End') {
+      next = PANE_TABS[PANE_TABS.length - 1];
+    }
+    if (!next) {
+      return;
+    }
+    event.preventDefault();
+    output.selectTab(next);
+    const list = (event.currentTarget as HTMLElement).parentElement;
+    list?.querySelector<HTMLElement>(`#tab-${next}`)?.focus();
+  };
+  // clang-format off
+  return html`
+    <div class="tabs" role="tablist" aria-label=${i18nString(UIStrings.intelligenceViews)}>
+      ${PANE_TABS.map(tab => html`
+        <button class="tab" role="tab" id="tab-${tab}" aria-controls="tab-panel-${tab}"
+            aria-selected=${tab === selected} tabindex=${tab === selected ? 0 : -1}
+            @click=${() => output.selectTab(tab)} @keydown=${onKeyDown}>${tabLabel(tab)}</button>`)}
+    </div>`;
+  // clang-format on
+}
+
+function renderStudioTab(input: ViewInput, output: ViewOutput): TemplateResult {
+  return renderStudioPanel(input.studio, output.studio);
+}
+
+function renderExplain(input: ViewInput, output: ViewOutput): TemplateResult {
   if (input.phase === 'empty' || !input.identity) {
-    render(
-        html`<div class="style-intelligence empty" jslog=${VisualLogging.pane('style-intelligence')}>
-          ${i18nString(UIStrings.selectAnElement)}
-        </div>`,
-        target);
-    return;
+    return html`<div class="style-intelligence empty" jslog=${VisualLogging.pane('style-intelligence')}>
+      ${i18nString(UIStrings.selectAnElement)}
+    </div>`;
   }
   if (!input.hasSummary) {
     const status = input.phase === 'failed' ? i18nString(UIStrings.stylesFailed) :
         input.phase === 'unavailable'       ? i18nString(UIStrings.stylesUnavailable) :
                                               nothing;
-    render(
-        html`<div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence')}
-            aria-busy=${input.phase === 'loading'}>
-          <div class="identity">${input.identity}</div>
-          ${status ? html`<p class="status">${status}</p>` : nothing}
-        </div>`,
-        target);
-    return;
+    return html`<div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence')}
+        aria-busy=${input.phase === 'loading'}>
+      <div class="identity">${input.identity}</div>
+      ${status ? html`<p class="status">${status}</p>` : nothing}
+    </div>`;
   }
 
   // clang-format off
-  render(html`
+  return html`
     <div class="style-intelligence" jslog=${VisualLogging.pane('style-intelligence').track({resize: true})}
         aria-busy=${input.phase === 'loading'}>
       <header>
@@ -180,9 +254,9 @@ export const DEFAULT_VIEW: View = (input, output, target) => {
               <div class="cell token-use" title=${token.title}>${token.use}</div>`)}
           </div>
         </section>` : nothing}
-    </div>`, target);
+    </div>`;
   // clang-format on
-};
+}
 
 function issueText(count: number): string {
   return count === 1 ? '1 issue' : `${count} issues`;
@@ -198,7 +272,7 @@ function renderPlate(plate: PlateView, output: ViewOutput): TemplateResult {
   const neighborLabel = gap?.neighborLabel ?? null;
   // clang-format off
   return html`
-    <section>
+    <section class="plate-section">
       <div class="plate" role="group" aria-label=${i18nString(UIStrings.diagramLabel)}>
         ${plate.frames.map((frame, index) => renderFrame(frame, index, output))}
         ${gap?.sibling && neighborLabel ? html`
@@ -374,6 +448,11 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #relationshipRequest = 0;
   #domModel: SDK.DOMModel.DOMModel|null = null;
   #applyingSelection = false;
+  #studio = new StyleStudioTargeting(() => this.requestUpdate());
+  #tabSetting = Common.Settings.Settings.instance().createSetting<PaneTab>('style-intelligence-tab', 'explain');
+  #picks = new StudioPickTracker<SDK.DOMModel.DOMNode>(() => this.#studio.fillSelectorFromSelection());
+  /** True only while Studio's own button is starting the picker. */
+  #startingPick = false;
 
   constructor(view: View = DEFAULT_VIEW) {
     super({useShadowDom: true});
@@ -387,6 +466,16 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     UI.Context.Context.instance().addFlavorChangeListener(
         SDK.DOMModel.DOMNode, this.#onSelectedNodeChanged, this);
     this.#onSelectedNodeChanged();
+    bindStudioToSelection(UI.Context.Context.instance(), SDK.DOMModel.DOMNode, selectionForNode, this.#studio);
+    // Registered after the Studio binding, so Studio already follows the picked
+    // node when the pick fills its selector.
+    UI.Context.Context.instance().addFlavorChangeListener(SDK.DOMModel.DOMNode, this.#onSelectionForPick, this);
+    this.#pickAction()?.addEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
+    observeInspectPicks({
+      received: () => this.#picks.pickReceived(),
+      resolved: node => this.#picks.pickResolved(node, UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode)),
+      availabilityChanged: () => this.requestUpdate(),
+    });
   }
 
   static instance(opts: {forceNew: boolean|null} = {forceNew: null}): StyleIntelligencePane {
@@ -454,15 +543,131 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
           issues: factCount(facts).issues,
           layeringPhase: this.#layeringPhase,
           hasSummary: this.#summary !== null,
+          tab: this.#selectedTab(),
+          studio: this.#studioInput(),
         },
         {
           highlightNode: this.#highlightNode,
           hideHighlight: this.#hideHighlight,
           inspectNode: this.#inspectNode,
           revealDeclaration: this.#revealDeclaration,
+          selectTab: this.#selectTab,
+          studio: this.#studioOutput,
         },
         this.contentElement);
     return Promise.resolve();
+  }
+
+  #selectedTab(): PaneTab {
+    const tab = this.#tabSetting.get();
+    return PANE_TABS.includes(tab) ? tab : 'explain';
+  }
+
+  #selectTab = (tab: PaneTab): void => {
+    if (tab === this.#selectedTab()) {
+      return;
+    }
+    // A highlight drawn from one tab must not outlive it.
+    this.#hideHighlight();
+    this.#tabSetting.set(tab);
+    this.requestUpdate();
+  };
+
+  #pickAction(): UI.ActionRegistration.Action|null {
+    const registry = UI.ActionRegistry.ActionRegistry.instance();
+    return registry.hasAction(PICK_ACTION_ID) ? registry.getAction(PICK_ACTION_ID) : null;
+  }
+
+  /**
+   * Toggles the existing Elements picker. A pick becomes the Elements selection
+   * through the normal path, which Studio already follows. In Selector mode, a
+   * pick started here also fills the selector, including a pick of the element
+   * that is already selected (see StudioPickTracker).
+   */
+  #togglePick = async(): Promise<void> => {
+    const action = this.#pickAction();
+    if (!action) {
+      return;
+    }
+    if (action.toggled()) {
+      // Clicking again cancels, exactly like the toolbar button.
+      await action.execute();
+      return;
+    }
+    this.#picks.arm();
+    this.#startingPick = true;
+    try {
+      await action.execute();
+    } finally {
+      this.#startingPick = false;
+    }
+  };
+
+  #onPickToggled = (event: Common.EventTarget.EventTargetEvent<boolean>): void => {
+    if (event.data && !this.#startingPick) {
+      // The toolbar button or the shortcut started this pick, not Studio.
+      this.#picks.disarm();
+    } else if (!event.data) {
+      this.#picks.inspectModeEnded();
+    }
+    this.requestUpdate();
+  };
+
+  #onSelectionForPick(): void {
+    this.#picks.selectionChanged(UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode));
+  }
+
+  /** The picker is usable whenever the action exists and a page target can be inspected. */
+  #canPick(): boolean {
+    return this.#pickAction() !== null &&
+        SDK.TargetManager.TargetManager.instance().models(SDK.OverlayModel.OverlayModel, {scoped: true}).length > 0;
+  }
+
+  /** Always present: with nothing selected, Studio still offers the picker. */
+  #studioInput(): StudioViewInput {
+    const state = this.#studio.state();
+    return {
+      nodeLabel: state.node?.label ?? null,
+      canPick: this.#canPick(),
+      picking: this.#pickAction()?.toggled() ?? false,
+      source: state.source,
+      scope: state.scope,
+      selectorText: state.selectorText,
+      target: this.#studio.target(),
+    };
+  }
+
+  readonly #studioOutput: StudioViewOutput = {
+    setSource: source => this.#studio.setSource(source),
+    setScope: scope => this.#studio.setScope(scope),
+    setSelectorText: text => this.#studio.setSelectorText(text),
+    commitSelector: () => void this.#studio.resolveNow(),
+    highlightTarget: () => this.#highlightStudioTarget(),
+    hideHighlight: () => this.#hideHighlight(),
+    togglePick: () => void this.#togglePick(),
+  };
+
+  /**
+   * Draws the overlay over the Studio target without selecting it. All matches
+   * are drawn by the overlay's own selector highlight, which queries the same
+   * document the matches were resolved in.
+   */
+  #highlightStudioTarget(): void {
+    const target = this.#studio.target();
+    if (target.kind === 'node') {
+      this.#highlightNode(target.nodeId);
+      return;
+    }
+    if (target.kind !== 'matches') {
+      return;
+    }
+    const first = this.#nodeById(target.nodeIds[0]);
+    if (!first) {
+      this.#hideHighlight();
+      return;
+    }
+    this.#highlightedNodeId = null;
+    first.domModel().overlayModel().highlightInOverlay({node: first, selectorList: target.selector}, 'all');
   }
 
   /**

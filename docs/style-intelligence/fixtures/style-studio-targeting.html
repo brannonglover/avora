@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Style Studio targeting fixture</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; }
+  .card { border: 1px solid #999; border-radius: 6px; margin: 8px 0; padding: 8px 12px; }
+  #unique { background: #eef; }
+  .decorated::before { content: '★ '; }
+  iframe { border: 1px dashed #999; height: 90px; width: 320px; }
+</style>
+</head>
+<body>
+  <h1>Style Studio targeting</h1>
+
+  <!-- One element with an id: "#unique" matches exactly one node. -->
+  <div id="unique" class="card">Unique card</div>
+
+  <!-- Three elements sharing a class: ".card" matches four nodes in total. -->
+  <div class="card shared">Shared card A</div>
+  <div class="card shared">Shared card B</div>
+  <div class="card shared decorated">Shared card C (has ::before)</div>
+
+  <p class="lonely">A paragraph that matches no card selector.</p>
+
+  <!-- Same-origin iframe: its document is separate from the main document. -->
+  <iframe id="frame" srcdoc="<p class='in-frame'>Frame paragraph 1</p><p class='in-frame'>Frame paragraph 2</p>"></iframe>
+
+  <!-- Open shadow root: the inner element is unsupported for targeting. -->
+  <div id="host"></div>
+
+  <script>
+    const host = document.getElementById('host');
+    host.attachShadow({mode: 'open'}).innerHTML = '<span class="card inner">Shadow card</span>';
+
+    // Records every DOM mutation and stylesheet count so a verifier can show
+    // that targeting changed nothing in the page.
+    // Clicks that reach the page. Picking in inspect mode must not produce any.
+    window.__studioPageClicks = 0;
+    document.addEventListener('click', () => {
+      window.__studioPageClicks++;
+    }, true);
+
+    window.__studioMutations = 0;
+    window.__studioMutationLog = [];
+    window.__studioSheets = document.styleSheets.length;
+    new MutationObserver(records => {
+      window.__studioMutations += records.length;
+      for (const record of records) {
+        const target = record.target.nodeName + (record.target.id ? '#' + record.target.id : '');
+        window.__studioMutationLog.push(`${performance.now().toFixed(0)}ms ${record.type} ${target} ${record.attributeName ?? ''}`);
+      }
+    }).observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+  </script>
+</body>
+</html>
