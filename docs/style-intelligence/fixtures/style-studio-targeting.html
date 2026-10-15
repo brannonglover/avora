@@ -30,9 +30,62 @@
   <!-- Open shadow root: the inner element is unsupported for targeting. -->
   <div id="host"></div>
 
+  <!-- Lifecycle targets: a place to move cards to, and a nested container for added cards. -->
+  <div id="elsewhere"></div>
+  <section id="deep"><div><div id="deep-leaf"></div></div></section>
+
+  <!--
+    Cross-origin iframe. When this page is served from localhost, the frame is
+    loaded from 127.0.0.1 on the same port: a different site, so an
+    out-of-process iframe. Opened from file://, there is no remote frame.
+  -->
+  <iframe id="remote" title="remote"></iframe>
+
   <script>
     const host = document.getElementById('host');
     host.attachShadow({mode: 'open'}).innerHTML = '<span class="card inner">Shadow card</span>';
+
+    const remote = document.getElementById('remote');
+    if (location.hostname === 'localhost') {
+      remote.src = `http://127.0.0.1:${location.port}/style-studio-remote.html`;
+    } else {
+      remote.remove();
+    }
+
+    // Page-side actions for the lifecycle checks. The verifier calls these only
+    // after its no-mutation checks, since each one changes the page on purpose.
+    window.__studio = {
+      removeUnique() {
+        document.getElementById('unique').remove();
+      },
+      // A visually identical replacement: same markup, a new element.
+      replaceShared() {
+        const old = document.querySelector('.shared');
+        old.replaceWith(old.cloneNode(true));
+      },
+      moveShared() {
+        document.getElementById('elsewhere').append(document.querySelector('.shared'));
+      },
+      addCard() {
+        const card = document.createElement('div');
+        card.className = 'card added';
+        card.textContent = 'Added card';
+        document.getElementById('deep-leaf').append(card);
+      },
+      markActive() {
+        document.querySelector('.lonely').classList.add('active');
+      },
+      softNavigate() {
+        history.pushState({}, '', '#soft');
+        location.hash = 'soft-hash';
+      },
+      removeFrame(id) {
+        document.getElementById(id).remove();
+      },
+      navigateRemote(version) {
+        remote.src = `http://127.0.0.1:${location.port}/style-studio-remote.html?v=${version}`;
+      },
+    };
 
     // Records every DOM mutation and stylesheet count so a verifier can show
     // that targeting changed nothing in the page.

@@ -87,6 +87,20 @@ const UIStrings = {
    */
   noDocument: 'This node has no document, so it cannot be targeted.',
   /**
+   * @description Status when the selected element left the page.
+   */
+  detachedNode: 'The selected element is no longer in the page. It was removed, replaced, or moved. Select it again.',
+  /**
+   * @description Status when the page or frame of the selected element navigated or was closed.
+   */
+  detachedDocument:
+      'The page or frame of the selected element navigated or was closed. Select an element in the current page.',
+  /**
+   * @description Notice when Studio's target changed because the previous target left the page. PH1 is the previous target.
+   * @example {div#card} PH1
+   */
+  previousDetached: 'The previous target, {PH1}, is no longer in the page.',
+  /**
    * @description Status when the selector input is empty.
    */
   enterSelector: 'Enter a CSS selector.',
@@ -132,6 +146,8 @@ const i18nString = i18n.i18n.getLocalizedString.bind(undefined, str_);
 export interface StudioViewInput {
   /** The selected node as Studio names it, including non-element nodes; null when nothing is selected. */
   nodeLabel: string|null;
+  /** The label of a previous target that left the page, announced once Studio follows a new selection. */
+  notice: string|null;
   /** Whether the DevTools element picker is available, and whether it is active. */
   canPick: boolean;
   picking: boolean;
@@ -177,6 +193,12 @@ function studioStatus(target: StudioTarget): StudioStatus {
       return {text: i18nString(UIStrings.noSelection), tone: 'unsupported', highlightable: false};
     case 'unsupported':
       return {text: unsupportedText(target.reason), tone: 'unsupported', highlightable: false};
+    case 'detached':
+      return {
+        text: target.reason === 'node' ? i18nString(UIStrings.detachedNode) : i18nString(UIStrings.detachedDocument),
+        tone: 'error',
+        highlightable: false,
+      };
     case 'empty-selector':
       return {text: i18nString(UIStrings.enterSelector), tone: 'pending', highlightable: false};
     case 'pending':
@@ -289,6 +311,9 @@ function renderStudio(input: StudioViewInput, output: StudioViewOutput): Templat
             </label>
           </div>
         </div>` : nothing}
+      ${input.notice ? html`
+        <p class="studio-notice" role="status">${i18nString(UIStrings.previousDetached, {PH1: input.notice})}</p>` :
+        nothing}
       <p class="studio-status ${status.tone}" role="status" aria-live="polite"
           @mouseenter=${status.highlightable ? () => output.highlightTarget() : nothing}
           @mouseleave=${status.highlightable ? () => output.hideHighlight() : nothing}>

@@ -62,16 +62,40 @@ export type SelectorResolution = {
   nodeIds: number[],
 };
 
+/**
+ * Whether the selected node, and the document it was selected in, are still
+ * part of the inspected page. Node ids are never reused, so a detached node is
+ * reported as detached; it is never resolved to whatever now occupies its place.
+ */
+export interface StudioAttachment {
+  node: boolean;
+  document: boolean;
+}
+
 export interface StudioTargetingState {
   source: StudioSource;
   scope: StudioScope;
   node: StudioNode|null;
+  attachment: StudioAttachment;
+  /**
+   * The label of a target that was detached when the selection moved on, so the
+   * change of target is announced rather than silent. Cleared by the next
+   * explicit action.
+   */
+  previousDetachedLabel: string|null;
   selectorText: string;
   resolution: SelectorResolution;
 }
 
 export type StudioTarget = {
   kind: 'none',
+}|{
+  /**
+   * The selected node was removed, replaced, or moved (`node`), or its document
+   * was replaced or its frame destroyed (`document`).
+   */
+  kind: 'detached',
+  reason: 'node'|'document',
 }|{
   kind: 'unsupported',
   reason: UnsupportedNodeReason,
@@ -120,6 +144,8 @@ export function initialTargetingState(): StudioTargetingState {
     source: 'selected-node',
     scope: 'node',
     node: null,
+    attachment: {node: true, document: true},
+    previousDetachedLabel: null,
     selectorText: '',
     resolution: {kind: 'idle'},
   };
@@ -135,8 +161,16 @@ export function deriveTarget(state: StudioTargetingState): StudioTarget {
   if (!node) {
     return {kind: 'none'};
   }
+  // Without its document nothing about this selection can be resolved: not the
+  // node, and not a selector, which only ever runs in the selection's document.
+  if (!state.attachment.document) {
+    return {kind: 'detached', reason: 'document'};
+  }
 
   if (state.source === 'selected-node') {
+    if (!state.attachment.node) {
+      return {kind: 'detached', reason: 'node'};
+    }
     if (node.unsupported) {
       return {kind: 'unsupported', reason: node.unsupported};
     }
@@ -162,6 +196,9 @@ export function deriveTarget(state: StudioTargetingState): StudioTarget {
   // One-node scope can only ever target the selected node, so an unsupported
   // node is reported before anything about the selector. This is what a pick of
   // an unsupported element shows instead of an unrelated selector status.
+  if (state.scope === 'node' && !state.attachment.node) {
+    return {kind: 'detached', reason: 'node'};
+  }
   if (state.scope === 'node' && node.unsupported) {
     return {kind: 'unsupported', reason: node.unsupported};
   }
@@ -217,7 +254,7 @@ export function deriveTarget(state: StudioTargetingState): StudioTarget {
 
 /** True when the state needs a selector query to derive its target. */
 export function needsResolution(state: StudioTargetingState): boolean {
-  if (state.source !== 'selector' || !state.node?.documentKey) {
+  if (state.source !== 'selector' || !state.node?.documentKey || !state.attachment.document) {
     return false;
   }
   const selector = normalizeSelector(state.selectorText);

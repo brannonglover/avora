@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Style Studio cross-origin frame</title>
+<style>
+  body { font: 13px/1.4 system-ui, sans-serif; margin: 8px; }
+  .remote-card { border: 1px solid #999; margin: 4px 0; padding: 4px 8px; }
+</style>
+</head>
+<body>
+  <!-- Loaded from a different site than the main fixture, so it runs in an out-of-process iframe. -->
+  <div id="remote-target" class="remote-card">Remote card 1</div>
+  <div class="remote-card">Remote card 2</div>
+  <script>
+    // The version query lets the verifier navigate this frame to a new document.
+    const version = new URLSearchParams(location.search).get('v');
+    if (version === '2') {
+      document.body.insertAdjacentHTML('beforeend', '<div class="remote-card">Remote card 3 (v2)</div>');
+    }
+  </script>
+</body>
+</html>

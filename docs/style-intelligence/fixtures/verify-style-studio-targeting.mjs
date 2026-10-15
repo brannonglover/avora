@@ -1,13 +1,17 @@
-// Live verification of Style Studio Checkpoint 1A against a built Avora.
+// Live verification of Style Studio targeting (Checkpoints 1A and 1B) against a
+// built Avora.
 //
-// Launches Avora with DevTools docked, opens style-studio-targeting.html, and
-// drives the real Elements selection and Intelligence pane. Exits non-zero if
-// any check fails. Screenshots and results.json go to <out-dir>.
+// Serves the fixtures over HTTP, so the main page is http://localhost:<port> and
+// its remote frame is http://127.0.0.1:<port>: a different site, so an
+// out-of-process iframe. Launches Avora with DevTools docked and drives the real
+// Elements selection, picker, and Intelligence pane. Exits non-zero if any check
+// fails. Screenshots and results.json go to <out-dir>.
 //
 // Usage (from the repo root, after `npm run build`):
 //   chromium/src/third_party/node/mac_arm64/node-darwin-arm64/bin/node \
 //     docs/style-intelligence/fixtures/verify-style-studio-targeting.mjs <out-dir>
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -18,7 +22,6 @@ const PUPPETEER = path.join(
 const {default: puppeteer} = await import(PUPPETEER);
 
 const binary = path.join(ROOT, 'chromium/src/out/Default/Avora.app/Contents/MacOS/Avora');
-const fixture = path.join(HERE, 'style-studio-targeting.html');
 const outDir = path.resolve(process.argv[2] ?? 'style-studio-verify-out');
 fs.mkdirSync(outDir, {recursive: true});
 const results = [];
@@ -27,6 +30,24 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// A static server for the fixtures directory only.
+const server = http.createServer((request, response) => {
+  const name = path.basename(new URL(request.url, 'http://x').pathname);
+  const file = path.join(HERE, name);
+  if (!name.endsWith('.html') || !fs.existsSync(file)) {
+    response.writeHead(404).end();
+    return;
+  }
+  response.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'});
+  fs.createReadStream(file).pipe(response);
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+// localhost must reach the same server, so listen on it too.
+const port = server.address().port;
+const localServer = http.createServer(server.listeners('request')[0]);
+await new Promise(resolve => localServer.listen(port, 'localhost', resolve));
+const fixtureUrl = `http://localhost:${port}/style-studio-targeting.html`;
 
 const browser = await puppeteer.launch({
   executablePath: binary,
@@ -39,7 +60,7 @@ const browser = await puppeteer.launch({
 
 try {
   const [page] = await browser.pages();
-  await page.goto('file://' + fixture);
+  await page.goto(fixtureUrl);
   const devtoolsTarget = await browser.waitForTarget(t => t.url().startsWith('devtools://'), {timeout: 30000});
   const devtools = await devtoolsTarget.asPage();
   await devtools.waitForFunction(() => document.readyState === 'complete', {timeout: 30000});
@@ -81,6 +102,7 @@ try {
     };
     v.selected = () => v.UI.Context.Context.instance().flavor(v.SDK.DOMModel.DOMNode);
     v.select = async selector => {
+      v.doc = await v.domModel.requestDocument();
       const nodeId = await v.domModel.querySelector(v.doc.id, selector);
       const node = v.domModel.nodeForId(nodeId);
       await (await Common).Revealer.reveal(node);
@@ -437,6 +459,282 @@ try {
     return {hasChain: Boolean(v.root().querySelector('header .identity')), hasPlate: Boolean(v.root().querySelector('.plate'))};
   });
   check('existing Style Intelligence content still renders', r.hasChain && r.hasPlate, JSON.stringify(r));
+  // 11. Target lifecycle (Checkpoint 1B). These steps change the page on purpose,
+  // so they run after the no-mutation checks above.
+  const lifecycle = () => step(async () => {
+    const v = globalThis.__v;
+    const selected = v.selected();
+    const notice = v.root().querySelector('.studio-notice')?.textContent.replace(/\s+/g, ' ').trim() ?? null;
+    return {
+      selectedId: selected?.id ?? null,
+      selectedAttached: selected ? selected.domModel().nodeForId(selected.id) === selected : null,
+      identity: v.root().querySelector('.studio-panel .identity')?.textContent.trim() ?? null,
+      status: v.status(),
+      notice,
+      selector: v.studio()?.querySelector('.studio-selector')?.value ?? null,
+    };
+  });
+  /**
+   * After the selected element leaves the page, Studio either reports the target
+   * as detached, or it follows a new Elements selection and says the previous
+   * target is gone. It never presents the old node as a valid target.
+   */
+  const honest = (before, after) => {
+    const detached = /no longer in the page|navigated or was closed/.test(after.status ?? '');
+    const movedOn = after.selectedId !== before.selectedId && after.selectedAttached === true &&
+        /previous target/.test(after.notice ?? '');
+    return {ok: detached || movedOn, how: detached ? 'reported detached' : movedOn ? 'followed new selection with notice' : 'neither'};
+  };
+  const studioSource = index => step(async (i) => {
+    const v = globalThis.__v;
+    await v.openTab('studio');
+    v.radio('studio-source', i);
+    await v.settle();
+  }, index);
+
+  await studioSource(0);
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('#unique');
+    await v.settle();
+  });
+  let before = await lifecycle();
+  await page.evaluate(() => window.__studio.removeUnique());
+  await sleep(1200);
+  let after = await lifecycle();
+  let verdict = honest(before, after);
+  check('removing the selected element never leaves it as a valid target', verdict.ok,
+        `${verdict.how} · ${after.identity} · ${after.status} · ${after.notice}`);
+
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('.shared');
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.replaceShared());
+  await sleep(1200);
+  after = await lifecycle();
+  verdict = honest(before, after);
+  check('replacing the selected element with an identical one is not treated as the same element', verdict.ok,
+        `${verdict.how} · ${after.identity} · ${after.status} · ${after.notice}`);
+
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('.shared');
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.moveShared());
+  await sleep(1200);
+  after = await lifecycle();
+  verdict = honest(before, after);
+  check('moving the selected element between parents is not followed silently', verdict.ok,
+        `${verdict.how} · ${after.identity} · ${after.status} · ${after.notice}`);
+
+  // Dynamic matches: a card added deep in the page is counted.
+  await studioSource(1);
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('.lonely');
+    await v.settle();
+    v.type('.card');
+    await v.settle();
+    v.radio('studio-scope', 1);
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.addCard());
+  // The new card sits in a subtree DevTools never loaded, so no DOM event
+  // reports it; the background refresh (every 2 s while Studio is shown) does.
+  await sleep(3500);
+  after = await lifecycle();
+  const countOf = status => Number(/^(\d+) matching/.exec(status ?? '')?.[1] ?? NaN);
+  check('matches added without any DOM event are picked up while Studio is shown', countOf(after.status) === countOf(before.status) + 1,
+        `${before.status} → ${after.status}`);
+
+  // A class change Studio may not be told about is picked up when Studio is shown again.
+  await step(async () => {
+    const v = globalThis.__v;
+    v.type('.active');
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.markActive());
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.openTab('explain');
+    await v.openTab('studio');
+    await v.settle();
+  });
+  after = await lifecycle();
+  check('showing Studio again revalidates selector matches', /No elements/.test(before.status ?? '') &&
+        after.status === '1 matching element', `${before.status} → ${after.status}`);
+
+  // Same-document navigation leaves the target alone.
+  await studioSource(0);
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('.lonely');
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.softNavigate());
+  await sleep(1200);
+  after = await lifecycle();
+  check('pushState and hash navigation keep the same target', after.selectedId === before.selectedId &&
+        after.status === before.status && !after.notice, `${before.identity} · ${after.status}`);
+
+  // Picker hygiene.
+  r = await step(async () => {
+    const SI = await import('./panels/style_intelligence/style_intelligence.js');
+    return SI.StyleStudioDom.inspectPickHub().subscriberCount();
+  });
+  check('one pick subscriber after every pick so far', r === 1, `subscribers=${r}`);
+  await studioSource(1);
+  await startStudioPick();
+  await pickAt('.lonely');
+  await step(async () => {
+    const v = globalThis.__v;
+    v.type('.card');
+    await v.settle();
+  });
+  await sleep(3500);
+  after = await lifecycle();
+  check('a completed pick never fills the selector again later', after.selector === '.card', after.selector ?? '');
+  await startStudioPick();
+  await devtools.keyboard.press('Escape');
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('#elsewhere .shared, .shared');
+    await new Promise(res => setTimeout(res, 800));
+  });
+  after = await lifecycle();
+  check('a cancelled pick cannot fill the selector on a later selection', after.selector === '.card', after.selector ?? '');
+
+  // Cross-origin, out-of-process iframe.
+  const remoteTarget = await step(async () => {
+    const v = globalThis.__v;
+    const target = v.SDK.TargetManager.TargetManager.instance().targets().find(
+        t => t.inspectedURL().startsWith('http://127.0.0.1') && t !== v.SDK.TargetManager.TargetManager.instance().primaryPageTarget());
+    v.remoteTarget = target ?? null;
+    return target ? {type: target.type(), url: target.inspectedURL()} : null;
+  });
+  check('the cross-origin iframe runs as its own target (OOPIF)', remoteTarget !== null, JSON.stringify(remoteTarget));
+  if (remoteTarget) {
+    await studioSource(0);
+    r = await step(async () => {
+      const v = globalThis.__v;
+      const model = v.remoteTarget.model(v.SDK.DOMModel.DOMModel);
+      const doc = await model.requestDocument();
+      const nodeId = await model.querySelector(doc.id, '#remote-target');
+      const Common = await import('./core/common/common.js');
+      await Common.Revealer.reveal(model.nodeForId(nodeId));
+      await v.settle();
+      v.radio('studio-source', 1);
+      await v.settle();
+      v.type('.remote-card');
+      await v.settle();
+      v.radio('studio-scope', 1);
+      await v.settle();
+      return {identity: v.identity(), status: v.status(), sameModel: v.selected()?.domModel() === model};
+    });
+    check('a node in the OOPIF is targeted and its selector resolves in the OOPIF document',
+          r.sameModel && r.identity === 'div#remote-target.remote-card' && r.status === '2 matching elements',
+          `${r.identity} · ${r.status}`);
+
+    // Pick the second remote card with the mouse.
+    const frameRect = await page.$eval('#remote', el => {
+      const box = el.getBoundingClientRect();
+      return {x: box.x + el.clientLeft, y: box.y + el.clientTop};
+    });
+    const remoteFrame = page.frames().find(f => f.url().startsWith('http://127.0.0.1'));
+    const cardRect = await remoteFrame.$$eval('.remote-card', els => {
+      const box = els[1].getBoundingClientRect();
+      return {x: box.x + 30, y: box.y + box.height / 2};
+    });
+    await startStudioPick();
+    await page.mouse.move(frameRect.x + cardRect.x, frameRect.y + cardRect.y);
+    await page.mouse.click(frameRect.x + cardRect.x, frameRect.y + cardRect.y);
+    await sleep(1200);
+    after = await lifecycle();
+    check('picking inside the OOPIF fills a selector resolved in the OOPIF', after.selector === 'div.remote-card' &&
+          /matches 2 elements/.test(after.status ?? ''), `${after.selector} · ${after.status}`);
+
+    before = after;
+    await page.evaluate(() => window.__studio.navigateRemote(2));
+    await sleep(2500);
+    after = await lifecycle();
+    verdict = honest(before, after);
+    check('navigating the OOPIF never keeps the old frame document as the target', verdict.ok,
+          `${verdict.how} · ${after.identity} · ${after.status} · ${after.notice}`);
+
+    await step(async () => {
+      const v = globalThis.__v;
+      const target = v.SDK.TargetManager.TargetManager.instance().targets().find(
+          t => t.inspectedURL().includes('style-studio-remote.html?v=2'));
+      const model = target?.model(v.SDK.DOMModel.DOMModel);
+      if (!model) {
+        return;
+      }
+      const doc = await model.requestDocument();
+      const nodeId = await model.querySelector(doc.id, '#remote-target');
+      const Common = await import('./core/common/common.js');
+      await Common.Revealer.reveal(model.nodeForId(nodeId));
+      await v.settle();
+    });
+    before = await lifecycle();
+    await page.evaluate(() => window.__studio.removeFrame('remote'));
+    await sleep(1500);
+    after = await lifecycle();
+    verdict = honest(before, after);
+    check('destroying the OOPIF detaches its target', verdict.ok && before.identity === 'div#remote-target.remote-card',
+          `${verdict.how} · before ${before.identity} · ${after.identity} · ${after.status} · ${after.notice}`);
+  }
+
+  // Same-origin iframe destroyed while a node inside it is selected.
+  await studioSource(0);
+  r = await step(async () => {
+    const v = globalThis.__v;
+    v.doc = await v.domModel.requestDocument();
+    const ownerId = await v.domModel.querySelector(v.doc.id, '#frame');
+    const owner = v.domModel.nodeForId(ownerId);
+    await owner.getChildNodesPromise();
+    const frameDoc = owner.contentDocument();
+    const pId = await v.domModel.querySelector(frameDoc.id, '.in-frame');
+    const Common = await import('./core/common/common.js');
+    await Common.Revealer.reveal(v.domModel.nodeForId(pId));
+    await v.settle();
+    return v.identity();
+  });
+  before = await lifecycle();
+  await page.evaluate(() => window.__studio.removeFrame('frame'));
+  await sleep(1200);
+  after = await lifecycle();
+  verdict = honest(before, after);
+  check('destroying a same-origin iframe detaches a target inside it', verdict.ok && r === 'p.in-frame',
+        `${verdict.how} · ${after.identity} · ${after.status} · ${after.notice}`);
+
+  // Full reload: the selector is kept and resolved again in the new document.
+  await studioSource(1);
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.select('.lonely');
+    await v.settle();
+    v.type('.card');
+    await v.settle();
+    v.radio('studio-scope', 1);
+    await v.settle();
+  });
+  before = await lifecycle();
+  await page.reload();
+  await sleep(3000);
+  after = await lifecycle();
+  check('a reload keeps the selector, resolves it in the new document, and announces the new target',
+        after.selector === '.card' && /^4 matching elements/.test(after.status ?? '') && after.selectedId !== before.selectedId &&
+            /previous target/.test(after.notice ?? ''),
+        `${before.status} → ${after.status} · ${after.identity} · ${after.notice}`);
+
   const pageConsole = await devtools.evaluate(async () => {
     const SDK = await import('./core/sdk/sdk.js');
     return SDK.TargetManager.TargetManager.instance().primaryPageTarget().model(SDK.ConsoleModel.ConsoleModel).messages().filter(m => m.level === 'error').map(m => `${m.messageText} @ ${m.url ?? ''}`);
@@ -445,6 +743,8 @@ try {
   console.log('DevTools frontend errors:', JSON.stringify(globalThis.__devtoolsErrors));
   check('no DevTools frontend errors from Style Studio', !globalThis.__devtoolsErrors.some(t => /style_intelligence|StyleStudio/i.test(t)), String(globalThis.__devtoolsErrors.length));
 } finally {
+  server.close();
+  localServer.close();
   fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify(results, null, 2));
   await browser.close();
 }

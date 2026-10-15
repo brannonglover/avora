@@ -11,15 +11,48 @@ import type * as UI from '../../ui/legacy/legacy.js';
 import * as Elements from '../elements/elements.js';
 
 import {identityForNode} from './StyleIntelligenceModel.js';
-import {readableSelector, type StudioNode, type UnsupportedNodeReason} from './StyleStudioTarget.js';
+import {InspectPickHub, type InspectPickObserver} from './StyleStudioPicker.js';
+import {readableSelector, type StudioAttachment, type StudioNode, type UnsupportedNodeReason} from './StyleStudioTarget.js';
 import type {SelectorQueryResult, StudioSelection, StyleStudioTargeting} from './StyleStudioTargeting.js';
 
+/**
+ * Every DOMModel event that can change selector matches or detach the selection.
+ * ChildNodeCountUpdated is the only event for an insertion under a node whose
+ * children DevTools has not loaded, so it counts as a change too.
+ */
 const DOCUMENT_EVENTS = [
   SDK.DOMModel.Events.NodeInserted,
   SDK.DOMModel.Events.NodeRemoved,
   SDK.DOMModel.Events.AttrModified,
   SDK.DOMModel.Events.AttrRemoved,
+  SDK.DOMModel.Events.ChildNodeCountUpdated,
 ] as const;
+
+/**
+ * True when `node` is still the node DevTools holds for its id and every
+ * ancestor up to its target's document is too. DOMModel unbinds a removed
+ * subtree and replaces its whole map on a new document, so a removed, moved, or
+ * replaced node fails here, and its id never comes back for another element.
+ */
+export function isNodeAttached(node: SDK.DOMModel.DOMNode): boolean {
+  const domModel = node.domModel();
+  if (domModel.target().isDisposed()) {
+    return false;
+  }
+  let current: SDK.DOMModel.DOMNode = node;
+  while (true) {
+    if (domModel.nodeForId(current.id) !== current) {
+      return false;
+    }
+    const parent = current.parentNode;
+    // A child target's document hangs off a frame owner in the parent target.
+    if (!parent || parent.domModel() !== domModel) {
+      break;
+    }
+    current = parent;
+  }
+  return current === domModel.existingDocument();
+}
 
 function unsupportedReason(node: SDK.DOMModel.DOMNode): UnsupportedNodeReason|null {
   if (node.nodeType() !== Node.ELEMENT_NODE) {
@@ -69,6 +102,10 @@ export function selectionForNode(node: SDK.DOMModel.DOMNode): StudioSelection {
              }) ??
           Elements.DOMPath.cssPath(node, true);
     },
+    attachment(): StudioAttachment {
+      const documentAttached = document !== null && isNodeAttached(document);
+      return {node: documentAttached && isNodeAttached(node), document: documentAttached};
+    },
     async querySelectorAll(selector: string): Promise<SelectorQueryResult> {
       if (!document) {
         return {error: 'No document'};
@@ -83,22 +120,41 @@ export function selectionForNode(node: SDK.DOMModel.DOMNode): StudioSelection {
       return {nodeIds: response.nodeIds ?? []};
     },
     observeDocument(listener: () => void): () => void {
-      const onNodeEvent = (event: Common.EventTarget.EventTargetEvent<unknown>): void => {
-        const changed = nodeFromEvent(event.data);
-        if (!changed || changed.ownerDocument === document) {
+      // Changes in this document are reported, and so is anything that changes
+      // whether the selection is attached, wherever it happens: a child target
+      // replaces its document without a DocumentUpdated event, and removing an
+      // iframe detaches every node inside it.
+      let lastAttachment = this.attachment();
+      const onChange = (event?: Common.EventTarget.EventTargetEvent<unknown>): void => {
+        const attachment = this.attachment();
+        const attachmentChanged =
+            attachment.node !== lastAttachment.node || attachment.document !== lastAttachment.document;
+        lastAttachment = attachment;
+        const changed = event ? nodeFromEvent(event.data) : null;
+        if (attachmentChanged || !changed || changed.ownerDocument === document) {
           listener();
         }
       };
-      const onDocumentUpdated = (): void => listener();
+      const targetObserver: SDK.TargetManager.SDKModelObserver<SDK.DOMModel.DOMModel> = {
+        modelAdded(): void {
+        },
+        modelRemoved(removed: SDK.DOMModel.DOMModel): void {
+          if (removed === domModel) {
+            onChange();
+          }
+        },
+      };
       for (const type of DOCUMENT_EVENTS) {
-        domModel.addEventListener(type, onNodeEvent);
+        domModel.addEventListener(type, onChange);
       }
-      domModel.addEventListener(SDK.DOMModel.Events.DocumentUpdated, onDocumentUpdated);
+      domModel.addEventListener(SDK.DOMModel.Events.DocumentUpdated, onChange);
+      SDK.TargetManager.TargetManager.instance().observeModels(SDK.DOMModel.DOMModel, targetObserver);
       return () => {
         for (const type of DOCUMENT_EVENTS) {
-          domModel.removeEventListener(type, onNodeEvent);
+          domModel.removeEventListener(type, onChange);
         }
-        domModel.removeEventListener(SDK.DOMModel.Events.DocumentUpdated, onDocumentUpdated);
+        domModel.removeEventListener(SDK.DOMModel.Events.DocumentUpdated, onChange);
+        SDK.TargetManager.TargetManager.instance().unobserveModels(SDK.DOMModel.DOMModel, targetObserver);
       };
     },
   };
@@ -137,42 +193,42 @@ export function bindStudioToSelection<T>(
   return () => context.removeFlavorChangeListener(flavorType, sync);
 }
 
-/** Receives picks made with the existing Elements picker, on any page target. */
-export interface InspectPickObserver {
-  /** The page reported a pick; its node is being resolved. */
-  received(): void;
-  /** The node the Elements panel selects for that pick, or null if it could not be resolved. */
-  resolved(node: SDK.DOMModel.DOMNode|null): void;
-  /** A page target that can be picked from was added or removed. */
-  availabilityChanged(): void;
-}
+let pickHub: InspectPickHub<SDK.Target.Target, SDK.DOMModel.DOMNode>|null = null;
 
 /**
- * Observes `Overlay.inspectNodeRequested`, the event the existing picker
- * completes with. It is the only signal that fires for every pick: picking the
- * element that is already selected leaves the selection, and so every selection
- * event, unchanged.
- *
- * The dispatcher is added beside OverlayModel's own (the protocol client keeps
- * a list per domain) and only listens. Inspect mode, the pick handler, and the
- * selection all stay with InspectElementModeController and ElementsPanel.
+ * The one pick hub for this DevTools window. Every subscriber shares it, so
+ * creating panes, subscribing, and unsubscribing never adds another protocol
+ * listener: each page target gets exactly one, for its lifetime. A new DevTools
+ * window is a new JavaScript realm and starts with a new hub.
  */
-export function observeInspectPicks(observer: InspectPickObserver): void {
-  const registered = new WeakSet<SDK.Target.Target>();
-  SDK.TargetManager.TargetManager.instance().observeModels(SDK.OverlayModel.OverlayModel, {
-    modelAdded(model: SDK.OverlayModel.OverlayModel): void {
-      const target = model.target();
-      if (registered.has(target)) {
-        return;
-      }
-      registered.add(target);
-      target.registerOverlayDispatcher(new InspectPickDispatcher(target, observer));
-      observer.availabilityChanged();
-    },
-    modelRemoved(): void {
-      observer.availabilityChanged();
-    },
-  }, {scoped: true});
+export function inspectPickHub(): InspectPickHub<SDK.Target.Target, SDK.DOMModel.DOMNode> {
+  if (!pickHub) {
+    pickHub = new InspectPickHub<SDK.Target.Target, SDK.DOMModel.DOMNode>({
+      observeTargets(added, removed): void {
+        SDK.TargetManager.TargetManager.instance().observeModels(SDK.OverlayModel.OverlayModel, {
+          modelAdded: model => added(model.target()),
+          modelRemoved: model => removed(model.target()),
+        }, {scoped: true});
+      },
+      listen(target, onPick): void {
+        // Added beside OverlayModel's own dispatcher; the protocol client keeps a
+        // list per domain and has no public removal, which is why the hub only
+        // ever adds one per target.
+        target.registerOverlayDispatcher(new InspectPickDispatcher(
+            target,
+            backendNodeId => onPick(
+                () => new SDK.DOMModel.DeferredDOMNode(target, backendNodeId)
+                          .resolvePromise()
+                          .then(node => node ? selectionForPickedNode(node) : null))));
+      },
+    });
+  }
+  return pickHub;
+}
+
+/** Subscribes to picks made with the existing Elements picker. Returns an unsubscribe. */
+export function observeInspectPicks(observer: InspectPickObserver<SDK.DOMModel.DOMNode>): () => void {
+  return inspectPickHub().subscribe(observer);
 }
 
 /**
@@ -191,21 +247,25 @@ export function selectionForPickedNode(node: SDK.DOMModel.DOMNode): SDK.DOMModel
   return node;
 }
 
+/**
+ * Listens for `Overlay.inspectNodeRequested`, the event the existing picker
+ * completes with. It is the only signal that fires for every pick: picking the
+ * element that is already selected changes no selection. Every other Overlay
+ * event is left to OverlayModel.
+ */
 class InspectPickDispatcher implements ProtocolProxyApi.OverlayDispatcher {
   readonly #target: SDK.Target.Target;
-  readonly #observer: InspectPickObserver;
+  readonly #onPick: (backendNodeId: Protocol.DOM.BackendNodeId) => void;
 
-  constructor(target: SDK.Target.Target, observer: InspectPickObserver) {
+  constructor(target: SDK.Target.Target, onPick: (backendNodeId: Protocol.DOM.BackendNodeId) => void) {
     this.#target = target;
-    this.#observer = observer;
+    this.#onPick = onPick;
   }
 
   inspectNodeRequested({backendNodeId}: Protocol.Overlay.InspectNodeRequestedEvent): void {
-    this.#observer.received();
-    void new SDK.DOMModel.DeferredDOMNode(this.#target, backendNodeId)
-        .resolvePromise()
-        .then(node => this.#observer.resolved(node ? selectionForPickedNode(node) : null))
-        .catch(() => this.#observer.resolved(null));
+    if (!this.#target.isDisposed()) {
+      this.#onPick(backendNodeId);
+    }
   }
 
   nodeHighlightRequested(): void {

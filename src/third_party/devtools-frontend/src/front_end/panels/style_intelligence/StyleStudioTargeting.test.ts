@@ -10,6 +10,7 @@ import {bindStudioToSelection} from './StyleStudioDom.js';
 import type {StudioNode} from './StyleStudioTarget.js';
 import {
   DOM_CHANGE_RESOLVE_DELAY,
+  SELECTOR_RESOLVE_DELAY,
   type SelectorQueryResult,
   type StudioSelection,
   StyleStudioTargeting,
@@ -17,6 +18,9 @@ import {
 
 /** Stands in for SDK.DOMModel.DOMNode as the Elements selection flavor. */
 class FakeElement {
+  /** False once the element is removed, replaced, or moved; its id never comes back. */
+  attached = true;
+
   constructor(readonly studio: StudioNode, readonly document: FakeDocument) {
   }
 }
@@ -28,6 +32,8 @@ class FakeDocument {
   results = new Map<string, SelectorQueryResult>();
   /** When set, queries wait until the test releases them. */
   held: Array<() => void>|null = null;
+  /** False once the document is replaced by a navigation or its frame is destroyed. */
+  attached = true;
 
   constructor(readonly key: string) {
   }
@@ -40,15 +46,37 @@ class FakeDocument {
 
   async query(selector: string): Promise<SelectorQueryResult> {
     this.queries.push(selector);
+    // The answer reflects the DOM when the query ran, not when it is released.
+    const result = this.results.get(selector) ?? {nodeIds: []};
     if (this.held) {
       await new Promise<void>(resolve => this.held?.push(resolve));
     }
-    return this.results.get(selector) ?? {nodeIds: []};
+    return result;
   }
 
   mutate(): void {
-    for (const listener of this.listeners) {
+    for (const listener of [...this.listeners]) {
       listener();
+    }
+  }
+
+  /** Removes an element, like DOM.childNodeRemoved; DevTools unbinds its id. */
+  remove(element: FakeElement): void {
+    element.attached = false;
+    this.mutate();
+  }
+
+  /** A navigation or frame removal: the document and every node in it detach. */
+  detach(): void {
+    this.attached = false;
+    this.mutate();
+  }
+
+  releaseAll(): void {
+    const held = this.held ?? [];
+    this.held = null;
+    for (const release of held) {
+      release();
     }
   }
 }
@@ -58,6 +86,10 @@ function selectionFor(element: FakeElement): StudioSelection {
     node: element.studio,
     suggestedSelector: () => element.studio.unsupported ? null : `#n${element.studio.nodeId}`,
     querySelectorAll: selector => element.document.query(selector),
+    attachment: () => ({
+      node: element.document.attached && element.attached,
+      document: element.document.attached,
+    }),
     observeDocument: listener => {
       element.document.listeners.add(listener);
       return () => element.document.listeners.delete(listener);
@@ -445,5 +477,355 @@ describe('StyleStudioTargeting', () => {
     targeting.fillSelectorFromSelection();
     assert.strictEqual(targeting.state().selectorText, '');
     assert.deepEqual(targeting.target(), {kind: 'unsupported', reason: 'shadow-tree'});
+  });
+
+  describe('lifecycle', () => {
+    it('reports a removed selected element as detached and never as another element', () => {
+      const document = new FakeDocument('t:1');
+      const selected = document.element(1);
+      select(selected);
+      document.remove(selected);
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'node'});
+    });
+
+    it('reports a detached element in one-node selector scope instead of a selector status', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('#n1', {nodeIds: [1]});
+      const selected = document.element(1);
+      select(selected);
+      targeting.setSource('selector');
+      await flush();
+      document.results.set('#n1', {nodeIds: []});
+      document.remove(selected);
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'node'});
+      await flush(DOM_CHANGE_RESOLVE_DELAY + 50);
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'node'});
+    });
+
+    it('keeps all-matches targeting for a live document when the selected element is removed', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('.card', {nodeIds: [1, 2, 3]});
+      const selected = document.element(1);
+      select(selected);
+      targeting.setSource('selector');
+      targeting.setSelectorText('.card');
+      targeting.setScope('all-matches');
+      await targeting.resolveNow();
+
+      document.results.set('.card', {nodeIds: [2, 3]});
+      document.remove(selected);
+      await flush(DOM_CHANGE_RESOLVE_DELAY + 50);
+      const target = targeting.target();
+      assert.strictEqual(target.kind, 'matches');
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [2, 3]);
+      assert.isFalse(target.kind === 'matches' && target.includesSelected);
+    });
+
+    it('announces the change when Elements moves on from a replaced element', () => {
+      const document = new FakeDocument('t:1');
+      const original = document.element(1, {label: 'div#card'});
+      select(original);
+      document.remove(original);
+      // A visually identical replacement is a new node with a new id.
+      select(document.element(7, {label: 'div#card'}));
+      const target = targeting.target();
+      assert.strictEqual(target.kind === 'node' && target.nodeId, 7);
+      assert.strictEqual(targeting.state().previousDetachedLabel, 'div#card');
+      // The next explicit action clears the announcement.
+      targeting.setSource('selector');
+      assert.isNull(targeting.state().previousDetachedLabel);
+    });
+
+    it('keeps the announcement through a moment with no selection', () => {
+      const before = new FakeDocument('t:1');
+      select(before.element(1, {label: 'p.lonely'}));
+      before.detach();
+      select(null);
+      const after = new FakeDocument('t:2');
+      select(after.element(30, {label: 'p.lonely'}));
+      assert.strictEqual(targeting.state().previousDetachedLabel, 'p.lonely');
+    });
+
+    it('announces a reload where Elements clears the selection before the document is replaced', () => {
+      const before = new FakeDocument('t:1');
+      select(before.element(1, {label: 'p.lonely'}));
+      // Elements clears the selection first; the old node is still attached then.
+      select(null);
+      assert.isNull(targeting.state().previousDetachedLabel);
+      before.detach();
+      const after = new FakeDocument('t:2');
+      select(after.element(30, {label: 'p.lonely'}));
+      assert.strictEqual(targeting.state().previousDetachedLabel, 'p.lonely');
+    });
+
+    it('does not announce a cleared and restored selection whose node is still attached', () => {
+      const document = new FakeDocument('t:1');
+      select(document.element(1));
+      select(null);
+      select(document.element(2));
+      assert.isNull(targeting.state().previousDetachedLabel);
+    });
+
+    it('does not announce an ordinary selection change', () => {
+      const document = new FakeDocument('t:1');
+      select(document.element(1));
+      select(document.element(2));
+      assert.isNull(targeting.state().previousDetachedLabel);
+    });
+
+    it('treats a moved element as detached until it is selected again', () => {
+      const document = new FakeDocument('t:1');
+      const moved = document.element(1);
+      select(moved);
+      // Moving a node between parents re-binds it under a new id.
+      document.remove(moved);
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'node'});
+      select(document.element(12));
+      const target = targeting.target();
+      assert.strictEqual(target.kind === 'node' && target.nodeId, 12);
+    });
+
+    it('keeps the selector across a reload and resolves it in the new document', async () => {
+      const before = new FakeDocument('t:1');
+      before.results.set('.card', {nodeIds: [1, 2]});
+      select(before.element(1));
+      targeting.setSource('selector');
+      targeting.setSelectorText('.card');
+      targeting.setScope('all-matches');
+      await targeting.resolveNow();
+
+      before.detach();
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'document'});
+      assert.strictEqual(targeting.state().selectorText, '.card');
+
+      const after = new FakeDocument('t:9');
+      after.results.set('.card', {nodeIds: [40, 41, 42]});
+      select(after.element(40));
+      await flush();
+      const target = targeting.target();
+      assert.strictEqual(target.kind, 'matches');
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [40, 41, 42]);
+      assert.strictEqual(target.kind === 'matches' && target.documentKey, 't:9');
+      assert.strictEqual(targeting.state().previousDetachedLabel, 'div#n1');
+    });
+
+    it('never queries a document that has gone away', async () => {
+      const document = new FakeDocument('t:1');
+      select(document.element(1));
+      targeting.setSource('selector');
+      await flush();
+      const queries = document.queries.length;
+      document.detach();
+      targeting.setSelectorText('.anything');
+      await targeting.resolveNow();
+      targeting.revalidate();
+      await flush(SELECTOR_RESOLVE_DELAY + 50);
+      assert.strictEqual(document.queries.length, queries);
+    });
+
+    it('re-queries matches on revalidate, for changes DevTools was not told about', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('.active', {nodeIds: [1]});
+      select(document.element(1));
+      targeting.setSource('selector');
+      targeting.setSelectorText('.active');
+      targeting.setScope('all-matches');
+      await targeting.resolveNow();
+
+      // A class added to a node DevTools never loaded produces no event.
+      document.results.set('.active', {nodeIds: [1, 5]});
+      targeting.revalidate();
+      await flush();
+      const target = targeting.target();
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [1, 5]);
+    });
+  });
+
+  describe('async correctness', () => {
+    it('debounces rapid typing into one query for the final selector', async () => {
+      const document = new FakeDocument('t:1');
+      select(document.element(1));
+      targeting.setSource('selector');
+      await flush();
+      document.queries.length = 0;
+      for (const text of ['.c', '.ca', '.car', '.card']) {
+        targeting.setSelectorText(text);
+      }
+      await flush(SELECTOR_RESOLVE_DELAY + 50);
+      assert.deepEqual(document.queries, ['.card']);
+    });
+
+    it('drops a response for selector text that has since changed', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('.old', {nodeIds: [1]});
+      document.results.set('.new', {nodeIds: [1, 2, 3]});
+      select(document.element(1));
+      targeting.setSource('selector');
+      await flush();
+      document.held = [];
+      targeting.setSelectorText('.old');
+      const stale = targeting.resolveNow();
+      await flush();
+      targeting.setSelectorText('.new');
+      document.releaseAll();
+      await stale;
+      // The .old answer never became a resolution.
+      const resolution = targeting.state().resolution;
+      assert.isFalse(resolution.kind === 'resolved' && resolution.selector === '.old');
+      await flush(SELECTOR_RESOLVE_DELAY + 50);
+      const target = targeting.target();
+      assert.strictEqual(target.kind === 'node' && target.matchCount, 3);
+    });
+
+    it('drops a response that finishes after a navigation', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('p', {nodeIds: [1]});
+      select(document.element(1));
+      targeting.setSource('selector');
+      await flush();
+      document.held = [];
+      targeting.setSelectorText('p');
+      const inFlight = targeting.resolveNow();
+      await flush();
+      document.detach();
+      document.releaseAll();
+      await inFlight;
+      assert.deepEqual(targeting.state().resolution, {kind: 'idle'});
+      assert.deepEqual(targeting.target(), {kind: 'detached', reason: 'document'});
+    });
+
+    it('drops a response that races a DOM mutation and queries again', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('.card', {nodeIds: [1]});
+      select(document.element(1));
+      targeting.setSource('selector');
+      targeting.setSelectorText('.card');
+      targeting.setScope('all-matches');
+      await targeting.resolveNow();
+
+      document.held = [];
+      targeting.revalidate();
+      await flush();
+      document.results.set('.card', {nodeIds: [1, 2]});
+      document.mutate();
+      document.releaseAll();
+      await flush();
+      assert.strictEqual(targeting.target().kind, 'pending');
+      await flush(DOM_CHANGE_RESOLVE_DELAY + 50);
+      const target = targeting.target();
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [1, 2]);
+    });
+
+    it('lets only the latest of overlapping requests update state', async () => {
+      const document = new FakeDocument('t:1');
+      select(document.element(1));
+      targeting.setSource('selector');
+      targeting.setSelectorText('.card');
+      targeting.setScope('all-matches');
+      await flush();
+      document.held = [];
+      document.results.set('.card', {nodeIds: [1]});
+      targeting.revalidate();
+      await flush();
+      document.results.set('.card', {nodeIds: [1, 2, 3]});
+      targeting.revalidate();
+      await flush();
+      // Release the older request last: it must still not win.
+      const held = document.held;
+      document.held = null;
+      held[1]();
+      await flush();
+      held[0]();
+      await flush();
+      const target = targeting.target();
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [1, 2, 3]);
+    });
+
+    it('does not re-query an invalid selector when the DOM changes', async () => {
+      const document = new FakeDocument('t:1');
+      document.results.set('a[', {error: 'not a valid selector'});
+      select(document.element(1));
+      targeting.setSource('selector');
+      targeting.setSelectorText('a[');
+      await targeting.resolveNow();
+      const queries = document.queries.length;
+      document.mutate();
+      await flush(DOM_CHANGE_RESOLVE_DELAY + 50);
+      assert.strictEqual(document.queries.length, queries);
+      assert.strictEqual(targeting.target().kind, 'invalid-selector');
+    });
+  });
+
+  describe('background refresh', () => {
+    const INTERVAL = 60;
+    let live: StyleStudioTargeting;
+    let unbindLive: () => void;
+
+    beforeEach(() => {
+      live = new StyleStudioTargeting(() => {}, {refreshInterval: INTERVAL});
+      unbindLive = bindStudioToSelection(context, FakeElement, selectionFor, live);
+    });
+
+    afterEach(() => {
+      unbindLive();
+      live.dispose();
+    });
+
+    async function resolvedCards(document: FakeDocument): Promise<void> {
+      document.results.set('.card', {nodeIds: [1]});
+      select(document.element(1));
+      live.setSource('selector');
+      live.setSelectorText('.card');
+      live.setScope('all-matches');
+      await live.resolveNow();
+    }
+
+    it('picks up matches that changed without any DOM event, while live', async () => {
+      const document = new FakeDocument('t:1');
+      await resolvedCards(document);
+      live.setLive(true);
+      document.results.set('.card', {nodeIds: [1, 9]});
+      await flush(INTERVAL * 3);
+      const target = live.target();
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [1, 9]);
+    });
+
+    it('never shows a pending state for a background check', async () => {
+      const document = new FakeDocument('t:1');
+      await resolvedCards(document);
+      const kinds: string[] = [];
+      const watch = setInterval(() => kinds.push(live.target().kind), 5);
+      live.setLive(true);
+      await flush(INTERVAL * 4);
+      clearInterval(watch);
+      assert.notInclude(kinds, 'pending');
+    });
+
+    it('does not poll while hidden', async () => {
+      const document = new FakeDocument('t:1');
+      await resolvedCards(document);
+      const queries = document.queries.length;
+      live.setLive(true);
+      live.setLive(false);
+      await flush(INTERVAL * 3);
+      assert.strictEqual(document.queries.length, queries);
+    });
+
+    it('yields to newer typing', async () => {
+      const document = new FakeDocument('t:1');
+      await resolvedCards(document);
+      document.results.set('.card', {nodeIds: [1, 2, 3, 4]});
+      document.results.set('.other', {nodeIds: [5]});
+      document.held = [];
+      live.setLive(true);
+      await flush(INTERVAL + 20);
+      // A background check is in flight; the user types a new selector.
+      live.setSelectorText('.other');
+      document.releaseAll();
+      await flush(SELECTOR_RESOLVE_DELAY + 50);
+      const target = live.target();
+      assert.strictEqual(target.kind === 'matches' && target.selector, '.other');
+      assert.deepEqual(target.kind === 'matches' && target.nodeIds, [5]);
+    });
   });
 });

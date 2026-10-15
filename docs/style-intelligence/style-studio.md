@@ -72,7 +72,43 @@ A shadow-tree selection still provides its owner document as context, so **All m
 - Picking one specific match from a selector's match list. One-node scope always means the Elements selection.
 - A precise syntax error position: Blink's protocol message is generic.
 - Studio state is per pane instance and is not persisted across DevTools sessions.
-- Studio's pick observer stays registered on a target for that target's lifetime. The protocol client has no public way to remove an Overlay dispatcher, and the observer does nothing unless a pick was started from Studio.
+- Studio's pick listener stays registered on a target for that target's lifetime; see Checkpoint 1B for how this is bounded.
+
+## Checkpoint 1B — target lifecycle
+
+Hardening only: no stylesheet, preview, AI, or export work, and no Blink or protocol changes.
+
+### Attachment
+
+- `StudioSelection.attachment()` reports whether the selected node and its document are still in the inspected page. `isNodeAttached` (`StyleStudioDom.ts`) requires the node, and every ancestor up to its target's document, to still be what `DOMModel.nodeForId` returns for its id, and the target not to be disposed. DOMModel unbinds a removed subtree and replaces its whole id map on a new document, and node ids are never reused. So a removed, replaced, or moved node fails this check, and nothing can ever re-resolve its id to another element.
+- A detached node is the target kind `detached` (`node`), and a replaced document or destroyed frame is `detached` (`document`). Each has its own status. **All matches** keeps working when only the selected node is gone and its document is alive. Nothing is ever queried in a document that has gone away.
+- Elements often moves the selection itself after a removal (to a neighbour or parent) or a reload (restoring by path). When the new selection replaces a target that left the page, Studio follows it and shows "The previous target, …, is no longer in the page." until the next explicit action. Elements clears the selection before a reload replaces the document, so the controller keeps the last selection across that gap and checks its attachment when the next one arrives.
+
+### What is observed
+
+- Studio listens to `NodeInserted`, `NodeRemoved`, `AttrModified`, `AttrRemoved`, `ChildNodeCountUpdated` (the only event for an insertion under a node whose children DevTools has not loaded), `DocumentUpdated`, and DOMModel removal through `TargetManager`. Events from other documents of the same target count only when they change the selection's attachment. That is how a child target's document replacement (it dispatches `NodeInserted` of the new document, never `DocumentUpdated`) and the removal of an iframe around the selection are seen.
+- Blink only reports mutations under nodes DevTools has loaded. An element added, or a class changed, elsewhere produces no event. Studio therefore re-checks matches when it is shown (`revalidate`), and every 2 s while it is visible (`setLive`). The background check never shows a pending state, replaces matches only when they differ, and yields to any newer request.
+
+### Async rules
+
+A selector response may update state only if all of these hold:
+- it belongs to the current request generation, which typing, DOM changes, revalidation, a new document, and detachment all advance;
+- it is for the current document key, with the document still attached;
+- it is for the current selector text.
+
+A response for text that has since changed is dropped, and the new text is queried. An invalid selector is not re-queried on DOM changes. Pick-tracker timers carry a generation, so a timer from an earlier pick cannot end a later one.
+
+### Pick listener lifecycle
+
+- The protocol client keeps a list of dispatchers per domain and offers no public removal for an Overlay dispatcher. `InspectPickHub` therefore adds exactly one listener per page target, for that target's lifetime, and once per DevTools window: a reopened DevTools window is a new JavaScript realm with a new hub.
+- Subscribers come and go above it (`observeInspectPicks` returns an unsubscribe), and an unsubscribed observer is never called again, even mid-pick. Each pick is resolved once and delivered once to each current subscriber.
+- A pane replaced through `instance({forceNew: true})` releases its Studio listeners: the selection binding, the pick subscription, the pick flavor listener, and the action listener. The Explain tab's own selection listener predates Studio and is unchanged.
+
+### Not supported in 1B
+
+- Matches that change without a DOM event are seen within about 2 s, and only while Studio is visible. When it is hidden they are re-checked on show.
+- Shadow-root elements remain unsupported for styling. They are detected and explained, and a pick of one leaves the selector unchanged.
+- Each hub listener lives as long as its target. That is bounded by the target, not removable.
 
 ## Verification
 
@@ -91,7 +127,7 @@ PATH="$PATH:$HOME/depot_tools" npm test -- --target=Default \
 
 ### Live pass
 
-`fixtures/style-studio-targeting.html` contains a unique `#unique`, three `.card.shared` elements, a `::before`, a same-origin iframe, and an open shadow root. It records page DOM mutations. `fixtures/verify-style-studio-targeting.mjs` launches the built Avora with DevTools docked, drives the real Elements selection (`Common.Revealer`) and the Intelligence pane, and fails if any check fails:
+`fixtures/style-studio-targeting.html` contains a unique `#unique`, three `.card.shared` elements, a `::before`, a same-origin iframe, an open shadow root, and a cross-origin iframe (`fixtures/style-studio-remote.html`). It records page DOM mutations and exposes `window.__studio` actions for the lifecycle checks. The verifier serves the fixtures over HTTP: the page comes from `localhost` and the remote frame from `127.0.0.1` on the same port, a different site, so it runs as an out-of-process iframe. `fixtures/verify-style-studio-targeting.mjs` launches the built Avora with DevTools docked, drives the real Elements selection (`Common.Revealer`) and the Intelligence pane, and fails if any check fails:
 
 ```bash
 npm run build

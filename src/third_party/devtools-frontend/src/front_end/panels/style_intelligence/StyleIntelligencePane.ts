@@ -453,6 +453,8 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #picks = new StudioPickTracker<SDK.DOMModel.DOMNode>(() => this.#studio.fillSelectorFromSelection());
   /** True only while Studio's own button is starting the picker. */
   #startingPick = false;
+  #unbindStudio: () => void = () => {};
+  #unsubscribePicks: () => void = () => {};
 
   constructor(view: View = DEFAULT_VIEW) {
     super({useShadowDom: true});
@@ -466,12 +468,13 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     UI.Context.Context.instance().addFlavorChangeListener(
         SDK.DOMModel.DOMNode, this.#onSelectedNodeChanged, this);
     this.#onSelectedNodeChanged();
-    bindStudioToSelection(UI.Context.Context.instance(), SDK.DOMModel.DOMNode, selectionForNode, this.#studio);
+    this.#unbindStudio =
+        bindStudioToSelection(UI.Context.Context.instance(), SDK.DOMModel.DOMNode, selectionForNode, this.#studio);
     // Registered after the Studio binding, so Studio already follows the picked
     // node when the pick fills its selector.
     UI.Context.Context.instance().addFlavorChangeListener(SDK.DOMModel.DOMNode, this.#onSelectionForPick, this);
     this.#pickAction()?.addEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
-    observeInspectPicks({
+    this.#unsubscribePicks = observeInspectPicks({
       received: () => this.#picks.pickReceived(),
       resolved: node => this.#picks.pickResolved(node, UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode)),
       availabilityChanged: () => this.requestUpdate(),
@@ -480,6 +483,11 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
 
   static instance(opts: {forceNew: boolean|null} = {forceNew: null}): StyleIntelligencePane {
     if (!paneInstance || opts.forceNew) {
+      // A replaced pane must stop following the selection and picks, or every
+      // replacement would add another set of Studio listeners.
+      if (paneInstance) {
+        paneInstance.#disposeStudio();
+      }
       paneInstance = new StyleIntelligencePane();
     }
     return paneInstance;
@@ -488,11 +496,26 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   override wasShown(): void {
     super.wasShown();
     this.#scheduleLoad();
+    if (this.#selectedTab() === 'studio') {
+      this.#studio.revalidate();
+      this.#studio.setLive(true);
+    }
+  }
+
+  /** Releases every Studio listener this pane added. */
+  #disposeStudio(): void {
+    this.#unbindStudio();
+    this.#unsubscribePicks();
+    UI.Context.Context.instance().removeFlavorChangeListener(SDK.DOMModel.DOMNode, this.#onSelectionForPick, this);
+    this.#pickAction()?.removeEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
+    this.#picks.dispose();
+    this.#studio.dispose();
   }
 
   override willHide(): void {
     super.willHide();
     this.#hideHighlight();
+    this.#studio.setLive(false);
   }
 
   override onDetach(): void {
@@ -570,6 +593,10 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     // A highlight drawn from one tab must not outlive it.
     this.#hideHighlight();
     this.#tabSetting.set(tab);
+    if (tab === 'studio') {
+      this.#studio.revalidate();
+    }
+    this.#studio.setLive(tab === 'studio' && this.isShowing());
     this.requestUpdate();
   };
 
@@ -628,6 +655,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     const state = this.#studio.state();
     return {
       nodeLabel: state.node?.label ?? null,
+      notice: state.previousDetachedLabel,
       canPick: this.#canPick(),
       picking: this.#pickAction()?.toggled() ?? false,
       source: state.source,

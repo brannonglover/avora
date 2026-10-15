@@ -812,6 +812,15 @@ div.rung-main {
   color: var(--sys-color-on-surface-subtle);
 }
 
+/* A change of target the user did not make, announced above the status. */
+.studio-notice {
+  background: var(--sys-color-surface-yellow);
+  border-radius: 4px;
+  color: var(--sys-color-on-surface-yellow);
+  overflow-wrap: anywhere;
+  padding: 5px 8px;
+}
+
 .studio-status.error {
   border-left-color: var(--sys-color-error);
   color: var(--sys-color-error);

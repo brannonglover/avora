@@ -77,6 +77,38 @@ describe('StyleStudioTarget', () => {
         {kind: 'unsupported', reason: 'shadow-tree'});
   });
 
+  it('reports a detached node and never its id as a target', () => {
+    const detachedNode = {attachment: {node: false, document: true}};
+    assert.deepEqual(deriveTarget(state(detachedNode)), {kind: 'detached', reason: 'node'});
+    assert.deepEqual(
+        deriveTarget(state({...detachedNode, source: 'selector', selectorText: '#x', resolution: resolved('#x', [10])})),
+        {kind: 'detached', reason: 'node'});
+    // All matches stays usable while the document is alive.
+    assert.strictEqual(
+        deriveTarget(state({
+          ...detachedNode,
+          source: 'selector',
+          scope: 'all-matches',
+          selectorText: '.card',
+          resolution: resolved('.card', [11, 12]),
+        })).kind,
+        'matches');
+  });
+
+  it('reports a detached document for every source and resolves nothing in it', () => {
+    const detachedDocument = {attachment: {node: false, document: false}};
+    assert.deepEqual(deriveTarget(state(detachedDocument)), {kind: 'detached', reason: 'document'});
+    const selectorState = state({
+      ...detachedDocument,
+      source: 'selector',
+      scope: 'all-matches',
+      selectorText: '.card',
+      resolution: resolved('.card', [11]),
+    });
+    assert.deepEqual(deriveTarget(selectorState), {kind: 'detached', reason: 'document'});
+    assert.isFalse(needsResolution({...selectorState, resolution: {kind: 'idle'}}));
+  });
+
   it('asks for a selector when the input is empty or whitespace', () => {
     assert.deepEqual(deriveTarget(state({source: 'selector', selectorText: '   '})), {kind: 'empty-selector'});
   });
