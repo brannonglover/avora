@@ -16,10 +16,12 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/inspector/inspected_frames.h"
+#include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_network_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_resource_container.h"
@@ -39,6 +41,7 @@
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -2247,6 +2250,334 @@ TEST_F(InspectorCSSAgentSubframeTest,
   EXPECT_FALSE(session.Query(frame_fixed)
                    ->getScrollContainer(nullptr)
                    ->getFixedToViewport(false));
+}
+
+// Inspector stylesheets (CSS.createStyleSheet) keep their own text. Their
+// text is stored in the InspectorResourceContainer, which belongs to the
+// inspected frame and outlives DevTools sessions so a reconnecting session can
+// recover it. Every inspector stylesheet of a document has the document as its
+// owner node, so the text is keyed by the sheet, not by its owner.
+namespace {
+
+struct EnableResult {
+  bool ran = false;
+  bool failed = false;
+};
+
+class EnableResultCallback : public protocol::CSS::Backend::EnableCallback {
+ public:
+  explicit EnableResultCallback(EnableResult* result) : result_(result) {}
+  void sendSuccess() override { result_->ran = true; }
+  void sendFailure(const protocol::Response&) override {
+    result_->ran = true;
+    result_->failed = true;
+  }
+  void fallThrough() override { result_->ran = true; }
+
+ private:
+  EnableResult* result_;
+};
+
+class InspectorStyleSheetSession {
+ public:
+  InspectorStyleSheetSession(PageTestBase* test,
+                             InspectorResourceContainer* container)
+      : test_(test) {
+    LocalFrame* frame = test_->GetDocument().GetFrame();
+    dispatcher_ =
+        std::make_unique<protocol::UberDispatcher>(&frontend_channel_);
+    session_state_ = std::make_unique<InspectorSessionState>(
+        mojom::blink::DevToolsSessionState::New());
+    inspected_frames_ = MakeGarbageCollected<InspectedFrames>(frame);
+    dom_agent_ = MakeGarbageCollected<InspectorDOMAgent>(
+        test_->GetDocument().GetExecutionContext()->GetIsolate(),
+        inspected_frames_);
+    css_agent_ = MakeGarbageCollected<InspectorCSSAgent>(
+        dom_agent_, inspected_frames_,
+        MakeGarbageCollected<InspectorNetworkAgent>(inspected_frames_, nullptr),
+        MakeGarbageCollected<InspectorResourceContentLoader>(frame), container);
+    dom_agent_->Init(frame->GetProbeSink(), dispatcher_.get(),
+                     session_state_.get(), V8SessionHolder());
+    css_agent_->Init(frame->GetProbeSink(), dispatcher_.get(),
+                     session_state_.get(), V8SessionHolder());
+    CHECK(dom_agent_->enable(std::nullopt).IsSuccess());
+    std::unique_ptr<protocol::DOM::Node> root;
+    CHECK(dom_agent_->getDocument(-1, true, &root).IsSuccess());
+    // The callback is destroyed once it runs, so it reports into state the
+    // session owns.
+    css_agent_->enable(std::make_unique<EnableResultCallback>(&enable_result_));
+    if (!enable_result_.ran) {
+      test::RunPendingTasks();
+    }
+    CHECK(enable_result_.ran);
+    CHECK(!enable_result_.failed);
+  }
+
+  // Ends the session the way a closed or crashed DevTools does: the agents go
+  // away, the resource container stays with the frame.
+  ~InspectorStyleSheetSession() { Close(); }
+
+  void Close() {
+    if (css_agent_) {
+      css_agent_->Dispose();
+      css_agent_ = nullptr;
+    }
+    if (dom_agent_) {
+      dom_agent_->Dispose();
+      dom_agent_ = nullptr;
+    }
+  }
+
+  String Create(bool force) {
+    String id;
+    CHECK(css_agent_
+              ->createStyleSheet(
+                  IdentifiersFactory::FrameId(test_->GetDocument().GetFrame()),
+                  force, &id)
+              .IsSuccess());
+    return id;
+  }
+
+  String Text(const String& id) {
+    String text;
+    CHECK(css_agent_->getStyleSheetText(id, &text).IsSuccess());
+    return text;
+  }
+
+  void SetText(const String& id, const String& text) {
+    std::optional<String> source_map_url;
+    CHECK(css_agent_->setStyleSheetText(id, text, &source_map_url).IsSuccess());
+  }
+
+  // What the Styles pane's "New Style Rule" does: append to the text it reads.
+  void AppendRule(const String& id, const String& rule) {
+    SetText(id, Text(id) + "\n" + rule);
+  }
+
+  // The id this session gives an existing sheet, as on reconnect.
+  String IdFor(CSSStyleSheet* sheet) { return css_agent_->StyleSheetId(sheet); }
+
+  InspectorCSSAgent* css_agent_for_test() const { return css_agent_.Get(); }
+
+ private:
+  PageTestBase* test_;
+  EnableResult enable_result_;
+  RecordingFrontendChannel frontend_channel_;
+  std::unique_ptr<protocol::UberDispatcher> dispatcher_;
+  std::unique_ptr<InspectorSessionState> session_state_;
+  Persistent<InspectedFrames> inspected_frames_;
+  Persistent<InspectorDOMAgent> dom_agent_;
+  Persistent<InspectorCSSAgent> css_agent_;
+};
+
+}  // namespace
+
+class InspectorStyleSheetIsolationTest : public InspectorCSSAgentTest {
+ protected:
+  void SetUp() override {
+    InspectorCSSAgentTest::SetUp();
+    SetBodyInnerHTML(R"HTML(
+      <div id="a">a</div><div id="b">b</div><div id="c">c</div>
+    )HTML");
+    container_ = MakeGarbageCollected<InspectorResourceContainer>(
+        MakeGarbageCollected<InspectedFrames>(GetDocument().GetFrame()));
+  }
+
+  std::unique_ptr<InspectorStyleSheetSession> Connect() {
+    return std::make_unique<InspectorStyleSheetSession>(this, container_);
+  }
+
+  // The inspector stylesheets of the document, in creation order.
+  const HeapVector<Member<CSSStyleSheet>>& InspectorSheets() {
+    return GetDocument().GetStyleEngine().InspectorStyleSheets();
+  }
+
+  String Color(const char* id) {
+    UpdateAllLifecyclePhasesForTest();
+    return GetComputedStyle(GetElementById(id), CSSPropertyID::kColor);
+  }
+
+  unsigned RuleCount(CSSStyleSheet* sheet) {
+    return sheet->cssRules(ASSERT_NO_EXCEPTION)->length();
+  }
+
+  Persistent<InspectorResourceContainer> container_;
+};
+
+TEST_F(InspectorStyleSheetIsolationTest, SingleDefaultSheetKeepsItsText) {
+  auto session = Connect();
+  String id = session->Create(/*force=*/false);
+  session->SetText(id, "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(session->Text(id), "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  // The default sheet is returned again for force=false.
+  EXPECT_EQ(session->Create(/*force=*/false), id);
+
+  session->Close();
+  auto reconnected = Connect();
+  ASSERT_EQ(InspectorSheets().size(), 1u);
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[0])),
+            "#a { color: rgb(1, 0, 0); }");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, NewSheetDoesNotInheritText) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  String second = session->Create(/*force=*/true);
+  EXPECT_EQ(session->Text(second), "");
+  EXPECT_EQ(RuleCount(InspectorSheets()[1]), 0u);
+  EXPECT_EQ(session->Text(user), "#a { color: rgb(1, 0, 0); }");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, SheetsUpdateIndependently) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  String second = session->Create(/*force=*/true);
+  String third = session->Create(/*force=*/true);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  session->SetText(second, "#b { color: rgb(0, 2, 0); }");
+  session->SetText(third, "#c { color: rgb(0, 0, 3); }");
+  session->SetText(second, "#b { color: rgb(0, 4, 0); }");
+
+  EXPECT_EQ(session->Text(user), "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(session->Text(second), "#b { color: rgb(0, 4, 0); }");
+  EXPECT_EQ(session->Text(third), "#c { color: rgb(0, 0, 3); }");
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("b"), "rgb(0, 4, 0)");
+  EXPECT_EQ(Color("c"), "rgb(0, 0, 3)");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, ReconnectRestoresEachSheetsOwnText) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  String second = session->Create(/*force=*/true);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  session->SetText(second, "/* marker */\n#b { color: rgb(0, 2, 0); }");
+  // The second sheet is written last, which used to leave its text in the one
+  // slot the whole document shared.
+  session->SetText(second, "/* marker */\n");
+  session->Close();
+
+  auto reconnected = Connect();
+  ASSERT_EQ(InspectorSheets().size(), 2u);
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[0])),
+            "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[1])),
+            "/* marker */\n");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, NewStyleRuleAfterReconnectKeepsUserRules) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  String second = session->Create(/*force=*/true);
+  session->SetText(second, "#c { color: rgb(0, 0, 3); }");
+  session->SetText(second, "");
+  session->Close();
+
+  auto reconnected = Connect();
+  String user_again = reconnected->IdFor(InspectorSheets()[0]);
+  reconnected->AppendRule(user_again, "#b { color: rgb(0, 2, 0); }");
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("b"), "rgb(0, 2, 0)");
+  EXPECT_EQ(RuleCount(InspectorSheets()[0]), 2u);
+  EXPECT_EQ(RuleCount(InspectorSheets()[1]), 0u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, ReverseCreationOrder) {
+  auto session = Connect();
+  String forced = session->Create(/*force=*/true);
+  session->SetText(forced, "#b { color: rgb(0, 2, 0); }");
+  String user = session->Create(/*force=*/false);
+  EXPECT_EQ(session->Text(user), "");
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  session->Close();
+
+  auto reconnected = Connect();
+  ASSERT_EQ(InspectorSheets().size(), 2u);
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[0])),
+            "#b { color: rgb(0, 2, 0); }");
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[1])),
+            "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("b"), "rgb(0, 2, 0)");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, ClearingOneSheetLeavesTheOthers) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  String second = session->Create(/*force=*/true);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  session->SetText(second, "#b { color: rgb(0, 2, 0); }");
+  session->SetText(second, "");
+  EXPECT_EQ(session->Text(user), "#a { color: rgb(1, 0, 0); }");
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("b"), "rgb(0, 0, 0)");
+  EXPECT_EQ(RuleCount(InspectorSheets()[0]), 1u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, SheetCreatedInLaterSessionStartsEmpty) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  session->Close();
+
+  auto reconnected = Connect();
+  String created = reconnected->Create(/*force=*/true);
+  EXPECT_EQ(reconnected->Text(created), "");
+  EXPECT_EQ(reconnected->Text(reconnected->IdFor(InspectorSheets()[0])),
+            "#a { color: rgb(1, 0, 0); }");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, MainFrameNavigationClearsStoredText) {
+  auto session = Connect();
+  String user = session->Create(/*force=*/false);
+  session->SetText(user, "#a { color: rgb(1, 0, 0); }");
+  container_->DidCommitLoadForLocalFrame(GetDocument().GetFrame());
+  String text;
+  EXPECT_FALSE(
+      container_->LoadInspectorStyleSheetContent(InspectorSheets()[0], &text));
+}
+
+TEST_F(InspectorCSSAgentSubframeTest, InspectorSheetsOfChildDocumentAreIndependent) {
+  SetHtmlInnerHTML(R"HTML(<div id="a">a</div><iframe id="frame"></iframe>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+  test::RunPendingTasks();
+  auto* iframe = To<HTMLIFrameElement>(GetElementById("frame"));
+  Document* child = iframe->contentDocument();
+  ASSERT_TRUE(child);
+  ASSERT_TRUE(child->body());
+  child->body()->SetInnerHTMLWithoutTrustedTypes("<p id='p'>p</p>");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* container = MakeGarbageCollected<InspectorResourceContainer>(
+      MakeGarbageCollected<InspectedFrames>(GetDocument().GetFrame()));
+  InspectorStyleSheetSession session(this, container);
+  String main = session.Create(/*force=*/false);
+  session.SetText(main, "#a { color: rgb(1, 0, 0); }");
+  String child_id;
+  ASSERT_TRUE(session.css_agent_for_test()
+                  ->createStyleSheet(IdentifiersFactory::FrameId(child->GetFrame()),
+                                     /*force=*/true, &child_id)
+                  .IsSuccess());
+  EXPECT_EQ(session.Text(child_id), "");
+  session.SetText(child_id, "#p { color: rgb(0, 2, 0); }");
+  EXPECT_EQ(session.Text(child_id), "#p { color: rgb(0, 2, 0); }");
+  EXPECT_EQ(session.Text(main), "#a { color: rgb(1, 0, 0); }");
+
+  // Destroying the frame takes its sheet with it; the main document's stays.
+  iframe->remove();
+  UpdateAllLifecyclePhasesForTest();
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  EXPECT_EQ(session.Text(main), "#a { color: rgb(1, 0, 0); }");
+  ASSERT_EQ(GetDocument().GetStyleEngine().InspectorStyleSheets().size(), 1u);
+  EXPECT_EQ(GetDocument()
+                .GetStyleEngine()
+                .InspectorStyleSheets()[0]
+                ->cssRules(ASSERT_NO_EXCEPTION)
+                ->length(),
+            1u);
 }
 
 }  // namespace blink

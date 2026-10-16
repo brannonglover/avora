@@ -1,0 +1,14 @@
+Tests that inspector stylesheets of one document keep their own text, including across a reattach.
+Text of a new second inspector sheet: ""
+User sheet: "#a { color: rgb(1, 0, 0); }"
+Second sheet: "#b { color: rgb(0, 2, 0); }"
+Colors: a=rgb(1, 0, 0) b=rgb(0, 2, 0) c=rgb(0, 0, 0)
+
+Disconnecting and reattaching
+Inspector sheet texts after reattach: ["#a { color: rgb(1, 0, 0); }","/* marker */\n"]
+User sheet after adding a rule: "#a { color: rgb(1, 0, 0); }\n#c { color: rgb(0, 0, 3); }"
+Colors: a=rgb(1, 0, 0) b=rgb(0, 0, 0) c=rgb(0, 0, 3)
+User sheet after clearing the second sheet: "#a { color: rgb(1, 0, 0); }\n#c { color: rgb(0, 0, 3); }"
+Colors: a=rgb(1, 0, 0) b=rgb(0, 0, 0) c=rgb(0, 0, 3)
+Text of a sheet created after reattach: ""
+
