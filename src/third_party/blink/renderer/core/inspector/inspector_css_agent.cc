@@ -4462,18 +4462,26 @@ InspectorStyleSheet* InspectorCSSAgent::CreateViaInspectorStyleSheet(
 
   if (!IsA<HTMLDocument>(document) && !document->IsSVGDocument())
     return nullptr;
-  bool has_default_stylesheet =
-      default_inspector_stylesheets_.Contains(document);
+  // The default is kept in the resource container, which belongs to the
+  // inspected frame and outlives this agent, so every DevTools session gets
+  // the same default sheet. A forced sheet is never made the default.
+  CSSStyleSheet* default_sheet =
+      force ? nullptr : resource_container_->DefaultInspectorStyleSheet(document);
   CSSStyleSheet& inspector_sheet =
-      has_default_stylesheet && !force
-          ? *default_inspector_stylesheets_.at(document)
-          : document->GetStyleEngine().CreateInspectorStyleSheet();
-  if (!force) {
-    default_inspector_stylesheets_.Set(document, &inspector_sheet);
+      default_sheet ? *default_sheet
+                    : document->GetStyleEngine().CreateInspectorStyleSheet();
+  if (!force && !default_sheet) {
+    resource_container_->SetDefaultInspectorStyleSheet(document,
+                                                       &inspector_sheet);
   }
   FlushPendingProtocolNotifications();
 
   auto it = css_style_sheet_to_inspector_style_sheet_.find(&inspector_sheet);
+  if (it == css_style_sheet_to_inspector_style_sheet_.end()) {
+    // An existing default this agent has not bound yet.
+    UpdateActiveStyleSheets(document);
+    it = css_style_sheet_to_inspector_style_sheet_.find(&inspector_sheet);
+  }
   return it != css_style_sheet_to_inspector_style_sheet_.end() ? it->value
                                                                : nullptr;
 }
@@ -5580,7 +5588,6 @@ void InspectorCSSAgent::Trace(Visitor* visitor) const {
   visitor->Trace(user_agent_view_transition_style_sheet_);
   visitor->Trace(tracker_);
   visitor->Trace(weak_factory_);
-  visitor->Trace(default_inspector_stylesheets_);
   InspectorBaseAgent::Trace(visitor);
 }
 

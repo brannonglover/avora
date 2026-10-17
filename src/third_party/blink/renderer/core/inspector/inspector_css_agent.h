@@ -595,9 +595,6 @@ class CORE_EXPORT InspectorCSSAgent final
   NodeIdToNumberFocusedChildren node_id_to_number_focused_children_;
   NodeIdToForcedStartingStyle node_id_to_forced_starting_style_;
 
-  HeapHashMap<WeakMember<Document>, Member<CSSStyleSheet>>
-      default_inspector_stylesheets_;
-
   Member<StyleRuleUsageTracker> tracker_;
 
   Member<CSSStyleSheet> inspector_user_agent_style_sheet_;

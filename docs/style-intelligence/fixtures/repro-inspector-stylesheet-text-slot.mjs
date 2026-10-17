@@ -114,10 +114,11 @@ try {
     // in hash order (InspectorCSSAgent::SetActiveStyleSheets), not creation order.
     const userAgain = ids[texts.indexOf(RULE.user)];
     const secondAgain = ids[texts.indexOf(RULE.second)];
-    // 8. "New Style Rule" exactly as the frontend does it: the first inspector
-    // sheet reported for the frame, appended to.
-    const first = ids[0];
-    console.log(`NOTE  after reopening, "New Style Rule" would write into the ${first === userAgain ? 'user' : 'second'} sheet`);
+    // 8. "New Style Rule" as the frontend does it (Checkpoint 2A.2): ask the
+    // backend for the frame's default inspector sheet, then append to it.
+    const first = await s2.create(false);
+    check('8. "New Style Rule" after reopening uses the user\'s default sheet', first === userAgain && ids.length === 2,
+          `${first} vs ${userAgain}`);
     await s2.setText(first, `${await s2.text(first)}\n${RULE.plus}`);
     check('9. the original user rule survives a Styles-pane rule after reopening',
           await computed(page, '#pv-c', 'outline-color') === 'rgb(0, 0, 77)' &&

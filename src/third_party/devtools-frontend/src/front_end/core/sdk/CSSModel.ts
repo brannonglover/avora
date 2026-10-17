@@ -1,0 +1,1215 @@
+// Copyright 2010 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import type * as ProtocolProxyApi from '../../generated/protocol-proxy-api.js';
+import type * as Protocol from '../../generated/protocol.js';
+import * as Common from '../common/common.js';
+import * as Host from '../host/host.js';
+import * as Platform from '../platform/platform.js';
+import * as Root from '../root/root.js';
+import * as TextUtils from '../text_utils/text_utils.js';
+
+import {CSSFontFace} from './CSSFontFace.js';
+import {CSSMatchedStyles} from './CSSMatchedStyles.js';
+import {CSSMedia} from './CSSMedia.js';
+import {cssMetadata} from './CSSMetadata.js';
+import {CSSStyleRule} from './CSSRule.js';
+import {CSSStyleDeclaration, Type} from './CSSStyleDeclaration.js';
+import {CSSStyleSheetHeader} from './CSSStyleSheetHeader.js';
+import {DOMModel, type DOMNode} from './DOMModel.js';
+import {
+  Events as ResourceTreeModelEvents,
+  PrimaryPageChangeType,
+  type ResourceTreeFrame,
+  ResourceTreeModel,
+} from './ResourceTreeModel.js';
+import {SDKModel} from './SDKModel.js';
+import {cssSourceMapsEnabledSettingDescriptor} from './SDKSettings.js';
+import {SourceMapManager} from './SourceMapManager.js';
+import {Capability, type Target} from './Target.js';
+
+export const enum ColorScheme {
+  LIGHT = 'light',
+  DARK = 'dark',
+}
+
+export interface LayoutProperties {
+  isFlex: boolean;
+  isGrid: boolean;
+  isSubgrid: boolean;
+  isGridLanes: boolean;
+  isContents?: boolean;
+  containerType?: string;
+  hasScroll: boolean;
+}
+
+export class CSSModel extends SDKModel<EventTypes> {
+  readonly agent: ProtocolProxyApi.CSSApi;
+  readonly #domModel: DOMModel;
+  readonly #fontFaces = new Map<string, CSSFontFace>();
+  readonly #originalStyleSheetText = new Map<CSSStyleSheetHeader, Promise<string|null>>();
+  /** Per frame, the id the backend returned as the default inspector stylesheet. */
+  readonly #defaultInspectorStyleSheetIds = new Map<Protocol.Page.FrameId, Protocol.DOM.StyleSheetId>();
+  readonly #resourceTreeModel: ResourceTreeModel|null;
+  readonly #sourceMapManager: SourceMapManager<CSSStyleSheetHeader>;
+  readonly #styleLoader: ComputedStyleLoader;
+  readonly #stylePollingThrottler = new Common.Throttler.Throttler(StylePollingInterval);
+  readonly #styleSheetIdsForURL =
+      new Map<Platform.DevToolsPath.UrlString, Map<string, Set<Protocol.DOM.StyleSheetId>>>();
+  readonly #styleSheetIdToHeader = new Map<Protocol.DOM.StyleSheetId, CSSStyleSheetHeader>();
+  #cachedMatchedCascadeNode: DOMNode|null = null;
+  #cachedMatchedCascadePromise: Promise<CSSMatchedStyles|null>|null = null;
+  #cssPropertyTracker: CSSPropertyTracker|null = null;
+  #isCSSPropertyTrackingEnabled = false;
+  #isEnabled = false;
+  #isRuleUsageTrackingEnabled = false;
+  #isTrackingRequestPending = false;
+  #colorScheme: ColorScheme|undefined;
+
+  constructor(target: Target) {
+    super(target);
+    this.#domModel = (target.model(DOMModel) as DOMModel);
+    this.#sourceMapManager = new SourceMapManager(target);
+    this.agent = target.cssAgent();
+    this.#styleLoader = new ComputedStyleLoader(this);
+    this.#resourceTreeModel = target.model(ResourceTreeModel);
+    if (this.#resourceTreeModel) {
+      this.#resourceTreeModel.addEventListener(
+          ResourceTreeModelEvents.PrimaryPageChanged, this.onPrimaryPageChanged, this);
+    }
+    target.registerCSSDispatcher(new CSSDispatcher(this));
+    if (!target.suspended()) {
+      void this.enable();
+    }
+
+    const settings = this.target().targetManager().settings;
+    this.#sourceMapManager.setEnabled(settings.resolve(cssSourceMapsEnabledSettingDescriptor).get());
+    settings.resolve(cssSourceMapsEnabledSettingDescriptor)
+        .addChangeListener(event => this.#sourceMapManager.setEnabled(event.data));
+  }
+
+  async colorScheme(): Promise<ColorScheme|undefined> {
+    if (!this.#colorScheme) {
+      const colorSchemeResponse = await this.domModel()?.target().runtimeAgent().invoke_evaluate(
+          {expression: 'window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches'});
+      if (colorSchemeResponse && !colorSchemeResponse.exceptionDetails && !colorSchemeResponse.getError()) {
+        this.#colorScheme = colorSchemeResponse.result.value ? ColorScheme.DARK : ColorScheme.LIGHT;
+      }
+    }
+    return this.#colorScheme;
+  }
+
+  async resolveValues(propertyName: string|undefined, nodeId: Protocol.DOM.NodeId, ...values: string[]):
+      Promise<string[]|null> {
+    if (propertyName && cssMetadata().getLonghands(propertyName)?.length) {
+      return null;
+    }
+    const response = await this.agent.invoke_resolveValues({values, nodeId, propertyName});
+    if (response.getError()) {
+      return null;
+    }
+    return response.results;
+  }
+
+  headersForSourceURL(sourceURL: Platform.DevToolsPath.UrlString): CSSStyleSheetHeader[] {
+    const headers = [];
+    for (const headerId of this.getStyleSheetIdsForURL(sourceURL)) {
+      const header = this.styleSheetHeaderForId(headerId);
+      if (header) {
+        headers.push(header);
+      }
+    }
+    return headers;
+  }
+
+  createRawLocationsByURL(
+      sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number,
+      columnNumber: number|undefined = 0): CSSLocation[] {
+    const headers = this.headersForSourceURL(sourceURL);
+    headers.sort(stylesheetComparator);
+    const endIndex = Platform.ArrayUtilities.upperBound(
+        headers, undefined, (_, header) => lineNumber - header.startLine || columnNumber - header.startColumn);
+    if (!endIndex) {
+      return [];
+    }
+    const locations = [];
+    const last = headers[endIndex - 1];
+    for (let index = endIndex - 1;
+         index >= 0 && headers[index].startLine === last.startLine && headers[index].startColumn === last.startColumn;
+         --index) {
+      if (headers[index].containsLocation(lineNumber, columnNumber)) {
+        locations.push(new CSSLocation(headers[index], lineNumber, columnNumber));
+      }
+    }
+
+    return locations;
+    function stylesheetComparator(a: CSSStyleSheetHeader, b: CSSStyleSheetHeader): number {
+      return a.startLine - b.startLine || a.startColumn - b.startColumn || a.id.localeCompare(b.id);
+    }
+  }
+
+  sourceMapManager(): SourceMapManager<CSSStyleSheetHeader> {
+    return this.#sourceMapManager;
+  }
+
+  static readableLayerName(text: string): string {
+    return text || '<anonymous>';
+  }
+
+  static trimSourceURL(text: string): string {
+    let sourceURLIndex = text.lastIndexOf('/*# sourceURL=');
+    if (sourceURLIndex === -1) {
+      sourceURLIndex = text.lastIndexOf('/*@ sourceURL=');
+      if (sourceURLIndex === -1) {
+        return text;
+      }
+    }
+    const sourceURLLineIndex = text.lastIndexOf('\n', sourceURLIndex);
+    if (sourceURLLineIndex === -1) {
+      return text;
+    }
+    const sourceURLLine = text.substr(sourceURLLineIndex + 1).split('\n', 1)[0];
+    const sourceURLRegex = /[\x20\t]*\/\*[#@] sourceURL=[\x20\t]*([^\s]*)[\x20\t]*\*\/[\x20\t]*$/;
+    if (sourceURLLine.search(sourceURLRegex) === -1) {
+      return text;
+    }
+    return text.substr(0, sourceURLLineIndex) + text.substr(sourceURLLineIndex + sourceURLLine.length + 1);
+  }
+
+  domModel(): DOMModel {
+    return this.#domModel;
+  }
+
+  async trackComputedStyleUpdatesForNode(nodeId: Protocol.DOM.NodeId|undefined): Promise<void> {
+    await this.agent.invoke_trackComputedStyleUpdatesForNode({nodeId});
+  }
+
+  async setStyleText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange, text: string,
+      majorChange: boolean): Promise<boolean> {
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+
+      const {styles} =
+          await this.agent.invoke_setStyleTexts({edits: [{styleSheetId, range: range.serializeToObject(), text}]});
+      if (styles?.length !== 1) {
+        return false;
+      }
+
+      this.#domModel.markUndoableState(!majorChange);
+      const edit = new Edit(styleSheetId, range, text, styles[0]);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setSelectorText(styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange, text: string):
+      Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {selectorList} = await this.agent.invoke_setRuleSelector({styleSheetId, range, selector: text});
+
+      if (!selectorList) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, text, selectorList);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setPropertyRulePropertyName(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange, text: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {propertyName} =
+          await this.agent.invoke_setPropertyRulePropertyName({styleSheetId, range, propertyName: text});
+
+      if (!propertyName) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, text, propertyName);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setKeyframeKey(styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange, text: string):
+      Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {keyText} = await this.agent.invoke_setKeyframeKey({styleSheetId, range, keyText: text});
+
+      if (!keyText) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, text, keyText);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  startCoverage(): Promise<Protocol.ProtocolResponseWithError> {
+    this.#isRuleUsageTrackingEnabled = true;
+    return this.agent.invoke_startRuleUsageTracking();
+  }
+
+  async takeCoverageDelta(): Promise<{
+    timestamp: number,
+    coverage: Protocol.CSS.RuleUsage[],
+  }> {
+    const r = await this.agent.invoke_takeCoverageDelta();
+    const timestamp = (r?.timestamp) || 0;
+    const coverage = (r?.coverage) || [];
+    return {timestamp, coverage};
+  }
+
+  setLocalFontsEnabled(enabled: boolean): Promise<Protocol.ProtocolResponseWithError> {
+    return this.agent.invoke_setLocalFontsEnabled({
+      enabled,
+    });
+  }
+
+  async stopCoverage(): Promise<void> {
+    this.#isRuleUsageTrackingEnabled = false;
+    await this.agent.invoke_stopRuleUsageTracking();
+  }
+
+  async getMediaQueries(): Promise<CSSMedia[]> {
+    const {medias} = await this.agent.invoke_getMediaQueries();
+    return medias ? CSSMedia.parseMediaArrayPayload(this, medias) : [];
+  }
+
+  async getRootLayer(nodeId: Protocol.DOM.NodeId): Promise<Protocol.CSS.CSSLayerData> {
+    const {rootLayer} = await this.agent.invoke_getLayersForNode({nodeId});
+    return rootLayer;
+  }
+
+  isEnabled(): boolean {
+    return this.#isEnabled;
+  }
+
+  private async enable(): Promise<void> {
+    await this.agent.invoke_enable();
+    this.#isEnabled = true;
+    if (this.#isRuleUsageTrackingEnabled) {
+      await this.startCoverage();
+    }
+    this.dispatchEventToListeners(Events.ModelWasEnabled);
+  }
+
+  async getAnimatedStylesForNode(nodeId: Protocol.DOM.NodeId):
+      Promise<Protocol.CSS.GetAnimatedStylesForNodeResponse|null> {
+    const response = await this.agent.invoke_getAnimatedStylesForNode({nodeId});
+    if (response.getError()) {
+      return null;
+    }
+
+    return response;
+  }
+
+  async getMatchedStyles(nodeId: Protocol.DOM.NodeId): Promise<CSSMatchedStyles|null> {
+    const node = this.#domModel.nodeForId(nodeId);
+    if (!node) {
+      return null;
+    }
+
+    const shouldGetAnimatedStyles = Root.Runtime.hostConfig.devToolsAnimationStylesInStylesTab?.enabled;
+    const [matchedStylesResponse, animatedStylesResponse] = await Promise.all([
+      this.agent.invoke_getMatchedStylesForNode({nodeId}),
+      shouldGetAnimatedStyles ? this.agent.invoke_getAnimatedStylesForNode({nodeId}) : undefined,
+    ]);
+
+    if (matchedStylesResponse.getError()) {
+      return null;
+    }
+
+    const payload = {
+      cssModel: this,
+      node,
+      inlinePayload: matchedStylesResponse.inlineStyle || null,
+      attributesPayload: matchedStylesResponse.attributesStyle || null,
+      matchedPayload: matchedStylesResponse.matchedCSSRules || [],
+      pseudoPayload: matchedStylesResponse.pseudoElements || [],
+      inheritedPayload: matchedStylesResponse.inherited || [],
+      inheritedPseudoPayload: matchedStylesResponse.inheritedPseudoElements || [],
+      animationsPayload: matchedStylesResponse.cssKeyframesRules || [],
+      parentLayoutNodeId: matchedStylesResponse.parentLayoutNodeId,
+      positionTryRules: matchedStylesResponse.cssPositionTryRules || [],
+      propertyRules: matchedStylesResponse.cssPropertyRules ?? [],
+      functionRules: matchedStylesResponse.cssFunctionRules ?? [],
+      cssPropertyRegistrations: matchedStylesResponse.cssPropertyRegistrations ?? [],
+      atRules: matchedStylesResponse.cssAtRules ?? [],
+      activePositionFallbackIndex: matchedStylesResponse.activePositionFallbackIndex ?? -1,
+      animationStylesPayload: animatedStylesResponse?.animationStyles || [],
+      inheritedAnimatedPayload: animatedStylesResponse?.inherited || [],
+      transitionsStylePayload: animatedStylesResponse?.transitionsStyle || null,
+    };
+    return await CSSMatchedStyles.create(payload);
+  }
+
+  async getClassNames(styleSheetId: Protocol.DOM.StyleSheetId): Promise<string[]> {
+    const {classNames} = await this.agent.invoke_collectClassNames({styleSheetId});
+    return classNames || [];
+  }
+
+  async getComputedStyle(nodeId: Protocol.DOM.NodeId): Promise<Map<string, string>|null> {
+    if (!this.isEnabled()) {
+      await this.enable();
+    }
+    return await this.#styleLoader.computedStylePromise(nodeId);
+  }
+
+  async getComputedStyleExtraFields(nodeId: Protocol.DOM.NodeId): Promise<Protocol.CSS.ComputedStyleExtraFields> {
+    if (!this.isEnabled()) {
+      await this.enable();
+    }
+    return await this.#styleLoader.extraFieldsPromise(nodeId);
+  }
+
+  async getLayoutPropertiesFromComputedStyle(nodeId: Protocol.DOM.NodeId): Promise<LayoutProperties|null> {
+    const styles = await this.getComputedStyle(nodeId);
+    if (!styles) {
+      return null;
+    }
+
+    const display = styles.get('display');
+    const isContents = display === 'contents';
+    const isFlex = display === 'flex' || display === 'inline-flex';
+    const isGrid = display === 'grid' || display === 'inline-grid';
+    const isSubgrid = (isGrid &&
+                       (styles.get('grid-template-columns')?.startsWith('subgrid') ||
+                        styles.get('grid-template-rows')?.startsWith('subgrid'))) ??
+        false;
+    const isGridLanes = display === 'grid-lanes' || display === 'inline-grid-lanes';
+    const containerType = styles.get('container-type');
+    const isContainer = Boolean(containerType) && containerType !== '' && containerType !== 'normal';
+    const hasScroll = Boolean(styles.get('scroll-snap-type')) && styles.get('scroll-snap-type') !== 'none';
+
+    return {
+      isFlex,
+      isGrid,
+      isSubgrid,
+      isGridLanes,
+      isContents,
+      containerType: isContainer ? containerType : undefined,
+      hasScroll,
+    };
+  }
+
+  async getEnvironmentVariables(): Promise<Record<string, string>> {
+    const response = await this.agent.invoke_getEnvironmentVariables();
+    if (response.getError()) {
+      return {};
+    }
+    return response.environmentVariables;
+  }
+
+  async getBackgroundColors(nodeId: Protocol.DOM.NodeId): Promise<ContrastInfo|null> {
+    const response = await this.agent.invoke_getBackgroundColors({nodeId});
+    if (response.getError()) {
+      return null;
+    }
+
+    return {
+      backgroundColors: response.backgroundColors || null,
+      computedFontSize: response.computedFontSize || '',
+      computedFontWeight: response.computedFontWeight || '',
+    };
+  }
+
+  async getPlatformFonts(nodeId: Protocol.DOM.NodeId): Promise<Protocol.CSS.PlatformFontUsage[]|null> {
+    const {fonts} = await this.agent.invoke_getPlatformFontsForNode({nodeId});
+    return fonts;
+  }
+
+  allStyleSheets(): CSSStyleSheetHeader[] {
+    const values = [...this.#styleSheetIdToHeader.values()];
+    function styleSheetComparator(a: CSSStyleSheetHeader, b: CSSStyleSheetHeader): number {
+      if (a.sourceURL < b.sourceURL) {
+        return -1;
+      }
+      if (a.sourceURL > b.sourceURL) {
+        return 1;
+      }
+      return a.startLine - b.startLine || a.startColumn - b.startColumn;
+    }
+    values.sort(styleSheetComparator);
+
+    return values;
+  }
+
+  async getInlineStyles(nodeId: Protocol.DOM.NodeId): Promise<InlineStyleResult|null> {
+    const response = await this.agent.invoke_getInlineStylesForNode({nodeId});
+
+    if (response.getError() || !response.inlineStyle) {
+      return null;
+    }
+    const inlineStyle = new CSSStyleDeclaration(this, null, response.inlineStyle, Type.Inline);
+    const attributesStyle = response.attributesStyle ?
+        new CSSStyleDeclaration(this, null, response.attributesStyle, Type.Attributes) :
+        null;
+    return new InlineStyleResult(inlineStyle, attributesStyle);
+  }
+
+  forceStartingStyle(node: DOMNode, forced: boolean): boolean {
+    void this.agent.invoke_forceStartingStyle({nodeId: node.id, forced});
+    this.dispatchEventToListeners(Events.StartingStylesStateForced, node);
+    return true;
+  }
+
+  forcePseudoState(node: DOMNode, pseudoClass: string, enable: boolean): boolean {
+    const forcedPseudoClasses = node.marker<string[]>(PseudoStateMarker) || [];
+    const hasPseudoClass = forcedPseudoClasses.includes(pseudoClass);
+    if (enable) {
+      if (hasPseudoClass) {
+        return false;
+      }
+      forcedPseudoClasses.push(pseudoClass);
+      node.setMarker(PseudoStateMarker, forcedPseudoClasses);
+    } else {
+      if (!hasPseudoClass) {
+        return false;
+      }
+      Platform.ArrayUtilities.removeElement(forcedPseudoClasses, pseudoClass);
+      if (forcedPseudoClasses.length) {
+        node.setMarker(PseudoStateMarker, forcedPseudoClasses);
+      } else {
+        node.setMarker(PseudoStateMarker, null);
+      }
+    }
+
+    if (node.id === undefined) {
+      return false;
+    }
+    void this.agent.invoke_forcePseudoState({nodeId: node.id, forcedPseudoClasses});
+    this.dispatchEventToListeners(Events.PseudoStateForced, {node, pseudoClass, enable});
+    return true;
+  }
+
+  pseudoState(node: DOMNode): string[]|null {
+    return node.marker(PseudoStateMarker) || [];
+  }
+
+  async setMediaText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newMediaText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {media} = await this.agent.invoke_setMediaText({styleSheetId, range, text: newMediaText});
+
+      if (!media) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newMediaText, media);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setContainerQueryText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newContainerQueryText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {containerQuery} =
+          await this.agent.invoke_setContainerQueryText({styleSheetId, range, text: newContainerQueryText});
+
+      if (!containerQuery) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newContainerQueryText, containerQuery);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setContainerQueryConditionText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newContainerQueryConditionText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {containerQuery} = await this.agent.invoke_setContainerQueryConditionText(
+          {styleSheetId, range, text: newContainerQueryConditionText});
+
+      if (!containerQuery) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newContainerQueryConditionText, containerQuery);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setSupportsText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newSupportsText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {supports} = await this.agent.invoke_setSupportsText({styleSheetId, range, text: newSupportsText});
+
+      if (!supports) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newSupportsText, supports);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setNavigationText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newNavigationText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {navigation} = await this.agent.invoke_setNavigationText({styleSheetId, range, text: newNavigationText});
+
+      if (!navigation) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newNavigationText, navigation);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async setScopeText(
+      styleSheetId: Protocol.DOM.StyleSheetId, range: TextUtils.TextRange.TextRange,
+      newScopeText: string): Promise<boolean> {
+    Host.userMetrics.actionTaken(Host.UserMetrics.Action.StyleRuleEdited);
+
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {scope} = await this.agent.invoke_setScopeText({styleSheetId, range, text: newScopeText});
+
+      if (!scope) {
+        return false;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, range, newScopeText, scope);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  async addRule(styleSheetId: Protocol.DOM.StyleSheetId, ruleText: string, ruleLocation: TextUtils.TextRange.TextRange):
+      Promise<CSSStyleRule|null> {
+    try {
+      await this.ensureOriginalStyleSheetText(styleSheetId);
+      const {rule} = await this.agent.invoke_addRule({styleSheetId, ruleText, location: ruleLocation});
+
+      if (!rule) {
+        return null;
+      }
+      this.#domModel.markUndoableState();
+      const edit = new Edit(styleSheetId, ruleLocation, ruleText, rule);
+      this.fireStyleSheetChanged(styleSheetId, edit);
+      return new CSSStyleRule(this, rule);
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+  }
+
+  /**
+   * The frame's default inspector stylesheet, where the Styles pane adds new
+   * rules. A frame can have several inspector stylesheets (other features
+   * create their own with `force`), and the order they are reported in says
+   * nothing about which one is the default, so the backend is asked:
+   * `CSS.createStyleSheet` without `force` returns the document's default,
+   * creating it only if there is none. The answer is remembered for as long as
+   * its header exists.
+   */
+  async requestViaInspectorStylesheet(maybeFrameId?: Protocol.Page.FrameId|null): Promise<CSSStyleSheetHeader|null> {
+    const frameId = maybeFrameId ||
+        (this.#resourceTreeModel && this.#resourceTreeModel.mainFrame ? this.#resourceTreeModel.mainFrame.id : null);
+    if (!frameId) {
+      return null;
+    }
+    const knownId = this.#defaultInspectorStyleSheetIds.get(frameId);
+    const known = knownId ? this.#styleSheetIdToHeader.get(knownId) : undefined;
+    if (known) {
+      return known;
+    }
+
+    try {
+      const header = await this.createInspectorStylesheet(frameId);
+      if (header) {
+        this.#defaultInspectorStyleSheetIds.set(frameId, header.id);
+      }
+      return header;
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+  }
+
+  async createInspectorStylesheet(frameId: Protocol.Page.FrameId, force = false): Promise<CSSStyleSheetHeader|null> {
+    const result = await this.agent.invoke_createStyleSheet({frameId, force});
+    if (result.getError()) {
+      throw new Error(result.getError());
+    }
+    return this.#styleSheetIdToHeader.get(result.styleSheetId) || null;
+  }
+
+  mediaQueryResultChanged(): void {
+    this.#colorScheme = undefined;
+    this.dispatchEventToListeners(Events.MediaQueryResultChanged);
+  }
+
+  fontsUpdated(fontFace?: Protocol.CSS.FontFace|null): void {
+    if (fontFace) {
+      this.#fontFaces.set(fontFace.src, new CSSFontFace(fontFace));
+    }
+    this.dispatchEventToListeners(Events.FontsUpdated);
+  }
+
+  fontFaces(): CSSFontFace[] {
+    return [...this.#fontFaces.values()];
+  }
+
+  fontFaceForSource(src: string): CSSFontFace|undefined {
+    return this.#fontFaces.get(src);
+  }
+
+  styleSheetHeaderForId(id: Protocol.DOM.StyleSheetId): CSSStyleSheetHeader|null {
+    return this.#styleSheetIdToHeader.get(id) || null;
+  }
+
+  styleSheetHeaders(): CSSStyleSheetHeader[] {
+    return [...this.#styleSheetIdToHeader.values()];
+  }
+
+  fireStyleSheetChanged(styleSheetId: Protocol.DOM.StyleSheetId, edit?: Edit): void {
+    this.dispatchEventToListeners(Events.StyleSheetChanged, {styleSheetId, edit});
+  }
+
+  private ensureOriginalStyleSheetText(styleSheetId: Protocol.DOM.StyleSheetId): Promise<string|null> {
+    const header = this.styleSheetHeaderForId(styleSheetId);
+    if (!header) {
+      return Promise.resolve(null);
+    }
+    let promise = this.#originalStyleSheetText.get(header);
+    if (!promise) {
+      promise = this.getStyleSheetText(header.id);
+      this.#originalStyleSheetText.set(header, promise);
+      this.originalContentRequestedForTest(header);
+    }
+    return promise;
+  }
+
+  private originalContentRequestedForTest(_header: CSSStyleSheetHeader): void {
+  }
+
+  originalStyleSheetText(header: CSSStyleSheetHeader): Promise<string|null> {
+    return this.ensureOriginalStyleSheetText(header.id);
+  }
+
+  getAllStyleSheetHeaders(): Iterable<CSSStyleSheetHeader> {
+    return this.#styleSheetIdToHeader.values();
+  }
+
+  computedStyleUpdated(nodeId: Protocol.DOM.NodeId): void {
+    this.dispatchEventToListeners(Events.ComputedStyleUpdated, {nodeId});
+  }
+
+  styleSheetAdded(header: Protocol.CSS.CSSStyleSheetHeader): void {
+    console.assert(!this.#styleSheetIdToHeader.get(header.styleSheetId));
+    if (header.loadingFailed) {
+      // When the stylesheet fails to load, treat it as a constructed stylesheet. Failed sheets can still be modified
+      // from JS, in which case CSS.styleSheetChanged events are sent. So as to not confuse CSSModel clients we don't
+      // just discard the failed sheet here. Treating the failed sheet as a constructed stylesheet lets us keep track
+      // of it cleanly.
+      header.hasSourceURL = false;
+      header.isConstructed = true;
+      header.isInline = false;
+      header.isMutable = false;
+      header.sourceURL = '';
+      header.sourceMapURL = undefined;
+    }
+    const styleSheetHeader = new CSSStyleSheetHeader(this, header);
+    this.#styleSheetIdToHeader.set(header.styleSheetId, styleSheetHeader);
+    const url = styleSheetHeader.resourceURL();
+    let frameIdToStyleSheetIds = this.#styleSheetIdsForURL.get(url);
+    if (!frameIdToStyleSheetIds) {
+      frameIdToStyleSheetIds = new Map();
+      this.#styleSheetIdsForURL.set(url, frameIdToStyleSheetIds);
+    }
+    if (frameIdToStyleSheetIds) {
+      let styleSheetIds = frameIdToStyleSheetIds.get(styleSheetHeader.frameId);
+      if (!styleSheetIds) {
+        styleSheetIds = new Set();
+        frameIdToStyleSheetIds.set(styleSheetHeader.frameId, styleSheetIds);
+      }
+      styleSheetIds.add(styleSheetHeader.id);
+    }
+    this.#sourceMapManager.attachSourceMap(styleSheetHeader, styleSheetHeader.sourceURL, styleSheetHeader.sourceMapURL);
+    this.dispatchEventToListeners(Events.StyleSheetAdded, styleSheetHeader);
+  }
+
+  styleSheetRemoved(id: Protocol.DOM.StyleSheetId): void {
+    const header = this.#styleSheetIdToHeader.get(id);
+    console.assert(Boolean(header));
+    if (!header) {
+      return;
+    }
+    this.#styleSheetIdToHeader.delete(id);
+    const url = header.resourceURL();
+    const frameIdToStyleSheetIds = this.#styleSheetIdsForURL.get(url);
+    console.assert(
+        Boolean(frameIdToStyleSheetIds), 'No frameId to styleSheetId map is available for given style sheet URL.');
+    if (frameIdToStyleSheetIds) {
+      const stylesheetIds = frameIdToStyleSheetIds.get(header.frameId);
+      if (stylesheetIds) {
+        stylesheetIds.delete(id);
+        if (!stylesheetIds.size) {
+          frameIdToStyleSheetIds.delete(header.frameId);
+          if (!frameIdToStyleSheetIds.size) {
+            this.#styleSheetIdsForURL.delete(url);
+          }
+        }
+      }
+    }
+    this.#originalStyleSheetText.delete(header);
+    this.#sourceMapManager.detachSourceMap(header);
+    this.dispatchEventToListeners(Events.StyleSheetRemoved, header);
+  }
+
+  getStyleSheetIdsForURL(url: Platform.DevToolsPath.UrlString): Protocol.DOM.StyleSheetId[] {
+    const frameIdToStyleSheetIds = this.#styleSheetIdsForURL.get(url);
+    if (!frameIdToStyleSheetIds) {
+      return [];
+    }
+
+    const result = [];
+    for (const styleSheetIds of frameIdToStyleSheetIds.values()) {
+      result.push(...styleSheetIds);
+    }
+    return result;
+  }
+
+  async setStyleSheetText(styleSheetId: Protocol.DOM.StyleSheetId, newText: string, majorChange: boolean):
+      Promise<string|null> {
+    const header = this.#styleSheetIdToHeader.get(styleSheetId);
+    if (!header) {
+      return 'Unknown stylesheet in CSS.setStyleSheetText';
+    }
+    newText = CSSModel.trimSourceURL(newText);
+    if (header.hasSourceURL) {
+      newText += '\n/*# sourceURL=' + header.sourceURL + ' */';
+    }
+
+    await this.ensureOriginalStyleSheetText(styleSheetId);
+    const response = await this.agent.invoke_setStyleSheetText({styleSheetId: header.id, text: newText});
+    const sourceMapURL = response.sourceMapURL as Platform.DevToolsPath.UrlString;
+
+    this.#sourceMapManager.detachSourceMap(header);
+    header.setSourceMapURL(sourceMapURL);
+    this.#sourceMapManager.attachSourceMap(header, header.sourceURL, header.sourceMapURL);
+    if (sourceMapURL === null) {
+      return 'Error in CSS.setStyleSheetText';
+    }
+    this.#domModel.markUndoableState(!majorChange);
+    this.fireStyleSheetChanged(styleSheetId);
+    return null;
+  }
+
+  async getStyleSheetText(styleSheetId: Protocol.DOM.StyleSheetId): Promise<string|null> {
+    const response = await this.agent.invoke_getStyleSheetText({styleSheetId});
+    if (response.getError()) {
+      return null;
+    }
+    const {text} = response;
+    return text && CSSModel.trimSourceURL(text);
+  }
+
+  private async onPrimaryPageChanged(
+      event: Common.EventTarget.EventTargetEvent<{frame: ResourceTreeFrame, type: PrimaryPageChangeType}>):
+      Promise<void> {
+    // If the main frame was restored from the back-forward cache, the order of CDP
+    // is different from the regular navigations. In this case, events about CSS
+    // stylesheet has already been received and they are mixed with the previous page
+    // stylesheets. Therefore, we re-enable the CSS agent to get fresh events.
+    // For the regular navigations, we can just clear the local data because events about
+    // stylesheets will arrive later.
+    if (event.data.frame.backForwardCacheDetails.restoredFromCache) {
+      await this.suspendModel();
+      await this.resumeModel();
+    } else if (event.data.type !== PrimaryPageChangeType.ACTIVATION) {
+      this.resetStyleSheets();
+      this.resetFontFaces();
+    }
+  }
+
+  private resetStyleSheets(): void {
+    const headers = [...this.#styleSheetIdToHeader.values()];
+    this.#styleSheetIdsForURL.clear();
+    this.#styleSheetIdToHeader.clear();
+    this.#defaultInspectorStyleSheetIds.clear();
+    for (const header of headers) {
+      this.#sourceMapManager.detachSourceMap(header);
+      this.dispatchEventToListeners(Events.StyleSheetRemoved, header);
+    }
+  }
+
+  private resetFontFaces(): void {
+    this.#fontFaces.clear();
+  }
+
+  override async suspendModel(): Promise<void> {
+    this.#isEnabled = false;
+    await this.agent.invoke_disable();
+    this.resetStyleSheets();
+    this.resetFontFaces();
+  }
+
+  override async resumeModel(): Promise<void> {
+    return await this.enable();
+  }
+
+  setEffectivePropertyValueForNode(nodeId: Protocol.DOM.NodeId, propertyName: string, value: string): void {
+    void this.agent.invoke_setEffectivePropertyValueForNode({nodeId, propertyName, value});
+  }
+
+  cachedMatchedCascadeForNode(node: DOMNode): Promise<CSSMatchedStyles|null> {
+    if (this.#cachedMatchedCascadeNode !== node) {
+      this.discardCachedMatchedCascade();
+    }
+    this.#cachedMatchedCascadeNode = node;
+    if (!this.#cachedMatchedCascadePromise) {
+      if (node.id) {
+        this.#cachedMatchedCascadePromise = this.getMatchedStyles(node.id);
+      } else {
+        return Promise.resolve(null);
+      }
+    }
+    return this.#cachedMatchedCascadePromise;
+  }
+
+  discardCachedMatchedCascade(): void {
+    this.#cachedMatchedCascadeNode = null;
+    this.#cachedMatchedCascadePromise = null;
+  }
+
+  createCSSPropertyTracker(propertiesToTrack: Protocol.CSS.CSSComputedStyleProperty[]): CSSPropertyTracker {
+    const cssPropertyTracker = new CSSPropertyTracker(this, propertiesToTrack);
+    return cssPropertyTracker;
+  }
+
+  enableCSSPropertyTracker(cssPropertyTracker: CSSPropertyTracker): void {
+    const propertiesToTrack = cssPropertyTracker.getTrackedProperties();
+    if (propertiesToTrack.length === 0) {
+      return;
+    }
+    void this.agent.invoke_trackComputedStyleUpdates({propertiesToTrack});
+    this.#isCSSPropertyTrackingEnabled = true;
+    this.#cssPropertyTracker = cssPropertyTracker;
+    void this.pollComputedStyleUpdates();
+  }
+
+  // Since we only support one tracker at a time, this call effectively disables
+  // style tracking.
+  disableCSSPropertyTracker(): void {
+    this.#isCSSPropertyTrackingEnabled = false;
+    this.#cssPropertyTracker = null;
+    // Sending an empty list to the backend signals the close of style tracking
+    void this.agent.invoke_trackComputedStyleUpdates({propertiesToTrack: []});
+  }
+
+  private async pollComputedStyleUpdates(): Promise<void> {
+    if (this.#isTrackingRequestPending) {
+      return;
+    }
+
+    if (this.#isCSSPropertyTrackingEnabled) {
+      this.#isTrackingRequestPending = true;
+      const result = await this.agent.invoke_takeComputedStyleUpdates();
+      this.#isTrackingRequestPending = false;
+
+      if (result.getError() || !result.nodeIds || !this.#isCSSPropertyTrackingEnabled) {
+        return;
+      }
+
+      if (this.#cssPropertyTracker) {
+        this.#cssPropertyTracker.dispatchEventToListeners(
+            CSSPropertyTrackerEvents.TRACKED_CSS_PROPERTIES_UPDATED,
+            result.nodeIds.map(nodeId => this.#domModel.nodeForId(nodeId)));
+      }
+    }
+
+    if (this.#isCSSPropertyTrackingEnabled) {
+      void this.#stylePollingThrottler.schedule(this.pollComputedStyleUpdates.bind(this));
+    }
+  }
+
+  override dispose(): void {
+    this.disableCSSPropertyTracker();
+    super.dispose();
+    this.dispatchEventToListeners(Events.ModelDisposed, this);
+  }
+
+  getAgent(): ProtocolProxyApi.CSSApi {
+    return this.agent;
+  }
+}
+
+export enum Events {
+  /* eslint-disable @typescript-eslint/naming-convention -- Used by web_tests. */
+  FontsUpdated = 'FontsUpdated',
+  MediaQueryResultChanged = 'MediaQueryResultChanged',
+  ModelWasEnabled = 'ModelWasEnabled',
+  ModelDisposed = 'ModelDisposed',
+  PseudoStateForced = 'PseudoStateForced',
+  StartingStylesStateForced = 'StartingStylesStateForced',
+  StyleSheetAdded = 'StyleSheetAdded',
+  StyleSheetChanged = 'StyleSheetChanged',
+  StyleSheetRemoved = 'StyleSheetRemoved',
+  ComputedStyleUpdated = 'ComputedStyleUpdated',
+  /* eslint-enable @typescript-eslint/naming-convention */
+}
+
+export interface StyleSheetChangedEvent {
+  styleSheetId: Protocol.DOM.StyleSheetId;
+  edit?: Edit;
+}
+
+export interface PseudoStateForcedEvent {
+  node: DOMNode;
+  pseudoClass: string;
+  enable: boolean;
+}
+
+export interface ComputedStyleUpdatedEvent {
+  nodeId: Protocol.DOM.NodeId;
+}
+
+export interface EventTypes {
+  [Events.FontsUpdated]: void;
+  [Events.MediaQueryResultChanged]: void;
+  [Events.ModelWasEnabled]: void;
+  [Events.ModelDisposed]: CSSModel;
+  [Events.PseudoStateForced]: PseudoStateForcedEvent;
+  [Events.StartingStylesStateForced]: DOMNode;
+  [Events.StyleSheetAdded]: CSSStyleSheetHeader;
+  [Events.StyleSheetChanged]: StyleSheetChangedEvent;
+  [Events.StyleSheetRemoved]: CSSStyleSheetHeader;
+  [Events.ComputedStyleUpdated]: ComputedStyleUpdatedEvent;
+}
+
+const PseudoStateMarker = 'pseudo-state-marker';
+
+export class Edit {
+  styleSheetId: string;
+  oldRange: TextUtils.TextRange.TextRange;
+  newRange: TextUtils.TextRange.TextRange;
+  newText: string;
+  payload: Object|null;
+  constructor(styleSheetId: string, oldRange: TextUtils.TextRange.TextRange, newText: string, payload: Object|null) {
+    this.styleSheetId = styleSheetId;
+    this.oldRange = oldRange;
+    this.newRange = TextUtils.TextRange.TextRange.fromEdit(oldRange, newText);
+    this.newText = newText;
+    this.payload = payload;
+  }
+}
+
+export class CSSLocation {
+  readonly #cssModel: CSSModel;
+  styleSheetId: Protocol.DOM.StyleSheetId;
+  url: Platform.DevToolsPath.UrlString;
+  lineNumber: number;
+  columnNumber: number;
+  constructor(header: CSSStyleSheetHeader, lineNumber: number, columnNumber?: number) {
+    this.#cssModel = header.cssModel();
+    this.styleSheetId = header.id;
+    this.url = header.resourceURL();
+    this.lineNumber = lineNumber;
+    this.columnNumber = columnNumber || 0;
+  }
+
+  cssModel(): CSSModel {
+    return this.#cssModel;
+  }
+
+  header(): CSSStyleSheetHeader|null {
+    return this.#cssModel.styleSheetHeaderForId(this.styleSheetId);
+  }
+}
+
+class CSSDispatcher implements ProtocolProxyApi.CSSDispatcher {
+  readonly #cssModel: CSSModel;
+  constructor(cssModel: CSSModel) {
+    this.#cssModel = cssModel;
+  }
+
+  mediaQueryResultChanged(): void {
+    this.#cssModel.mediaQueryResultChanged();
+  }
+
+  fontsUpdated({font}: Protocol.CSS.FontsUpdatedEvent): void {
+    this.#cssModel.fontsUpdated(font);
+  }
+
+  styleSheetChanged({styleSheetId}: Protocol.CSS.StyleSheetChangedEvent): void {
+    this.#cssModel.fireStyleSheetChanged(styleSheetId);
+  }
+
+  styleSheetAdded({header}: Protocol.CSS.StyleSheetAddedEvent): void {
+    this.#cssModel.styleSheetAdded(header);
+  }
+
+  styleSheetRemoved({styleSheetId}: Protocol.CSS.StyleSheetRemovedEvent): void {
+    this.#cssModel.styleSheetRemoved(styleSheetId);
+  }
+
+  computedStyleUpdated({nodeId}: Protocol.CSS.ComputedStyleUpdatedEvent): void {
+    this.#cssModel.computedStyleUpdated(nodeId);
+  }
+}
+
+interface ComputedStyleWithExtraFields {
+  style: Map<string, string>|null;
+  extraFields: Protocol.CSS.ComputedStyleExtraFields;
+}
+
+class ComputedStyleLoader {
+  #cssModel: CSSModel;
+  #nodeIdToPromise = new Map<number, Promise<ComputedStyleWithExtraFields>>();
+  constructor(cssModel: CSSModel) {
+    this.#cssModel = cssModel;
+  }
+
+  #getResponsePromise(nodeId: Protocol.DOM.NodeId): Promise<ComputedStyleWithExtraFields> {
+    let promise = this.#nodeIdToPromise.get(nodeId);
+    if (promise) {
+      return promise;
+    }
+    promise =
+        this.#cssModel.getAgent().invoke_getComputedStyleForNode({nodeId}).then(({computedStyle, extraFields}) => {
+          this.#nodeIdToPromise.delete(nodeId);
+          if (!computedStyle?.length) {
+            return {style: null, extraFields};
+          }
+          const result = new Map<string, string>();
+          for (const property of computedStyle) {
+            result.set(property.name, property.value);
+          }
+          return {style: result, extraFields};
+        });
+    this.#nodeIdToPromise.set(nodeId, promise);
+    return promise;
+  }
+
+  async computedStylePromise(nodeId: Protocol.DOM.NodeId): Promise<Map<string, string>|null> {
+    const computedStyleWithExtraFields = await this.#getResponsePromise(nodeId);
+    return computedStyleWithExtraFields.style;
+  }
+
+  async extraFieldsPromise(nodeId: Protocol.DOM.NodeId): Promise<Protocol.CSS.ComputedStyleExtraFields> {
+    const computedStyleWithExtraFields = await this.#getResponsePromise(nodeId);
+    return computedStyleWithExtraFields.extraFields;
+  }
+}
+
+export class InlineStyleResult {
+  inlineStyle: CSSStyleDeclaration|null;
+  attributesStyle: CSSStyleDeclaration|null;
+  constructor(inlineStyle: CSSStyleDeclaration|null, attributesStyle: CSSStyleDeclaration|null) {
+    this.inlineStyle = inlineStyle;
+    this.attributesStyle = attributesStyle;
+  }
+}
+
+export class CSSPropertyTracker extends Common.ObjectWrapper.ObjectWrapper<CSSPropertyTrackerEventTypes> {
+  readonly #cssModel: CSSModel;
+  readonly #properties: Protocol.CSS.CSSComputedStyleProperty[];
+  constructor(cssModel: CSSModel, propertiesToTrack: Protocol.CSS.CSSComputedStyleProperty[]) {
+    super();
+    this.#cssModel = cssModel;
+    this.#properties = propertiesToTrack;
+  }
+
+  start(): void {
+    this.#cssModel.enableCSSPropertyTracker(this);
+  }
+
+  stop(): void {
+    this.#cssModel.disableCSSPropertyTracker();
+  }
+
+  getTrackedProperties(): Protocol.CSS.CSSComputedStyleProperty[] {
+    return this.#properties;
+  }
+}
+
+const StylePollingInterval = 1000;  // throttling interval for style polling, in milliseconds
+
+export const enum CSSPropertyTrackerEvents {
+  TRACKED_CSS_PROPERTIES_UPDATED = 'TrackedCSSPropertiesUpdated',
+}
+
+export interface CSSPropertyTrackerEventTypes {
+  [CSSPropertyTrackerEvents.TRACKED_CSS_PROPERTIES_UPDATED]: Array<DOMNode|null>;
+}
+
+SDKModel.register(CSSModel, {capabilities: Capability.DOM, autostart: true});
+export interface ContrastInfo {
+  backgroundColors: string[]|null;
+  computedFontSize: string;
+  computedFontWeight: string;
+}

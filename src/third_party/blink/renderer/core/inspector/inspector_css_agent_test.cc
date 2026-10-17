@@ -2540,6 +2540,151 @@ TEST_F(InspectorStyleSheetIsolationTest, MainFrameNavigationClearsStoredText) {
       container_->LoadInspectorStyleSheetContent(InspectorSheets()[0], &text));
 }
 
+// One canonical default inspector stylesheet per document: CSS.createStyleSheet
+// without `force` returns it in every session, and a forced sheet never
+// becomes it. The default is remembered by the resource container, which
+// outlives CSS agents, and is checked against the document's live inspector
+// stylesheets each time it is used.
+TEST_F(InspectorStyleSheetIsolationTest, DefaultCreatedBeforeForcedSheets) {
+  auto session = Connect();
+  String default_id = session->Create(/*force=*/false);
+  session->Create(/*force=*/true);
+  session->Create(/*force=*/true);
+  EXPECT_EQ(session->Create(/*force=*/false), default_id);
+  EXPECT_EQ(session->IdFor(InspectorSheets()[0]), default_id);
+  EXPECT_EQ(InspectorSheets().size(), 3u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, ForcedSheetCreatedBeforeDefault) {
+  auto session = Connect();
+  String forced = session->Create(/*force=*/true);
+  String default_id = session->Create(/*force=*/false);
+  EXPECT_NE(default_id, forced);
+  EXPECT_EQ(session->IdFor(InspectorSheets()[1]), default_id);
+  EXPECT_EQ(session->Create(/*force=*/false), default_id);
+  EXPECT_EQ(InspectorSheets().size(), 2u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, MultipleForcedSheetsBeforeDefault) {
+  auto session = Connect();
+  for (int i = 0; i < 3; i++) {
+    session->Create(/*force=*/true);
+  }
+  String default_id = session->Create(/*force=*/false);
+  EXPECT_EQ(session->IdFor(InspectorSheets()[3]), default_id);
+  EXPECT_EQ(session->Create(/*force=*/false), default_id);
+  EXPECT_EQ(InspectorSheets().size(), 4u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, MultipleForcedSheetsAfterDefault) {
+  auto session = Connect();
+  String default_id = session->Create(/*force=*/false);
+  for (int i = 0; i < 3; i++) {
+    EXPECT_NE(session->Create(/*force=*/true), default_id);
+  }
+  EXPECT_EQ(session->Create(/*force=*/false), default_id);
+  EXPECT_EQ(InspectorSheets().size(), 4u);
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, ForcedSheetNeverBecomesDefault) {
+  auto session = Connect();
+  String forced = session->Create(/*force=*/true);
+  session->SetText(forced, "/* studio */");
+  session->Close();
+  auto reconnected = Connect();
+  // Only a forced sheet exists; asking for the default makes a new one.
+  String default_id = reconnected->Create(/*force=*/false);
+  EXPECT_NE(default_id, reconnected->IdFor(InspectorSheets()[0]));
+  EXPECT_EQ(InspectorSheets().size(), 2u);
+  EXPECT_EQ(reconnected->Text(default_id), "");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, DefaultIsReusedAcrossReconnects) {
+  const String user_text =
+      "/* mine */\n#a {\n  color: rgb(1, 0, 0);\n}\n";
+  auto session = Connect();
+  session->SetText(session->Create(/*force=*/true), "/* studio */");
+  String default_id = session->Create(/*force=*/false);
+  session->SetText(default_id, user_text);
+  Persistent<CSSStyleSheet> default_sheet = InspectorSheets()[1];
+  session->Close();
+
+  for (int reconnect = 1; reconnect <= 3; reconnect++) {
+    auto again = Connect();
+    String id = again->Create(/*force=*/false);
+    EXPECT_EQ(id, again->IdFor(default_sheet)) << "reconnect " << reconnect;
+    // Rules, comments, and formatting come back unchanged.
+    EXPECT_EQ(again->Text(id), user_text) << "reconnect " << reconnect;
+    // Nothing new was created.
+    EXPECT_EQ(InspectorSheets().size(), 2u) << "reconnect " << reconnect;
+    EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  }
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, NewRulesAppendToCanonicalDefault) {
+  auto session = Connect();
+  String studio = session->Create(/*force=*/true);
+  session->SetText(studio, "#c { color: rgb(0, 0, 3); }");
+  String default_id = session->Create(/*force=*/false);
+  session->SetText(default_id, "#a { color: rgb(1, 0, 0); }");
+  session->Close();
+
+  auto reconnected = Connect();
+  // What the Styles pane now does: ask for the default, then append to it.
+  reconnected->AppendRule(reconnected->Create(/*force=*/false),
+                          "#b { color: rgb(0, 2, 0); }");
+  EXPECT_EQ(RuleCount(InspectorSheets()[1]), 2u);
+  EXPECT_EQ(RuleCount(InspectorSheets()[0]), 1u);
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("b"), "rgb(0, 2, 0)");
+  EXPECT_EQ(Color("c"), "rgb(0, 0, 3)");
+
+  // Clearing Studio's sheet leaves the user's rules.
+  reconnected->SetText(reconnected->IdFor(InspectorSheets()[0]), "");
+  EXPECT_EQ(RuleCount(InspectorSheets()[1]), 2u);
+  EXPECT_EQ(Color("a"), "rgb(1, 0, 0)");
+  EXPECT_EQ(Color("c"), "rgb(0, 0, 0)");
+}
+
+TEST_F(InspectorStyleSheetIsolationTest, MainFrameNavigationForgetsTheDefault) {
+  auto session = Connect();
+  String default_id = session->Create(/*force=*/false);
+  container_->DidCommitLoadForLocalFrame(GetDocument().GetFrame());
+  EXPECT_EQ(container_->DefaultInspectorStyleSheet(&GetDocument()), nullptr);
+}
+
+TEST_F(InspectorCSSAgentSubframeTest, DefaultOfDestroyedFrameIsReleased) {
+  SetHtmlInnerHTML(R"HTML(<iframe id="frame"></iframe>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+  test::RunPendingTasks();
+  auto* iframe = To<HTMLIFrameElement>(GetElementById("frame"));
+  WeakPersistent<Document> child = iframe->contentDocument();
+  ASSERT_TRUE(child);
+
+  auto* container = MakeGarbageCollected<InspectorResourceContainer>(
+      MakeGarbageCollected<InspectedFrames>(GetDocument().GetFrame()));
+  InspectorStyleSheetSession session(this, container);
+  session.Create(/*force=*/false);
+  String child_default;
+  ASSERT_TRUE(session.css_agent_for_test()
+                  ->createStyleSheet(IdentifiersFactory::FrameId(child->GetFrame()),
+                                     /*force=*/false, &child_default)
+                  .IsSuccess());
+  EXPECT_EQ(container->DefaultInspectorStyleSheetCountForTesting(), 2u);
+
+  iframe->remove();
+  UpdateAllLifecyclePhasesForTest();
+  // A detached document's default is never handed back.
+  if (child) {
+    EXPECT_EQ(container->DefaultInspectorStyleSheet(child.Get()), nullptr);
+  }
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  // And nothing keeps it: the entry goes with the document.
+  EXPECT_FALSE(child);
+  EXPECT_EQ(container->DefaultInspectorStyleSheetCountForTesting(), 1u);
+  ASSERT_NE(container->DefaultInspectorStyleSheet(&GetDocument()), nullptr);
+}
+
 TEST_F(InspectorCSSAgentSubframeTest, InspectorSheetsOfChildDocumentAreIndependent) {
   SetHtmlInnerHTML(R"HTML(<div id="a">a</div><iframe id="frame"></iframe>)HTML");
   UpdateAllLifecyclePhasesForTest();

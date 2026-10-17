@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/core/inspector/inspector_resource_container.h"
 
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/inspector/inspected_frames.h"
 
 namespace blink {
@@ -18,6 +20,7 @@ InspectorResourceContainer::~InspectorResourceContainer() = default;
 void InspectorResourceContainer::Trace(Visitor* visitor) const {
   visitor->Trace(inspected_frames_);
   visitor->Trace(inspector_style_sheet_contents_);
+  visitor->Trace(default_inspector_style_sheets_);
 }
 
 void InspectorResourceContainer::DidCommitLoadForLocalFrame(LocalFrame* frame) {
@@ -26,6 +29,7 @@ void InspectorResourceContainer::DidCommitLoadForLocalFrame(LocalFrame* frame) {
   style_sheet_contents_.clear();
   style_element_contents_.clear();
   inspector_style_sheet_contents_.clear();
+  default_inspector_style_sheets_.clear();
 }
 
 void InspectorResourceContainer::StoreStyleSheetContent(const String& url,
@@ -76,6 +80,28 @@ bool InspectorResourceContainer::LoadInspectorStyleSheetContent(
   }
   *content = it->value;
   return true;
+}
+
+CSSStyleSheet* InspectorResourceContainer::DefaultInspectorStyleSheet(
+    Document* document) {
+  auto it = default_inspector_style_sheets_.find(document);
+  if (it == default_inspector_style_sheets_.end()) {
+    return nullptr;
+  }
+  CSSStyleSheet* sheet = it->value.Get();
+  // A detached document drops its inspector stylesheets; never hand one back.
+  if (!sheet ||
+      !document->GetStyleEngine().InspectorStyleSheets().Contains(sheet)) {
+    default_inspector_style_sheets_.erase(it);
+    return nullptr;
+  }
+  return sheet;
+}
+
+void InspectorResourceContainer::SetDefaultInspectorStyleSheet(
+    Document* document,
+    CSSStyleSheet* sheet) {
+  default_inspector_style_sheets_.Set(document, sheet);
 }
 
 }  // namespace blink

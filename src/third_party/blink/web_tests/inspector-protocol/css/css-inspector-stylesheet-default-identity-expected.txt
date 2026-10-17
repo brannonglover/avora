@@ -1,0 +1,12 @@
+Tests that CSS.createStyleSheet without force returns the same default inspector stylesheet across reattaches, whatever forced sheets exist.
+Default differs from the forced sheet: true
+Default is reused in the same session: true
+Reattach 1: default keeps its text: true; inspector sheets 2, new ones created: 0
+Reattach 2: default keeps its text: true; inspector sheets 2, new ones created: 0
+Reattach 3: default keeps its text: true; inspector sheets 2, new ones created: 0
+Default after a new rule: "/* mine */\n#a {\n  color: rgb(1, 0, 0);\n}\n#b { color: rgb(0, 2, 0); }\n"
+Colors: a=rgb(1, 0, 0) b=rgb(0, 2, 0)
+
+Reloading
+Default in the new document: ""
+

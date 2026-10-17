@@ -73,9 +73,51 @@ These sources live in the Chromium tree. Copies are in `avora/src` at the same r
 
 `docs/style-intelligence/fixtures/repro-inspector-stylesheet-text-slot.mjs` performs the same verification over raw CDP against a built Avora, with computed styles checked in the page.
 
+## Canonical default inspector stylesheet (Checkpoint 2A.2)
+
+**Before.**
+- **Frontend.** `CSSModel.requestViaInspectorStylesheet` (the Styles pane's "New Style Rule" and the Elements view-transition helper) took the first inspector header reported for the frame. If a forced sheet was created before the default, "New Style Rule" wrote into it. That was true within one session, and after reconnects too: reconnect reports come in hash order (`SetActiveStyleSheets`).
+- **Blink.** Blink kept the document's default per CSS agent (`InspectorCSSAgent::default_inspector_stylesheets_`). After a reconnect, `CSS.createStyleSheet(force: false)` created a second, empty default.
+- **Measured.** Making the report order deterministic does not fix this: with a forced sheet created first, the forced sheet stays first (`fixtures/measure-inspector-stylesheet-default.mjs` history; `style-studio-checkpoint-2a-findings.md` §9).
+
+**After.**
+
+`third_party/blink/renderer/core/inspector/inspector_resource_container.{h,cc}`, `inspector_css_agent.{h,cc}`:
+- **Where the default lives.** `InspectorResourceContainer` holds each document's default inspector stylesheet in `HeapHashMap<WeakMember<Document>, WeakMember<CSSStyleSheet>>`. That's the container that already holds per-sheet text: one per inspected local root, outliving CSS agents. The agent's own map is removed.
+- **What `CreateViaInspectorStyleSheet(force: false)` does.** It returns the container's default in every session, creating and recording one only if there is none.
+- **Forced sheets.** `force: true` always creates a separate sheet and never records it.
+- **Validation.** `DefaultInspectorStyleSheet(document)` returns the sheet only while it is still one of the document's live inspector stylesheets (`StyleEngine::InspectorStyleSheets()`), so a detached document's default is never returned.
+- **Identity, not ids.** The reference is the `CSSStyleSheet` object, never a protocol id; ids are re-issued per session.
+- **Unbound defaults.** A default this agent has not bound yet is bound on demand.
+
+`third_party/devtools-frontend/src/front_end/core/sdk/CSSModel.ts`:
+- **How the frontend picks.** `requestViaInspectorStylesheet` asks the backend with `CSS.createStyleSheet(frameId)` (no `force`) instead of taking the first inspector header.
+- **Caching.** It remembers the returned id per frame and asks again only once that header is gone. Upstream's existing test, that a second request does not call the backend, still passes.
+- **Invalidation.** The memory is cleared with the headers on a main-frame reset or a CSS suspend.
+- **Failures.** A failed request (frame gone, target disposed) returns `null` as before.
+- **Callers.** "New Style Rule" and the view-transition helper both want the user's default. Neither relied on the first-header semantics beyond that. Upstream's AI `ChangeManager` and Style Studio call `createInspectorStylesheet(frameId, true)` directly and are unaffected.
+
+**Default-sheet identity and lifetime:**
+
+| Event | Default |
+| --- | --- |
+| First `force: false` in a document | created and recorded |
+| Later `force: false`, any session | the same sheet |
+| `force: true` | a new sheet; never the default |
+| DevTools closed and reopened, including abruptly | the same sheet, with its rules, comments, and formatting |
+| Main-frame navigation | container cleared; the new document gets a new default on first request |
+| Frame or document destroyed | never returned once detached; the weak entry goes away with the document |
+| A sheet removed from the document | never returned; a new default is created on request |
+
+**Tests:**
+- **`blink_unittests` (`inspector_css_agent_test.cc`).** `DefaultCreatedBeforeForcedSheets`, `ForcedSheetCreatedBeforeDefault`, `MultipleForcedSheetsBeforeDefault`, `MultipleForcedSheetsAfterDefault`, `ForcedSheetNeverBecomesDefault`, `DefaultIsReusedAcrossReconnects` (three reconnects; no sheet created; text byte-identical), `NewRulesAppendToCanonicalDefault`, `MainFrameNavigationForgetsTheDefault`, and `InspectorCSSAgentSubframeTest.DefaultOfDestroyedFrameIsReleased` (the weak entry is gone after GC). Against the previous Blink, the two reconnect tests fail; the same-session ordering tests pass on both, because that half was the frontend's.
+- **Web test.** `inspector-protocol/css/css-inspector-stylesheet-default-identity.js`: a forced sheet first, three reattaches with no new sheet created, an append, then a reload.
+- **Frontend.** `core/sdk/CSSModel.test.ts`: asks the backend despite an earlier forced header; asks again once the remembered header is removed; returns `null` on failure.
+- **Raw CDP.** `fixtures/measure-inspector-stylesheet-default.mjs`: the 13 required cases, against a built Avora.
+- **Real DevTools frontend.** `fixtures/verify-inspector-default-stylesheet-devtools.mjs`: a forced sheet first, concurrent requests, and three reopened sessions over remote debugging.
+
+The overlay carries `CSSModel.ts` and `CSSModel.test.ts` in full, so `copy-sources.sh` reapplies them. Recheck them against upstream on every DevTools roll.
+
 ## Known, not changed here
 
-- **Report order on reconnect.** `InspectorCSSAgent::SetActiveStyleSheets` reports newly bound sheets by iterating a `HeapHashSet`, so a reconnecting session receives inspector sheets in no particular order. The frontend's `CSSModel.requestViaInspectorStylesheet` (the Styles pane's "New Style Rule") takes the first one reported, so after a reconnect it can pick any inspector sheet rather than the default.
-  - With this patch nothing is lost either way: every sheet keeps its own text.
-  - Making that order follow the active stylesheet order (iterating `all_sheets_vector` instead of the set) is a separate one-line change, not made here.
-- **Default sheet per session.** `default_inspector_stylesheets_` is per CSS agent, so a reconnecting session's `createStyleSheet(force: false)` makes a new default sheet instead of returning the existing one. Unchanged.
+- **Report order on reconnect.** `InspectorCSSAgent::SetActiveStyleSheets` still reports newly bound sheets in hash order. Since 2A.2 nothing depends on that order: the frontend asks for the default explicitly. Making the order deterministic is optional and is not done.

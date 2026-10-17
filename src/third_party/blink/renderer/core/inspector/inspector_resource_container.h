@@ -18,6 +18,7 @@
 namespace blink {
 
 class CSSStyleSheet;
+class Document;
 class InspectedFrames;
 class LocalFrame;
 
@@ -49,6 +50,16 @@ class CORE_EXPORT InspectorResourceContainer final
   bool LoadInspectorStyleSheetContent(const CSSStyleSheet* sheet,
                                       String* content);
 
+  // The document's default inspector stylesheet: the one
+  // CSS.createStyleSheet returns without `force`, in every DevTools session.
+  // Returns null if there is none, or if it is no longer one of the
+  // document's inspector stylesheets.
+  CSSStyleSheet* DefaultInspectorStyleSheet(Document* document);
+  void SetDefaultInspectorStyleSheet(Document* document, CSSStyleSheet* sheet);
+  wtf_size_t DefaultInspectorStyleSheetCountForTesting() const {
+    return default_inspector_style_sheets_.size();
+  }
+
  private:
   Member<InspectedFrames> inspected_frames_;
   HashMap<String, String> style_sheet_contents_;
@@ -57,6 +68,10 @@ class CORE_EXPORT InspectorResourceContainer final
   // document.
   HeapHashMap<WeakMember<const CSSStyleSheet>, String>
       inspector_style_sheet_contents_;
+  // Weak on both sides: neither a document nor its default sheet is kept
+  // alive by being the default.
+  HeapHashMap<WeakMember<Document>, WeakMember<CSSStyleSheet>>
+      default_inspector_style_sheets_;
 };
 
 }  // namespace blink
