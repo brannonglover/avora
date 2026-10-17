@@ -14,6 +14,7 @@ import {identityForNode} from './StyleIntelligenceModel.js';
 import {InspectPickHub, type InspectPickObserver} from './StyleStudioPicker.js';
 import {
   type CreateSheetFailure,
+  type PathStep,
   type PreviewHost,
   type PreviewPropertyEffect,
   type PreviewTargetRef,
@@ -332,9 +333,9 @@ async function queryAll(
   return error ? {error} : {nodeIds: response.nodeIds ?? []};
 }
 
-/** 1-based positions among element siblings, from the document element down to `node`. */
-async function childPositions(node: SDK.DOMModel.DOMNode): Promise<number[]|null> {
-  const positions: number[] = [];
+/** The element-only path from the document element down to `node`, with sibling counts. */
+async function elementPath(node: SDK.DOMModel.DOMNode): Promise<PathStep[]|null> {
+  const path: PathStep[] = [];
   let current: SDK.DOMModel.DOMNode = node;
   while (current.parentNode && current.parentNode.nodeType() === Node.ELEMENT_NODE) {
     const parent: SDK.DOMModel.DOMNode = current.parentNode;
@@ -347,14 +348,14 @@ async function childPositions(node: SDK.DOMModel.DOMNode): Promise<number[]|null
     if (index < 0) {
       return null;
     }
-    positions.unshift(index + 1);
+    path.unshift({localName: current.localName(), position: index + 1, siblings: elements.length});
     current = parent;
   }
   // `current` must be the document element: `:root` is where the path starts.
   if (current.parentNode?.nodeType() !== Node.DOCUMENT_NODE) {
     return null;
   }
-  return positions;
+  return path;
 }
 
 /**
@@ -431,11 +432,12 @@ export function previewHostFor(ref: PreviewTargetRef): PreviewHost|null {
       if (!matches.nodeIds.includes(node.id)) {
         return {ok: false, reason: 'selector-mismatch', detail: 'The selector does not match the element.'};
       }
-      const positions = await childPositions(node);
-      if (!positions) {
+      const path = await elementPath(node);
+      if (!path) {
         return {ok: false, reason: 'not-unique', detail: 'The element\'s position could not be read.'};
       }
-      const ruleSelector = singleElementSelector(positions, ref.selector);
+      const ruleSelector = singleElementSelector(
+          path, {id: node.getAttribute('id') ?? null, className: node.getAttribute('class') ?? null}, ref.selector);
       const exact = await queryAll(domModel, document.id, ruleSelector);
       if ('error' in exact || exact.nodeIds.length !== 1 || exact.nodeIds[0] !== node.id) {
         return {ok: false, reason: 'not-unique', detail: 'No selector matched exactly this element.'};

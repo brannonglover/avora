@@ -224,16 +224,56 @@ export function previewSheetText(ruleText: string): string {
   return `${PREVIEW_MARKER}\n${ruleText}\n`;
 }
 
+/** One element on the path from `:root` down to a single-element preview's target. */
+export interface PathStep {
+  localName: string;
+  /** 1-based position among its parent's element children. */
+  position: number;
+  /** How many element children its parent has. */
+  siblings: number;
+}
+
+/** The target's own identifying attributes, matched exactly; null when absent. */
+export interface TargetIdentity {
+  id: string|null;
+  className: string|null;
+}
+
+/** A CSS string literal holding exactly `value`. */
+function cssString(value: string): string {
+  return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ').replace(/\r/g, '\\d ').replace(/\f/g, '\\c ').replace(/\0/g, '\\fffd ')}"`;
+}
+
+/** An identifier escaped for a selector, as `CSS.escape` does. */
+function cssIdent(value: string): string {
+  return CSS.escape(value);
+}
+
 /**
- * The selector for exactly one element: its element-only child positions from
- * `:root`, joined by child combinators, so at most one element can match at a
- * time. `:where()` gives that part no specificity, and `:is()` gives the rule
- * the authoring selector's, so the preview cascades like the CSS will once
+ * The selector for exactly one element, matched by its path from `:root`.
+ *
+ * Every step names its tag and its position counted from both ends of its
+ * parent (`:nth-child(i):nth-last-child(j)`), so inserting or removing an
+ * element sibling anywhere on the path makes the rule match nothing rather
+ * than the element that took the old position. The target step also matches
+ * the target's `id` and `class` exactly. The rule can still match another
+ * element only if a same-count reorder or a replacement puts an element with
+ * the same tag at every step, and the same `id` and `class`, at exactly the
+ * same path; the engine's re-check after every DOM change then reverts it.
+ *
+ * `:where()` gives the path no specificity, and `:is()` gives the rule the
+ * authoring selector's, so the preview cascades like the CSS will once
  * authored. The element must also match the authoring selector.
  */
-export function singleElementSelector(childPositions: readonly number[], authoringSelector: string): string {
-  const path = [':root', ...childPositions.map(position => `:nth-child(${position})`)].join(' > ');
-  return `:where(${path}):is(${authoringSelector})`;
+export function singleElementSelector(
+    path: readonly PathStep[], identity: TargetIdentity, authoringSelector: string): string {
+  const steps = path.map(
+      step => `${cssIdent(step.localName)}:nth-child(${step.position}):nth-last-child(${step.siblings - step.position + 1})`);
+  const own = (identity.id === null ? ':not([id])' : `[id=${cssString(identity.id)}]`) +
+      (identity.className === null ? ':not([class])' : `[class=${cssString(identity.className)}]`);
+  const parts = [':root', ...steps];
+  parts[parts.length - 1] += own;
+  return `:where(${parts.join(' > ')}):is(${authoringSelector})`;
 }
 
 function parseSingleRule(text: string): CSSStyleRule|null {

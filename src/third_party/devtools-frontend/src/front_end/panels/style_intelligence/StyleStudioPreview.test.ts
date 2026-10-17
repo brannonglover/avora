@@ -6,20 +6,23 @@ import {assert} from 'chai';
 
 import {renderElementIntoDOM} from '../../testing/DOMHelpers.js';
 
-import {
+import * as StyleIntelligence from './style_intelligence.js';
+
+type CreateSheetFailure = StyleIntelligence.StyleStudioPreview.CreateSheetFailure;
+type PathStep = StyleIntelligence.StyleStudioPreview.PathStep;
+type PreviewHost = StyleIntelligence.StyleStudioPreview.PreviewHost;
+type PreviewPropertyEffect = StyleIntelligence.StyleStudioPreview.PreviewPropertyEffect;
+type PreviewTargetRef = StyleIntelligence.StyleStudioPreview.PreviewTargetRef;
+type RuleSelectorResult = StyleIntelligence.StyleStudioPreview.RuleSelectorResult;
+const {
   buildPreviewRule,
-  type CreateSheetFailure,
   parseDeclarations,
   PREVIEW_MARKER,
-  type PreviewHost,
-  type PreviewPropertyEffect,
-  type PreviewTargetRef,
   previewSheetText,
-  type RuleSelectorResult,
   singleElementSelector,
   splitDeclarations,
   StylePreviewEngine,
-} from './StyleStudioPreview.js';
+} = StyleIntelligence.StyleStudioPreview;
 
 describe('StyleStudioPreview parsing', () => {
   it('splits declarations on top-level semicolons only', () => {
@@ -73,7 +76,8 @@ describe('StyleStudioPreview parsing', () => {
 
     beforeEach(() => {
       container = document.createElement('div');
-      container.innerHTML = '<div class="card"></div><div class="card" id="target"></div><div class="card"></div>';
+      container.innerHTML = '<section><div class="card"></div><div class="card" id="target"></div>' +
+          '<div class="card"></div><div class="card"></div></section><section><p class="card">p</p></section>';
       renderElementIntoDOM(container);
       style = document.createElement('style');
       document.head.append(style);
@@ -84,34 +88,113 @@ describe('StyleStudioPreview parsing', () => {
       style.remove();
     });
 
-    function positionsOf(element: Element): number[] {
-      const positions: number[] = [];
+    /** What the host computes for `element`: its path from `:root`, with sibling counts. */
+    function pathOf(element: Element): PathStep[] {
+      const path: PathStep[] = [];
       let current: Element = element;
       while (current.parentElement) {
-        positions.unshift([...current.parentElement.children].indexOf(current) + 1);
+        const siblings = [...current.parentElement.children];
+        path.unshift({localName: current.localName, position: siblings.indexOf(current) + 1, siblings: siblings.length});
         current = current.parentElement;
       }
-      return positions;
+      return path;
     }
 
+    function selectorFor(element: Element, authoring = '.card'): string {
+      return singleElementSelector(
+          pathOf(element), {id: element.getAttribute('id'), className: element.getAttribute('class')}, authoring);
+    }
+
+    const target = (): Element => container.querySelector('#target') as Element;
+    const matches = (selector: string): Element[] => [...document.querySelectorAll(selector)];
+    const card = (attributes = 'class="card"'): Element => {
+      const template = document.createElement('template');
+      template.innerHTML = `<div ${attributes}></div>`;
+      return template.content.firstElementChild as Element;
+    };
+
     it('matches exactly the one element', () => {
-      const target = container.querySelector('#target') as Element;
-      const selector = singleElementSelector(positionsOf(target), '.card');
-      assert.deepEqual([...document.querySelectorAll(selector)], [target]);
+      assert.deepEqual(matches(selectorFor(target())), [target()]);
     });
 
     it('carries the authoring selector\'s specificity, no more and no less', () => {
-      const target = container.querySelector('#target') as Element;
-      const preview = singleElementSelector(positionsOf(target), '.card');
+      const preview = selectorFor(target());
       // Same specificity as `.card`: the later rule wins.
       style.textContent = `.card { color: rgb(1, 1, 1); } ${preview} { color: rgb(2, 2, 2); }`;
-      assert.strictEqual(getComputedStyle(target).color, 'rgb(2, 2, 2)');
+      assert.strictEqual(getComputedStyle(target()).color, 'rgb(2, 2, 2)');
       // An id rule is more specific than `.card`, wherever it is.
       style.textContent = `#target { color: rgb(3, 3, 3); } ${preview} { color: rgb(2, 2, 2); }`;
-      assert.strictEqual(getComputedStyle(target).color, 'rgb(3, 3, 3)');
+      assert.strictEqual(getComputedStyle(target()).color, 'rgb(3, 3, 3)');
       // The siblings that also match `.card` are untouched.
       const sibling = container.querySelector('.card') as Element;
       assert.notStrictEqual(getComputedStyle(sibling).color, 'rgb(2, 2, 2)');
+    });
+
+    it('matches nothing once an element sibling is inserted before or after the target', () => {
+      const selector = selectorFor(target());
+      target().before(card());
+      assert.deepEqual(matches(selector), []);
+      target().previousElementSibling?.remove();
+      assert.deepEqual(matches(selector), [target()]);
+      target().parentElement?.append(card());
+      assert.deepEqual(matches(selector), []);
+    });
+
+    it('matches nothing once an earlier or later sibling is removed', () => {
+      const selector = selectorFor(target());
+      target().previousElementSibling?.remove();
+      assert.deepEqual(matches(selector), []);
+      const again = selectorFor(target());
+      target().parentElement?.lastElementChild?.remove();
+      assert.deepEqual(matches(again), []);
+    });
+
+    it('matches nothing once an ancestor gains or loses a sibling', () => {
+      const selector = selectorFor(target());
+      const section = target().parentElement as Element;
+      section.before(document.createElement('section'));
+      assert.deepEqual(matches(selector), []);
+      section.previousElementSibling?.remove();
+      section.parentElement?.lastElementChild?.remove();
+      assert.deepEqual(matches(selector), []);
+    });
+
+    it('is unaffected by text and comment nodes', () => {
+      const selector = selectorFor(target());
+      target().before(document.createTextNode('text'), document.createComment('c'));
+      assert.deepEqual(matches(selector), [target()]);
+    });
+
+    it('does not match a reordered sibling with a different id or class', () => {
+      const selector = selectorFor(target());
+      const first = target().parentElement?.firstElementChild as Element;
+      // Same count, so the positions are taken by elements that are not the target.
+      target().parentElement?.insertBefore(target(), first);
+      assert.deepEqual(matches(selector), []);
+    });
+
+    it('matches only the target after its class or id changes, never another element', () => {
+      const selector = selectorFor(target());
+      target().setAttribute('class', 'card other');
+      assert.deepEqual(matches(selector), []);
+      target().setAttribute('class', 'card');
+      target().removeAttribute('id');
+      assert.deepEqual(matches(selector), []);
+    });
+
+    it('escapes attribute values exactly', () => {
+      const odd = card('class="card a&quot;b\\c" id="x y"');
+      target().replaceWith(odd);
+      const selector = selectorFor(odd);
+      assert.deepEqual(matches(selector), [odd]);
+    });
+
+    it('can still match an identical element that takes exactly the target\'s place (the known limit)', () => {
+      // Same tag, id, and class at the same path: no selector can tell them apart.
+      const selector = selectorFor(target());
+      const copy = target().cloneNode(true) as Element;
+      target().replaceWith(copy);
+      assert.deepEqual(matches(selector), [copy]);
     });
   });
 });

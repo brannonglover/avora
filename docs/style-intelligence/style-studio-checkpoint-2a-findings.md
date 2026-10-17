@@ -11,6 +11,7 @@ Date: 2026-10-17. Base: `38f794a` (Checkpoint 2A.2).
 | Engine: ownership, targeting, replace and revert, async cancellation, lifecycle | **Verified**: unit tests, live in Avora | §1–§5, §7 |
 | A preview left behind by a crashed or killed DevTools | **Remaining limitation**: bounded by the document's lifetime, with no automatic cleanup | §6 |
 | Preview UI, AI generation, refinement, export, orphan ledger | **Deferred to 2B** or later | §9 |
+| Transient target leakage; ledger feasibility | **Bounded** / **validated** in Checkpoint 2A.3 | `style-studio-checkpoint-2a3-findings.md` |
 
 ---
 
@@ -62,7 +63,7 @@ If the write and the restoring write both fail, the sheet stays tracked in `conf
 
 ## 3. Single-element targeting
 
-- **Rule shape.** The rule is `:where(:root > :nth-child(i) > … > :nth-child(k)):is(<authoring selector>)`. Element-only positions from `:root`, joined by child combinators, match at most one element. `:where()` adds no specificity and `:is()` adds exactly the authoring selector's, so the preview cascades the way the authored CSS will. No `!important` is added.
+- **Rule shape.** The rule is `:where(:root > :nth-child(i) > … > :nth-child(k)):is(<authoring selector>)`. *(Since 2A.3 every step also names its tag and `:nth-last-child`, and the target its exact `id` and `class`, so sibling changes fail closed; see `style-studio-checkpoint-2a3-findings.md`.)* Element-only positions from `:root`, joined by child combinators, match at most one element. `:where()` adds no specificity and `:is()` adds exactly the authoring selector's, so the preview cascades the way the authored CSS will. No `!important` is added.
 - **Re-checked twice before every write.** Once when the operation starts, and again immediately before `setText`. Each time, `DOM.querySelectorAll` with the rule must return exactly the target node, and the authoring selector must match it. The target must also be live, an element outside shadow trees, and in the expected frame and document. If the second check yields a different rule (the target moved meanwhile) or fails, nothing is written.
 - **Identity is the node.** The target is the DevTools node (`nodeId`), never "whatever is at that position":
   - **Siblings come or go:** the rule is rewritten for the same node's new position.

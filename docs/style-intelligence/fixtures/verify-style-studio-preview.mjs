@@ -329,7 +329,9 @@ try {
         JSON.stringify(r.effect));
   r = await cascade('#pv-imp', 'color: rgb(111, 0, 0)', 'color');
   check('a page !important wins: no !important is added for the author', r.computed === 'rgb(13, 13, 13)' &&
-        !r.applied.rule.includes('important') && r.effect?.[0]?.state === 'overridden', r.applied.rule);
+        !r.applied.rule.slice(r.applied.rule.indexOf('{')).includes('important') &&
+            r.effect?.[0]?.state === 'overridden',
+        r.applied.rule);
   r = await cascade('#pv-imp', 'color: rgb(112, 0, 0) !important', 'color');
   check('an author !important keeps its meaning', r.computed === 'rgb(112, 0, 0)', r.applied.rule);
   r = await cascade('#pv-layered', 'color: rgb(113, 0, 0)', 'color');
@@ -508,6 +510,67 @@ try {
         Object.entries(await mColors()).every(([id, c]) => c === (id === 'pv-m5' ? 'rgb(0, 0, 0)' : PAGE)),
         JSON.stringify(await mColors()));
 
+  // --- Transient targeting: between a DOM change and Studio's re-check. ---
+  // Read synchronously after each mutation, in the page, before any protocol
+  // event can reach DevTools; then timed frame by frame until it changes.
+  const transient = (body, color, selector) => page.evaluate(
+      async ([b, c, s]) => await window.__actions.transient(new Function(b), c, s), [body, color, selector]);
+  const GAP = '#pv-gap > *';
+  r = await applyTo('#pv-g2', '.pv-g', 'color: rgb(140, 0, 0)');
+  let t = await transient(`const x = document.createElement('div'); x.className = 'pv-g'; x.id = 'pv-g0';
+      document.getElementById('pv-g2').before(x);`, 'rgb(140, 0, 0)', GAP);
+  await sleep(800);
+  let settled = await page.evaluate(() => [...document.querySelectorAll('#pv-gap > *')]
+                                              .filter(e => getComputedStyle(e).color === 'rgb(140, 0, 0)').map(e => e.id));
+  check('a sibling inserted before the target: nothing is styled in the gap, then the target is again',
+        r.ok && t.atOnce.length === 0 && JSON.stringify(settled) === '["pv-g2"]', JSON.stringify({t, settled}));
+  t = await transient(`document.getElementById('pv-g1').remove();`, 'rgb(140, 0, 0)', GAP);
+  await sleep(800);
+  settled = await page.evaluate(() => [...document.querySelectorAll('#pv-gap > *')]
+                                          .filter(e => getComputedStyle(e).color === 'rgb(140, 0, 0)').map(e => e.id));
+  check('an earlier sibling removed: nothing is styled in the gap, then the target is again',
+        t.atOnce.length === 0 && JSON.stringify(settled) === '["pv-g2"]', JSON.stringify({t, settled}));
+  t = await transient(`const p = document.getElementById('pv-gap'); p.insertBefore(document.getElementById('pv-g3'),
+      document.getElementById('pv-g2'));`, 'rgb(140, 0, 0)', GAP);
+  await sleep(800);
+  settled = await page.evaluate(() => [...document.querySelectorAll('#pv-gap > *')]
+                                          .filter(e => getComputedStyle(e).color === 'rgb(140, 0, 0)').map(e => e.id));
+  check('a different sibling reordered into the target\'s place is not styled in the gap',
+        t.atOnce.length === 0 && JSON.stringify(settled) === '["pv-g2"]', JSON.stringify({t, settled}));
+  await step(async () => await globalThis.__v.revert());
+
+  // The known limit: an element identical in tag, id, and class at exactly the target's path.
+  r = await applyTo('#pv-twins > :first-child', '.pv-twin', 'color: rgb(141, 0, 0)');
+  t = await transient(`const p = document.getElementById('pv-twins'); p.append(p.firstElementChild);`,
+                      'rgb(141, 0, 0)', '#pv-twins > *');
+  await sleep(1000);
+  const twins = {applied: r.ok, t, state: (await engineState()).state,
+                 after: await page.evaluate(() => [...document.querySelectorAll('#pv-twins > *')]
+                                                      .map(e => getComputedStyle(e).color))};
+  // The re-check either reverts or keeps the preview on the original twin; never the other one.
+  check('identical twins swapped: the other twin is styled only until the re-check',
+        twins.applied && (twins.t.after.length === 0 || JSON.stringify(twins.t.after) === '["Twin one"]') &&
+            (twins.state === 'none' ? twins.after.every(c => c === 'rgb(40, 40, 40)') :
+                                      JSON.stringify(twins.after) === '["rgb(40, 40, 40)","rgb(141, 0, 0)"]'),
+        JSON.stringify(twins));
+  await step(async () => await globalThis.__v.revert());
+  note(`identical twins swapped: styled at once ${JSON.stringify(twins.t.atOnce)}, ` +
+       `cleared after ${twins.t.ms} ms (${twins.t.frames} frames)`);
+  r = await applyTo('#pv-twins > :first-child', '.pv-twin', 'color: rgb(142, 0, 0)');
+  t = await transient(`const e = document.getElementById('pv-twins').firstElementChild; e.replaceWith(e.cloneNode(true));`,
+                      'rgb(142, 0, 0)', '#pv-twins > *');
+  await sleep(1000);
+  const replaced = {applied: r.ok, t, state: (await engineState()).state};
+  check('an element replaced by an identical copy: the copy is styled only until the re-check, which reverts',
+        replaced.applied && replaced.state === 'none' && replaced.t.after.length === 0, JSON.stringify(replaced));
+  note(`identical copy replaced the target: styled at once ${JSON.stringify(replaced.t.atOnce)}, ` +
+       `cleared after ${replaced.t.ms} ms (${replaced.t.frames} frames)`);
+  await step(async () => {
+    const v = globalThis.__v;
+    await v.radio('studio-scope', 0);
+    await v.radio('studio-source', 0);
+  });
+
   // --- Target change. ---
   await step(async () => {
     const v = globalThis.__v;
@@ -641,6 +704,11 @@ try {
       sheet => `${sheet.id}: ${JSON.stringify(sheet.text)}`));
   const studioIdsBeforeClose = await step(() => globalThis.__v.SI.StyleIntelligencePane.StyleIntelligencePane.instance()
                                                     .studioPreview().engine.ownedSheetIds());
+  // What a ledger would record: the browser's id for the page, from Target.getTargetInfo.
+  // (A frontend attached straight to the page's websocket names its target "main".)
+  const targetIdBeforeClose = await step(async () => (await globalThis.__v.SDK.TargetManager.TargetManager.instance()
+                                                          .primaryPageTarget().targetAgent().invoke_getTargetInfo({}))
+                                                         .targetInfo?.targetId ?? null);
   console.log('DIAG session 1 inspector sheets before close:', JSON.stringify(beforeCloseSheets));
   await devtools.close();
   await sleep(1500);
@@ -684,7 +752,9 @@ try {
     const nodeId = await domModel.querySelector(doc.id, '#pv-b');
     const matched = await cssModel.getMatchedStyles(nodeId);
     const rules = matched ? matched.nodeStyles().map(style => `${style.styleSheetId ?? 'inline'} ${style.parentRule?.origin ?? ''} ${style.cssText ?? ''}`) : [];
-    return {url: target?.inspectedURL() ?? null, enabled: cssModel?.isEnabled() ?? null, sheets, rules,
+    const targetId = (await target?.targetAgent().invoke_getTargetInfo({}))?.targetInfo?.targetId ?? null;
+    return {url: target?.inspectedURL() ?? null, targetId, enabled: cssModel?.isEnabled() ?? null,
+            sheets, rules,
             allHeaders: cssModel.styleSheetHeaders().map(h => `${h.id}:${h.origin}:${h.frameId}`)};
   }).catch(e => ({error: e.message}));
   // With per-sheet text storage (Checkpoint 2A.1) each sheet reports its own text.
@@ -720,6 +790,9 @@ try {
   check('a reopened session reports Studio\'s and the orphan\'s sheets under the same ids',
         studioIdsBeforeClose.length === 1 && reopenedIds.includes(studioIdsBeforeClose[0]) && reopenedIds.includes(orphanId),
         JSON.stringify({studioIdsBeforeClose, orphanId, reopenedIds}));
+  check('the docked and the reopened frontend both get the browser\'s page target id from Target.getTargetInfo',
+        targetIdBeforeClose === pageTargetId && reopenedState.targetId === pageTargetId,
+        JSON.stringify({targetIdBeforeClose, reopened: reopenedState.targetId, pageTargetId}));
   // Crash cleanup is a separate question: nothing identifies an orphan's owner.
   note(`the unreleased orphan is still applied after reopening (${afterReopen.orphan}); ` +
        'orphan cleanup remains a separate limitation');

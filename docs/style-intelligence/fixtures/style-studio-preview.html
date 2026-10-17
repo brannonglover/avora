@@ -15,6 +15,7 @@
   .pv-token { --pv-gap: 4px; padding-left: var(--pv-gap); }
   .pv-parent { color: rgb(15, 15, 15); }
   .pv-m { color: rgb(30, 30, 30); }
+  .pv-g, .pv-twin { color: rgb(40, 40, 40); }
 </style>
 </head>
 <body>
@@ -47,6 +48,14 @@
     <div class="pv-m" id="pv-m4">M4</div>
   </section>
   <section id="pv-mut-dest"><div class="pv-m" id="pv-m-dest">Destination</div></section>
+
+  <!-- Transient targeting: what is styled between a DOM change and Studio's re-check. -->
+  <section id="pv-gap">
+    <div class="pv-g" id="pv-g1">G1</div>
+    <div class="pv-g" id="pv-g2">G2</div>
+    <div class="pv-g" id="pv-g3">G3</div>
+  </section>
+  <section id="pv-twins"><div class="pv-twin">Twin one</div><div class="pv-twin">Twin two</div></section>
 
   <!-- Removal and frame destruction. -->
   <div class="pv-item" id="pv-remove">Will be removed</div>
@@ -96,6 +105,29 @@
       },
       setId(id, value) {
         document.getElementById(id).id = value;
+      },
+      /**
+       * Runs `mutate`, then reads which elements carry `color` at once, before
+       * DevTools can react, and times how long any of them keeps it.
+       */
+      async transient(mutate, color, selector) {
+        mutate();
+        const styled = () => [...document.querySelectorAll(selector)]
+                                 .filter(e => getComputedStyle(e).color === color)
+                                 .map(e => e.id || e.textContent);
+        const atOnce = styled();
+        const start = performance.now();
+        let frames = 0;
+        let last = atOnce;
+        while (performance.now() - start < 3000) {
+          await new Promise(r => requestAnimationFrame(r));
+          frames++;
+          last = styled();
+          if (JSON.stringify(last) !== JSON.stringify(atOnce)) {
+            break;
+          }
+        }
+        return {atOnce, after: last, ms: Math.round(performance.now() - start), frames};
       },
       removeFrame() {
         document.getElementById('pv-frame').remove();
