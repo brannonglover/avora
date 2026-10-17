@@ -826,3 +826,104 @@ div.rung-main {
   color: var(--sys-color-error);
 }
 
+
+/* ===================== studio preview ===================== */
+
+.studio-css {
+  background: var(--sys-color-cdt-base-container);
+  border: 1px solid var(--sys-color-neutral-outline);
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: var(--sys-color-on-surface);
+  font-family: var(--monospace-font-family);
+  font-size: var(--monospace-font-size);
+  min-height: 72px;
+  padding: 4px 6px;
+  resize: vertical;
+  width: 100%;
+}
+
+.studio-css:focus-visible {
+  outline: 2px solid var(--sys-color-state-focus-ring);
+  outline-offset: -1px;
+}
+
+.studio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.studio-status.idle {
+  border-left-color: var(--sys-color-neutral-outline);
+}
+
+.studio-status.applied {
+  border-left-color: var(--sys-color-green-bright);
+}
+
+.studio-status.warning {
+  background: var(--sys-color-surface-yellow);
+  border-left-color: var(--sys-color-yellow-outline);
+  color: var(--sys-color-on-surface-yellow);
+}
+
+.studio-applied {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.studio-applied h3 {
+  font-size: inherit;
+  font-weight: 600;
+  margin: 0;
+}
+
+.studio-applied-scope {
+  color: var(--sys-color-on-surface-subtle);
+  font-weight: normal;
+}
+
+.studio-applied-css {
+  background: var(--sys-color-surface2);
+  border-radius: 4px;
+  font-family: var(--monospace-font-family);
+  font-size: var(--monospace-font-size);
+  overflow-wrap: anywhere;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+}
+
+.studio-effects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.studio-effects li {
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+}
+
+.studio-effects li.overridden {
+  color: var(--sys-color-on-surface-yellow);
+}
+
+.studio-effects li.unknown {
+  color: var(--sys-color-on-surface-subtle);
+}
+
+.studio-recovery-item {
+  background: var(--sys-color-surface-yellow);
+  border-radius: 4px;
+  color: var(--sys-color-on-surface-yellow);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.studio-recovery-item p {
+  margin: 0;
+}

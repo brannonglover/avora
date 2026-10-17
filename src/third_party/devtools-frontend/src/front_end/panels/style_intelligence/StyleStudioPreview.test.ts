@@ -290,6 +290,7 @@ class FakeHost implements PreviewHost {
 
   async setText(sheetId: string, text: string): Promise<boolean> {
     this.writeLog.push([sheetId, text]);
+    this.timeline.push(`write ${sheetId} ${text === EMPTY ? 'empty' : 'preview'}`);
     if (this.writeGate) {
       await this.writeGate.promise;
     }
@@ -312,6 +313,27 @@ class FakeHost implements PreviewHost {
 
   async inspectEffect(): Promise<PreviewPropertyEffect[]|null> {
     return [];
+  }
+
+  /** The persisted ownership record: sheet id to the texts it may hold. */
+  readonly records = new Map<string, string[]>();
+  /** Records and writes, in the order they happened. */
+  readonly timeline: string[] = [];
+  failRecords = false;
+
+  async recordOwnership(_ref: PreviewTargetRef, sheetId: string, texts: string[]): Promise<boolean> {
+    this.timeline.push(`record ${sheetId}`);
+    if (this.failRecords) {
+      return false;
+    }
+    this.records.set(sheetId, texts);
+    return true;
+  }
+
+  async forgetOwnership(_ref: PreviewTargetRef, sheetId: string): Promise<boolean> {
+    this.timeline.push(`forget ${sheetId}`);
+    this.records.delete(sheetId);
+    return true;
   }
 
   /** The document goes away, and its sheets with it. */
@@ -547,6 +569,65 @@ describe('StylePreviewEngine', () => {
       const result = await engine.apply(REF, 'color: red');
       assert.strictEqual(!result.ok && result.reason, 'target-detached');
       assert.lengthOf(host.writeLog, 0);
+    });
+  });
+
+  describe('ownership record', () => {
+    it('records ownership before any preview text is written, and narrows it after', async () => {
+      await engine.apply(REF, 'color: red');
+      const [id] = engine.ownedSheetIds();
+      assert.deepEqual(host.timeline, [`record ${id}`, `write ${id} preview`, `record ${id}`]);
+      assert.deepEqual(host.records.get(id), [nodeRule('color: red;')]);
+    });
+
+    it('records both texts while a replacement is in flight', async () => {
+      await engine.apply(REF, 'color: red');
+      const [id] = engine.ownedSheetIds();
+      host.writeGate = new Gate();
+      const pending = engine.replace(REF, 'color: blue');
+      await settle();
+      assert.deepEqual(host.records.get(id), [nodeRule('color: red;'), nodeRule('color: blue;')]);
+      host.writeGate.open();
+      host.writeGate = null;
+      assert.isTrue((await pending).ok);
+      assert.deepEqual(host.records.get(id), [nodeRule('color: blue;')]);
+    });
+
+    it('writes nothing when the record cannot be saved', async () => {
+      host.failRecords = true;
+      const result = await engine.apply(REF, 'color: red');
+      assert.strictEqual(!result.ok && result.reason, 'record-failed');
+      assert.lengthOf(host.writeLog, 0);
+      assert.deepEqual(engine.state(), {status: 'none'});
+    });
+
+    it('forgets the record only after the sheet is confirmed empty', async () => {
+      await engine.apply(REF, 'color: red');
+      const [id] = engine.ownedSheetIds();
+      host.failWrites = 1;
+      assert.isFalse((await engine.revert()).ok);
+      assert.isTrue(host.records.has(id));
+      // Still on the page, so still applied: Revert can be tried again.
+      assert.strictEqual(engine.state().status, 'applied');
+      await engine.apply(REF, 'color: red');
+      assert.isTrue((await engine.revert()).ok);
+      assert.isFalse(host.records.has(id));
+      assert.deepEqual(host.timeline.slice(-2), [`write ${id} empty`, `forget ${id}`]);
+    });
+
+    it('forgets the record of a sheet that left with its document', async () => {
+      await engine.apply(REF, 'color: red');
+      const [id] = engine.ownedSheetIds();
+      host.destroyDocument(REF.documentKey, engine);
+      await settle();
+      assert.isFalse(host.records.has(id));
+    });
+
+    it('keeps the record when DevTools closes, since the release cannot be confirmed', async () => {
+      await engine.apply(REF, 'color: red');
+      const [id] = engine.ownedSheetIds();
+      engine.releaseNow();
+      assert.isTrue(host.records.has(id));
     });
   });
 

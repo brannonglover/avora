@@ -151,7 +151,7 @@ Manual steps for the same pass:
 
 ## Preview engine (Checkpoint 2A)
 
-`StyleStudioPreview.ts` applies, replaces and reverts one CSS preview at a time. It writes only to a forced inspector stylesheet that Studio created itself, never to the page's stylesheets, the Styles pane's default inspector stylesheet, or another feature's sheet. There is no UI for it yet. Ownership, single-element targeting, async cancellation, the crash-orphan policy, and verification are in `style-studio-checkpoint-2a-findings.md`.
+`StyleStudioPreview.ts` applies, replaces and reverts one CSS preview at a time. It writes only to a forced inspector stylesheet that Studio created itself, never to the page's stylesheets, the Styles pane's default inspector stylesheet, or another feature's sheet. Since Checkpoint 2B the Studio tab's **Preview** section drives it, with crash recovery through an ownership ledger (`style-studio-checkpoint-2b.md`). Ownership, single-element targeting, async cancellation, the crash-orphan policy, and verification are in `style-studio-checkpoint-2a-findings.md`.
 
 ```bash
 chromium/src/third_party/node/mac_arm64/node-darwin-arm64/bin/node \

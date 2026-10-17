@@ -35,15 +35,35 @@ import {identityForNode, type StyleIntelligenceLoad, StyleIntelligenceModel} fro
 import {
   authoringSelectorFor,
   bindStudioToSelection,
+  forgetRecoveredSheet,
+  hostLedgerStore,
   observeInspectPicks,
   previewHostFor,
   previewRefForNode,
+  type RecoveredSheet,
+  removeOrphan,
+  scanForOrphans,
   selectionForNode,
 } from './StyleStudioDom.js';
+import {StudioLedger} from './StyleStudioLedger.js';
 import {StudioPickTracker} from './StyleStudioPicker.js';
-import {type PreviewTargetRef, StylePreviewEngine} from './StyleStudioPreview.js';
+import {
+  parseDeclarations,
+  PREVIEW_MARKER,
+  type PreviewPropertyEffect,
+  type PreviewState,
+  type PreviewTargetRef,
+  StylePreviewEngine,
+} from './StyleStudioPreview.js';
 import {StyleStudioTargeting} from './StyleStudioTargeting.js';
-import {renderStudioPanel, type StudioViewInput, type StudioViewOutput} from './StyleStudioView.js';
+import {
+  type PreviewEvent,
+  renderStudioPanel,
+  type StudioPreviewInput,
+  type StudioRecoveryInput,
+  type StudioViewInput,
+  type StudioViewOutput,
+} from './StyleStudioView.js';
 
 const UIStrings = {
   /**
@@ -467,8 +487,24 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #domModel: SDK.DOMModel.DOMModel|null = null;
   #applyingSelection = false;
   #studio = new StyleStudioTargeting(() => this.#onStudioChanged());
-  /** Reversible CSS previews for the Studio target (Checkpoint 2A: engine only, no UI yet). */
-  #preview = new StylePreviewEngine(ref => previewHostFor(ref), () => this.requestUpdate());
+  /** Studio's persisted record of the stylesheets it owns, for crash recovery. */
+  #ledger = new StudioLedger(hostLedgerStore());
+  /** Reversible CSS previews for the Studio target. */
+  #preview = new StylePreviewEngine(ref => previewHostFor(ref, this.#ledger), state => this.#onPreviewState(state));
+  /** The CSS the user is editing. It reaches the page only through Apply. */
+  #draft = '';
+  /** The draft text of the preview applied now, or null. */
+  #appliedDraft: string|null = null;
+  #previewBusy: 'apply'|'revert'|null = null;
+  #previewEvent: PreviewEvent = {kind: 'none'};
+  #previewEffects: PreviewPropertyEffect[]|null = null;
+  /** Previews earlier DevTools sessions left, found through the ledger. */
+  #recovered: RecoveredSheet[] = [];
+  /** Recovered sheets the user chose to keep in this session. */
+  #keptRecovered = new Set<string>();
+  #recoveryBusy = false;
+  #recoveryResult: 'removed'|'failed'|null = null;
+  #recoveryTimer = 0;
   #previewRevalidationQueued = false;
   /** The preview reference of the last definite Studio target, to notice changes. */
   #lastPreviewRefKey: string|null = null;
@@ -499,9 +535,11 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     UI.Context.Context.instance().addFlavorChangeListener(SDK.DOMModel.DOMNode, this.#onSelectionForPick, this);
     this.#pickAction()?.addEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
     this.#observePreviewLifecycle();
+    void this.#ledger.prune();
+    this.#scheduleRecoveryScan();
     // Closing DevTools gives no time for asynchronous cleanup; send the reverts
-    // synchronously. Delivery is not guaranteed, and a later session cannot
-    // reliably find what is left (see style-studio-checkpoint-2a-findings.md).
+    // synchronously. Delivery is not guaranteed; a later session finds what is
+    // left through the ledger and offers to remove it (StyleStudioLedger.ts).
     window.addEventListener('pagehide', this.#releasePreviewsNow);
     window.addEventListener('beforeunload', this.#releasePreviewsNow);
     this.#unsubscribePicks = observeInspectPicks({
@@ -530,6 +568,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       this.#studio.revalidate();
       this.#studio.setLive(true);
     }
+    this.#scheduleRecoveryScan();
   }
 
   /** Releases every Studio listener this pane added. */
@@ -574,8 +613,193 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     // an apply still in flight for the old target must not write.
     const state = this.#preview.state();
     if (state.status === 'none' || previewRefKey(state.preview.ref) !== key) {
+      if (state.status !== 'none' || this.#previewBusy === 'apply') {
+        const target = this.#studio.target();
+        this.#previewEvent = target.kind === 'detached' ?
+            {kind: target.reason === 'document' ? 'navigated' : 'target-detached'} :
+            {kind: 'target-changed'};
+      }
       void this.#preview.targetChanged();
     }
+  }
+
+  #onPreviewState(state: PreviewState): void {
+    if (state.status === 'none' && this.#appliedDraft !== null && this.#previewBusy === null) {
+      // Removed by the engine itself (target change, navigation, re-check); the
+      // trigger has set the reason.
+      this.#appliedDraft = null;
+      this.#previewEffects = null;
+    }
+    this.requestUpdate();
+  }
+
+  #previewInput(): StudioPreviewInput {
+    const state = this.#preview.state();
+    const applied = state.status === 'none' ? null : {
+      declarations: state.preview.declarations.text,
+      invalid: state.preview.declarations.invalid,
+      scope: state.preview.ref.scope,
+    };
+    return {
+      canApply: this.#currentPreviewRef() !== null,
+      draft: this.#draft,
+      applied,
+      conflict: state.status === 'conflict',
+      dirty: applied ? this.#draft !== this.#appliedDraft : this.#draft.trim() !== '',
+      busy: this.#previewBusy,
+      event: this.#previewEvent,
+      effects: state.status === 'applied' ? this.#previewEffects : null,
+    };
+  }
+
+  #setDraft(text: string): void {
+    this.#draft = text;
+    // Editing acknowledges a failure or removal message; the draft state takes over.
+    if (this.#previewEvent.kind !== 'applied' && this.#previewEvent.kind !== 'updated') {
+      this.#previewEvent = {kind: 'none'};
+    }
+    this.requestUpdate();
+  }
+
+  async #applyPreview(): Promise<void> {
+    if (this.#previewBusy !== null) {
+      return;
+    }
+    const ref = this.#currentPreviewRef();
+    if (!ref) {
+      return;
+    }
+    const draft = this.#draft;
+    if (!parseDeclarations(draft)) {
+      this.#previewEvent = {kind: 'invalid'};
+      this.requestUpdate();
+      return;
+    }
+    const updating = this.#preview.state().status === 'applied';
+    this.#previewBusy = 'apply';
+    this.#previewEvent = {kind: 'none'};
+    this.requestUpdate();
+    try {
+      const result = await this.#preview.apply(ref, draft);
+      if (result.ok) {
+        this.#appliedDraft = draft;
+        this.#previewEffects = await this.#measureEffects();
+        this.#previewEvent = {kind: updating ? 'updated' : 'applied'};
+      } else if (this.#previewEvent.kind === 'none') {
+        // A target change during the apply has already said what happened.
+        this.#previewEvent = {kind: 'failed', reason: result.reason};
+      }
+      if (this.#preview.state().status === 'none') {
+        this.#appliedDraft = null;
+      }
+    } finally {
+      this.#previewBusy = null;
+      this.requestUpdate();
+    }
+  }
+
+  async #revertPreview(): Promise<void> {
+    if (this.#previewBusy !== null || this.#preview.state().status === 'none') {
+      return;
+    }
+    this.#previewBusy = 'revert';
+    this.requestUpdate();
+    try {
+      const result = await this.#preview.revert();
+      this.#previewEvent = {kind: result.ok ? 'reverted' : 'revert-failed'};
+      if (this.#preview.state().status === 'none') {
+        this.#appliedDraft = null;
+        this.#previewEffects = null;
+      }
+    } finally {
+      this.#previewBusy = null;
+      this.requestUpdate();
+    }
+  }
+
+  /**
+   * The applied declarations' effect on the selected element, from the
+   * cascade: whether each one wins, and the computed value. Stylesheet
+   * insertion alone says nothing about this.
+   */
+  async #measureEffects(): Promise<PreviewPropertyEffect[]|null> {
+    const state = this.#preview.state();
+    if (state.status !== 'applied') {
+      return null;
+    }
+    const ref = state.preview.ref;
+    const target = this.#studio.target();
+    const nodeId = ref.scope === 'node'  ? ref.nodeId :
+        target.kind === 'matches' && target.includesSelected ?
+                                           UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode)?.id ?? null :
+                                           null;
+    if (nodeId === null) {
+      return null;
+    }
+    const effects = await this.#preview.inspectEffect(nodeId);
+    // Only for the preview it was measured on.
+    return this.#preview.state() === state ? effects : null;
+  }
+
+  #scheduleRecoveryScan(): void {
+    window.clearTimeout(this.#recoveryTimer);
+    this.#recoveryTimer = window.setTimeout(() => void this.#scanForRecovery(), 300);
+  }
+
+  async #scanForRecovery(): Promise<void> {
+    if (this.#recoveryBusy) {
+      return;
+    }
+    const owned = (sheetId: string): boolean => this.#preview.ownedSheetIds().includes(sheetId);
+    const found = await scanForOrphans(this.#ledger, owned);
+    this.#recovered = found.filter(sheet => !this.#keptRecovered.has(sheet.entry.sheetId));
+    this.requestUpdate();
+  }
+
+  #recoveryInput(): StudioRecoveryInput {
+    return {
+      items: this.#recovered.map(sheet => ({
+                                   id: sheet.entry.sheetId,
+                                   kind: sheet.verdict === 'orphan' ? 'orphan' : 'changed',
+                                   css: (sheet.text ?? '').replace(PREVIEW_MARKER, '').trim(),
+                                 })),
+      busy: this.#recoveryBusy,
+      result: this.#recoveryResult,
+    };
+  }
+
+  async #removeRecovered(sheetId: string): Promise<void> {
+    const sheet = this.#recovered.find(recovered => recovered.entry.sheetId === sheetId);
+    if (!sheet || this.#recoveryBusy || sheet.verdict !== 'orphan') {
+      return;
+    }
+    this.#recoveryBusy = true;
+    this.requestUpdate();
+    try {
+      const owned = (id: string): boolean => this.#preview.ownedSheetIds().includes(id);
+      const result = await removeOrphan(sheet, this.#ledger, owned);
+      this.#recoveryResult = result.ok ? 'removed' : 'failed';
+    } finally {
+      this.#recoveryBusy = false;
+      await this.#scanForRecovery();
+    }
+  }
+
+  async #keepRecovered(sheetId: string): Promise<void> {
+    const sheet = this.#recovered.find(recovered => recovered.entry.sheetId === sheetId);
+    if (!sheet || this.#recoveryBusy) {
+      return;
+    }
+    if (sheet.verdict === 'changed') {
+      // Not Studio's to touch any more: forget the record, leave the sheet.
+      await forgetRecoveredSheet(sheet, this.#ledger);
+    } else {
+      // Keep: the sheet and its record stay; a later session asks again.
+      this.#keptRecovered.add(sheetId);
+    }
+    this.#recovered = this.#recovered.filter(recovered => recovered !== sheet);
+    this.#recoveryResult = null;
+    this.requestUpdate();
   }
 
   /** A DOM change can move a single-element preview's position: verify it exactly again. */
@@ -586,14 +810,41 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#previewRevalidationQueued = true;
     queueMicrotask(() => {
       this.#previewRevalidationQueued = false;
-      void this.#preview.revalidate();
+      void this.#preview.revalidate().then(result => {
+        if (!result.ok && result.state.status === 'none' && result.reason !== 'superseded') {
+          this.#previewEvent = {kind: 'target-detached'};
+          this.#appliedDraft = null;
+          this.#previewEffects = null;
+          this.requestUpdate();
+        } else if (result.ok && result.state.status === 'applied') {
+          // The rule may have been rewritten for a moved element: measure again.
+          void this.#measureEffects().then(effects => {
+            this.#previewEffects = effects;
+            this.requestUpdate();
+          });
+        }
+      });
     });
   };
 
   #onStyleSheetRemoved = (event: Common.EventTarget.EventTargetEvent<SDK.CSSStyleSheetHeader.CSSStyleSheetHeader>):
       void => {
+        const state = this.#preview.state();
+        if (state.status !== 'none' && state.preview.sheetId === event.data.id) {
+          // Studio's sheet goes only with its document.
+          this.#previewEvent = {kind: 'navigated'};
+        }
         this.#preview.sheetRemoved(event.data.id);
       };
+
+  #onStyleSheetAdded = (event: Common.EventTarget.EventTargetEvent<SDK.CSSStyleSheetHeader.CSSStyleSheetHeader>):
+      void => {
+        if (event.data.isViaInspector()) {
+          this.#scheduleRecoveryScan();
+        }
+      };
+
+  #onCssModelEnabled = (): void => this.#scheduleRecoveryScan();
 
   #onStyleSheetChanged = (event: Common.EventTarget.EventTargetEvent<SDK.CSSModel.StyleSheetChangedEvent>): void => {
     if (this.#preview.ownedSheetIds().includes(event.data.styleSheetId)) {
@@ -610,6 +861,10 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
         SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetRemoved, this.#onStyleSheetRemoved, this);
     targetManager.addModelListener(
         SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetChanged, this.#onStyleSheetChanged, this);
+    targetManager.addModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetAdded, this.#onStyleSheetAdded, this);
+    targetManager.addModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.ModelWasEnabled, this.#onCssModelEnabled, this);
   }
 
   #unobservePreviewLifecycle(): void {
@@ -621,6 +876,10 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
         SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetRemoved, this.#onStyleSheetRemoved, this);
     targetManager.removeModelListener(
         SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetChanged, this.#onStyleSheetChanged, this);
+    targetManager.removeModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetAdded, this.#onStyleSheetAdded, this);
+    targetManager.removeModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.ModelWasEnabled, this.#onCssModelEnabled, this);
   }
 
   #disposeStudio(): void {
@@ -633,6 +892,7 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#unobservePreviewLifecycle();
     window.removeEventListener('pagehide', this.#releasePreviewsNow);
     window.removeEventListener('beforeunload', this.#releasePreviewsNow);
+    window.clearTimeout(this.#recoveryTimer);
     void this.#preview.dispose();
   }
 
@@ -786,6 +1046,8 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
       scope: state.scope,
       selectorText: state.selectorText,
       target: this.#studio.target(),
+      preview: this.#previewInput(),
+      recovery: this.#recoveryInput(),
     };
   }
 
@@ -797,6 +1059,11 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     highlightTarget: () => this.#highlightStudioTarget(),
     hideHighlight: () => this.#hideHighlight(),
     togglePick: () => void this.#togglePick(),
+    setDraft: text => this.#setDraft(text),
+    applyPreview: () => void this.#applyPreview(),
+    revertPreview: () => void this.#revertPreview(),
+    removeRecovered: id => void this.#removeRecovered(id),
+    keepRecovered: id => void this.#keepRecovered(id),
   };
 
   /**

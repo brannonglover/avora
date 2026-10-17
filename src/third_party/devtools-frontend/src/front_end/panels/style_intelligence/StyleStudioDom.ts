@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import * as Common from '../../core/common/common.js';
+import * as Host from '../../core/host/host.js';
 import type * as Platform from '../../core/platform/platform.js';
 import * as SDK from '../../core/sdk/sdk.js';
 import type * as ProtocolProxyApi from '../../generated/protocol-proxy-api.js';
@@ -11,9 +12,11 @@ import type * as UI from '../../ui/legacy/legacy.js';
 import * as Elements from '../elements/elements.js';
 
 import {identityForNode} from './StyleIntelligenceModel.js';
+import {classifyEntry, type EntryVerdict, type LedgerEntry, type LedgerStore, type SheetFacts, type StudioLedger} from './StyleStudioLedger.js';
 import {InspectPickHub, type InspectPickObserver} from './StyleStudioPicker.js';
 import {
   type CreateSheetFailure,
+  EMPTY_SHEET_TEXT,
   type PathStep,
   type PreviewHost,
   type PreviewPropertyEffect,
@@ -362,7 +365,7 @@ async function elementPath(node: SDK.DOMModel.DOMNode): Promise<PathStep[]|null>
  * The PreviewHost for a reference: its target's DOMModel and CSSModel, looked up
  * fresh each time so a disposed target or a replaced document is noticed.
  */
-export function previewHostFor(ref: PreviewTargetRef): PreviewHost|null {
+export function previewHostFor(ref: PreviewTargetRef, ledger: StudioLedger): PreviewHost|null {
   const target = SDK.TargetManager.TargetManager.instance().targetById(ref.targetId);
   const domModel = target?.model(SDK.DOMModel.DOMModel);
   const cssModel = target?.model(SDK.CSSModel.CSSModel);
@@ -495,6 +498,21 @@ export function previewHostFor(ref: PreviewTargetRef): PreviewHost|null {
       void cssModel.agent.invoke_setStyleSheetText({styleSheetId: sheetId as Protocol.DOM.StyleSheetId, text});
     },
 
+    async recordOwnership(_ref: PreviewTargetRef, sheetId: string, texts: string[]): Promise<boolean> {
+      const document = liveDocument();
+      const targetId = await browserTargetId(target);
+      if (!document || !targetId) {
+        return false;
+      }
+      return await ledger.record(
+          targetId, {sheetId, frameId: ref.frameId, documentBackendNodeId: document.backendNodeId(), texts});
+    },
+
+    async forgetOwnership(_ref: PreviewTargetRef, sheetId: string): Promise<boolean> {
+      const targetId = await browserTargetId(target);
+      return targetId ? await ledger.forget(targetId, sheetId) : false;
+    },
+
     async inspectEffect(nodeId: number, sheetId: string): Promise<PreviewPropertyEffect[]|null> {
       const node = domModel.nodeForId(nodeId as Protocol.DOM.NodeId);
       if (!node) {
@@ -530,4 +548,150 @@ export function previewHostFor(ref: PreviewTargetRef): PreviewHost|null {
       return effects;
     },
   };
+}
+
+const browserTargetIds = new WeakMap<SDK.Target.Target, Promise<string|null>>();
+
+/**
+ * The browser's id for a target, from `Target.getTargetInfo`. `SDK.Target.id()`
+ * is not it: a frontend attached straight to a page's websocket calls its
+ * target "main". Ledger records are keyed by this id.
+ */
+export function browserTargetId(target: SDK.Target.Target): Promise<string|null> {
+  let id = browserTargetIds.get(target);
+  if (!id) {
+    id = target.targetAgent()
+             .invoke_getTargetInfo({})
+             .then(response => response.getError() ? null : response.targetInfo?.targetId ?? null)
+             .catch(() => null);
+    browserTargetIds.set(target, id);
+  }
+  return id;
+}
+
+/**
+ * Ledger storage in the DevTools host's preferences. Docked and undocked
+ * DevTools keep them in the browser profile's non-synced DevTools dictionary,
+ * in the browser process, so they outlive a crashed DevTools window. A frontend
+ * served over remote debugging keeps them in its own origin's localStorage.
+ * Messages to the host are ordered, so a read after a write sees it.
+ */
+export function hostLedgerStore(): LedgerStore {
+  const host = Host.InspectorFrontendHost.InspectorFrontendHostInstance;
+  return {
+    read: key => new Promise(resolve => host.getPreference(key, value => {
+      resolve(typeof value === 'string' && value ? value : null);
+    })),
+    write: async (key, value) => host.setPreference(key, value),
+    remove: async key => host.removePreference(key),
+    keys: () => new Promise(resolve => host.getPreferences(prefs => resolve(Object.keys(prefs ?? {})))),
+  };
+}
+
+/** A recorded Studio sheet found in the page now, and what it means. */
+export interface RecoveredSheet {
+  target: SDK.Target.Target;
+  targetId: string;
+  entry: LedgerEntry;
+  verdict: EntryVerdict;
+  /** What the sheet holds now. */
+  text: string|null;
+}
+
+async function factsFor(
+    cssModel: SDK.CSSModel.CSSModel, entry: LedgerEntry, liveOwned: (sheetId: string) => boolean): Promise<SheetFacts> {
+  const header = cssModel.styleSheetHeaderForId(entry.sheetId as Protocol.DOM.StyleSheetId);
+  if (!header) {
+    return {
+      reported: false,
+      viaInspector: false,
+      frameId: null,
+      ownerBackendNodeId: null,
+      knownDefault: false,
+      liveOwned: false,
+      text: null,
+    };
+  }
+  return {
+    reported: true,
+    viaInspector: header.isViaInspector(),
+    frameId: header.frameId,
+    ownerBackendNodeId: header.ownerNode?.backendNodeId() ?? null,
+    knownDefault: cssModel.isKnownDefaultInspectorStylesheet(header.id),
+    liveOwned: liveOwned(header.id),
+    text: await cssModel.getStyleSheetText(header.id) ?? null,
+  };
+}
+
+/**
+ * Finds the recorded Studio sheets of every target whose stylesheets DevTools
+ * has fully loaded. Entries whose sheet is gone, already clean, or not the
+ * recorded sheet are deleted without writing anything; previews still applied
+ * (`orphan`) and sheets something else changed (`changed`) are returned for
+ * the user to decide. Nothing in the page is written here.
+ */
+export async function scanForOrphans(
+    ledger: StudioLedger, liveOwned: (sheetId: string) => boolean): Promise<RecoveredSheet[]> {
+  const found: RecoveredSheet[] = [];
+  for (const target of SDK.TargetManager.TargetManager.instance().targets()) {
+    const cssModel = target.model(SDK.CSSModel.CSSModel);
+    // Headers are complete once CSS.enable has returned; before that a missing
+    // header proves nothing.
+    if (target.isDisposed() || !cssModel?.isEnabled()) {
+      continue;
+    }
+    const targetId = await browserTargetId(target);
+    if (!targetId) {
+      continue;
+    }
+    for (const entry of await ledger.entries(targetId)) {
+      const facts = await factsFor(cssModel, entry, liveOwned);
+      const verdict = classifyEntry(entry, facts, EMPTY_SHEET_TEXT);
+      if (verdict === 'gone' || verdict === 'clean' || verdict === 'mismatch') {
+        await ledger.forget(targetId, entry.sheetId);
+      } else if (verdict === 'orphan' || verdict === 'changed') {
+        found.push({target, targetId, entry, verdict, text: facts.text});
+      }
+    }
+  }
+  return found;
+}
+
+export type RemoveOrphanResult = {
+  ok: true,
+}|{
+  ok: false,
+  reason: 'no-longer-orphan'|'write-failed'|'record-failed',
+  verdict: EntryVerdict|null,
+};
+
+/**
+ * The user chose Remove: checks the sheet again, empties exactly that sheet,
+ * reads it back, and only then deletes its record.
+ */
+export async function removeOrphan(
+    sheet: RecoveredSheet, ledger: StudioLedger, liveOwned: (sheetId: string) => boolean): Promise<RemoveOrphanResult> {
+  const cssModel = sheet.target.model(SDK.CSSModel.CSSModel);
+  if (sheet.target.isDisposed() || !cssModel) {
+    return {ok: false, reason: 'no-longer-orphan', verdict: null};
+  }
+  const verdict = classifyEntry(sheet.entry, await factsFor(cssModel, sheet.entry, liveOwned), EMPTY_SHEET_TEXT);
+  if (verdict !== 'orphan') {
+    if (verdict === 'gone' || verdict === 'clean' || verdict === 'mismatch') {
+      await ledger.forget(sheet.targetId, sheet.entry.sheetId);
+    }
+    return {ok: false, reason: 'no-longer-orphan', verdict};
+  }
+  const id = sheet.entry.sheetId as Protocol.DOM.StyleSheetId;
+  const error = await cssModel.setStyleSheetText(id, EMPTY_SHEET_TEXT, true);
+  if (error !== null || await cssModel.getStyleSheetText(id) !== EMPTY_SHEET_TEXT) {
+    return {ok: false, reason: 'write-failed', verdict};
+  }
+  return await ledger.forget(sheet.targetId, sheet.entry.sheetId) ? {ok: true} :
+                                                                     {ok: false, reason: 'record-failed', verdict};
+}
+
+/** The user chose to forget a recorded sheet something else changed. The sheet is not written. */
+export async function forgetRecoveredSheet(sheet: RecoveredSheet, ledger: StudioLedger): Promise<boolean> {
+  return await ledger.forget(sheet.targetId, sheet.entry.sheetId);
 }

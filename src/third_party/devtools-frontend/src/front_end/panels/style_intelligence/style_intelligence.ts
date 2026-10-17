@@ -19,6 +19,7 @@ import './StackingSnapshot.js';
 import './StyleIntelligenceModel.js';
 import './StyleIntelligencePane.js';
 import './StyleStudioDom.js';
+import './StyleStudioLedger.js';
 import './StyleStudioPicker.js';
 import './StyleStudioPreview.js';
 import './StyleStudioTarget.js';
@@ -39,6 +40,7 @@ import * as StackingSnapshot from './StackingSnapshot.js';
 import * as StyleIntelligenceModel from './StyleIntelligenceModel.js';
 import * as StyleIntelligencePane from './StyleIntelligencePane.js';
 import * as StyleStudioDom from './StyleStudioDom.js';
+import * as StyleStudioLedger from './StyleStudioLedger.js';
 import * as StyleStudioPicker from './StyleStudioPicker.js';
 import * as StyleStudioPreview from './StyleStudioPreview.js';
 import * as StyleStudioTarget from './StyleStudioTarget.js';
@@ -60,6 +62,7 @@ export {
   StyleIntelligenceModel,
   StyleIntelligencePane,
   StyleStudioDom,
+  StyleStudioLedger,
   StyleStudioPicker,
   StyleStudioPreview,
   StyleStudioTarget,

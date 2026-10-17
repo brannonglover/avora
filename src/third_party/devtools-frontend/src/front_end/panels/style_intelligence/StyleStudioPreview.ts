@@ -56,6 +56,8 @@ export type PreviewFailure =
     'external-modification'|
     /** The protocol rejected the write, or the sheet did not read back as written. */
     'write-failed'|
+    /** Studio's ownership record could not be saved, so nothing was written (see StyleStudioLedger). */
+    'record-failed'|
     /** A newer operation or a target change made this one obsolete before it wrote. */
     'superseded'|'disposed';
 
@@ -154,6 +156,14 @@ export interface PreviewHost {
   setTextNow(sheetId: string, text: string): void;
   /** Reads, from the cascade, how the preview's declarations fare on `nodeId`. */
   inspectEffect(nodeId: number, sheetId: string): Promise<PreviewPropertyEffect[]|null>;
+  /**
+   * Persists that Studio owns `sheetId`, and the texts it may hold, so a later
+   * DevTools session can offer to remove a preview this one left behind.
+   * Resolves true only once the record reads back.
+   */
+  recordOwnership(ref: PreviewTargetRef, sheetId: string, texts: string[]): Promise<boolean>;
+  /** Deletes that record. Called only once the sheet is confirmed empty or gone. */
+  forgetOwnership(ref: PreviewTargetRef, sheetId: string): Promise<boolean>;
 }
 
 /** Splits declaration text on top-level semicolons, respecting strings, parens, and brackets. */
@@ -297,7 +307,8 @@ function parseSingleRule(text: string): CSSStyleRule|null {
 const UNKNOWN_TEXT = '\u0000unknown';
 
 /** What an owned sheet holds with no preview in it. */
-const EMPTY_TEXT = `${PREVIEW_MARKER}\n`;
+export const EMPTY_SHEET_TEXT = `${PREVIEW_MARKER}\n`;
+const EMPTY_TEXT = EMPTY_SHEET_TEXT;
 
 interface OwnedSheet {
   ref: PreviewTargetRef;
@@ -436,11 +447,12 @@ export class StylePreviewEngine {
     });
   }
 
-  /** A sheet disappeared with its document; forget it without writing. */
+  /** A sheet disappeared with its document; forget it, and its record, without writing. */
   sheetRemoved(sheetId: string): void {
     for (const [key, sheet] of this.#sheets) {
       if (sheet.sheetId === sheetId) {
         this.#sheets.delete(key);
+        void this.#hostFor(sheet.ref)?.forgetOwnership(sheet.ref, sheetId);
       }
     }
     if (this.#state.status !== 'none' && this.#state.preview.sheetId === sheetId) {
@@ -521,6 +533,8 @@ export class StylePreviewEngine {
   #drop(sheet: OwnedSheet): void {
     if (this.#tracked(sheet)) {
       this.#sheets.delete(documentScope(sheet.ref));
+      // Only the record goes; the sheet is not Studio's to write any more.
+      void this.#hostFor(sheet.ref)?.forgetOwnership(sheet.ref, sheet.sheetId);
     }
     if (this.#state.status !== 'none' && this.#state.preview.sheetId === sheet.sheetId) {
       this.#setState({status: 'none'});
@@ -576,6 +590,19 @@ export class StylePreviewEngine {
       }
     }
 
+    // Record ownership before anything Studio writes can show on the page, so
+    // a crash at any point after this leaves a preview a later session can find.
+    const text = previewSheetText(ruleText);
+    const recordTexts = sheet.written === '' || sheet.written === EMPTY_TEXT || sheet.written === UNKNOWN_TEXT ?
+        [text] :
+        [sheet.written, text];
+    if (this.#disposed || epoch !== this.#epoch) {
+      return this.#fail(this.#disposed ? 'disposed' : 'superseded', 'The target changed before the preview was written.');
+    }
+    if (!await host.recordOwnership(ref, sheet.sheetId, recordTexts)) {
+      return this.#fail('record-failed', 'Studio could not save its ownership record, so the preview was not written.');
+    }
+
     // Last checks before writing: still current, still Studio's, and the target
     // still resolves to the same rule.
     if (this.#disposed || epoch !== this.#epoch) {
@@ -600,7 +627,6 @@ export class StylePreviewEngine {
       return this.#fail('ownership-unsafe', unsafe);
     }
 
-    const text = previewSheetText(ruleText);
     const written = await host.setText(sheet.sheetId, text) && await host.getText(sheet.sheetId) === text;
     if (!this.#tracked(sheet) || !host.sheetExists(sheet.sheetId)) {
       // The document, and the sheet with it, went away during the write.
@@ -620,6 +646,9 @@ export class StylePreviewEngine {
     }
     sheet.written = text;
     sheet.ref = ref;
+    // Narrow the record to what the sheet now holds. A failure leaves a
+    // superset, which still identifies it.
+    await host.recordOwnership(ref, sheet.sheetId, [text]);
     const previous = this.#state;
     this.#setState({status: 'applied', preview: {ref, sheetId: sheet.sheetId, ruleText, declarations}});
 
@@ -644,11 +673,21 @@ export class StylePreviewEngine {
       ok = await this.#emptySheet(state.preview.sheetId);
     }
     for (const sheet of [...this.#sheets.values()]) {
+      // The current sheet was handled above; a failure there is not retried here.
+      if (state.status !== 'none' && sheet.sheetId === state.preview.sheetId) {
+        continue;
+      }
       if (sheet.written !== EMPTY_TEXT && sheet.written !== '') {
         ok = await this.#emptySheet(sheet.sheetId) && ok;
       }
     }
-    if (this.#state.status !== 'none') {
+    // A preview whose sheet could not be emptied is still on the page: keep
+    // saying so, so it can be reverted again. One whose sheet is gone or no
+    // longer Studio's is not tracked any more.
+    const current = this.#state;
+    const stillShown = !ok && current.status !== 'none' &&
+        [...this.#sheets.values()].some(sheet => sheet.sheetId === current.preview.sheetId);
+    if (current.status !== 'none' && !stillShown) {
       this.#setState({status: 'none'});
     }
     return ok ? {ok: true, state: this.#state} : this.#fail('write-failed', 'The preview could not be removed.');
@@ -676,6 +715,10 @@ export class StylePreviewEngine {
     const ok = await host.setText(sheetId, EMPTY_TEXT) && await host.getText(sheetId) === EMPTY_TEXT;
     if (ok && this.#tracked(sheet)) {
       sheet.written = EMPTY_TEXT;
+    }
+    if (ok) {
+      // Confirmed empty: nothing is left for a later session to find.
+      await host.forgetOwnership(sheet.ref, sheetId);
     }
     return ok;
   }

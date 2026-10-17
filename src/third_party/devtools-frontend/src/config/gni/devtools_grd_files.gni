@@ -2056,6 +2056,7 @@ grd_files_unbundled_sources = [
   "front_end/panels/style_intelligence/StyleIntelligenceModel.js",
   "front_end/panels/style_intelligence/StyleIntelligencePane.js",
   "front_end/panels/style_intelligence/StyleStudioDom.js",
+  "front_end/panels/style_intelligence/StyleStudioLedger.js",
   "front_end/panels/style_intelligence/StyleStudioPicker.js",
   "front_end/panels/style_intelligence/StyleStudioPreview.js",
   "front_end/panels/style_intelligence/StyleStudioTarget.js",
