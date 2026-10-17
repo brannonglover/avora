@@ -32,8 +32,16 @@ import {captureStackingSnapshot, loadStackingChain} from './StackingChainLoader.
 import {applySnapshot, type SnapshotNodeRecord} from './StackingSnapshot.js';
 import styleIntelligencePaneStyles from './styleIntelligencePane.css.js';
 import {identityForNode, type StyleIntelligenceLoad, StyleIntelligenceModel} from './StyleIntelligenceModel.js';
-import {bindStudioToSelection, observeInspectPicks, selectionForNode} from './StyleStudioDom.js';
+import {
+  authoringSelectorFor,
+  bindStudioToSelection,
+  observeInspectPicks,
+  previewHostFor,
+  previewRefForNode,
+  selectionForNode,
+} from './StyleStudioDom.js';
 import {StudioPickTracker} from './StyleStudioPicker.js';
+import {type PreviewTargetRef, StylePreviewEngine} from './StyleStudioPreview.js';
 import {StyleStudioTargeting} from './StyleStudioTargeting.js';
 import {renderStudioPanel, type StudioViewInput, type StudioViewOutput} from './StyleStudioView.js';
 
@@ -121,6 +129,16 @@ type LayeringPhase = 'idle'|'loading'|'ready'|'failed';
  * than running an inspect mode of its own.
  */
 const PICK_ACTION_ID = 'elements.toggle-element-search';
+
+/** DOM changes after which a single-element preview is verified again. */
+const PREVIEW_DOM_EVENTS = [
+  SDK.DOMModel.Events.NodeInserted,
+  SDK.DOMModel.Events.NodeRemoved,
+  SDK.DOMModel.Events.ChildNodeCountUpdated,
+  SDK.DOMModel.Events.AttrModified,
+  SDK.DOMModel.Events.AttrRemoved,
+  SDK.DOMModel.Events.DocumentUpdated,
+] as const;
 
 /** Delay before the ancestor walk starts, so fast reselection does not thrash it. */
 const LAYERING_START_DELAY = 120;
@@ -448,7 +466,13 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   #relationshipRequest = 0;
   #domModel: SDK.DOMModel.DOMModel|null = null;
   #applyingSelection = false;
-  #studio = new StyleStudioTargeting(() => this.requestUpdate());
+  #studio = new StyleStudioTargeting(() => this.#onStudioChanged());
+  /** Reversible CSS previews for the Studio target (Checkpoint 2A: engine only, no UI yet). */
+  #preview = new StylePreviewEngine(ref => previewHostFor(ref), () => this.requestUpdate());
+  #previewRevalidationQueued = false;
+  /** The preview reference of the last definite Studio target, to notice changes. */
+  #lastPreviewRefKey: string|null = null;
+  #releasePreviewsNow = (): void => this.#preview.releaseNow();
   #tabSetting = Common.Settings.Settings.instance().createSetting<PaneTab>('style-intelligence-tab', 'explain');
   #picks = new StudioPickTracker<SDK.DOMModel.DOMNode>(() => this.#studio.fillSelectorFromSelection());
   /** True only while Studio's own button is starting the picker. */
@@ -474,6 +498,12 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     // node when the pick fills its selector.
     UI.Context.Context.instance().addFlavorChangeListener(SDK.DOMModel.DOMNode, this.#onSelectionForPick, this);
     this.#pickAction()?.addEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
+    this.#observePreviewLifecycle();
+    // Closing DevTools gives no time for asynchronous cleanup; send the reverts
+    // synchronously. Delivery is not guaranteed, and a later session cannot
+    // reliably find what is left (see style-studio-checkpoint-2a-findings.md).
+    window.addEventListener('pagehide', this.#releasePreviewsNow);
+    window.addEventListener('beforeunload', this.#releasePreviewsNow);
     this.#unsubscribePicks = observeInspectPicks({
       received: () => this.#picks.pickReceived(),
       resolved: node => this.#picks.pickResolved(node, UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode)),
@@ -503,6 +533,96 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
   }
 
   /** Releases every Studio listener this pane added. */
+  /**
+   * The integration point for preview UI: the engine, and the reference for the
+   * current Studio target. The reference is null when the target can't be
+   * previewed (nothing selected, detached, unsupported, or unresolved).
+   */
+  studioPreview(): {engine: StylePreviewEngine, currentRef: () => PreviewTargetRef | null} {
+    return {engine: this.#preview, currentRef: () => this.#currentPreviewRef()};
+  }
+
+  #currentPreviewRef(): PreviewTargetRef|null {
+    const target = this.#studio.target();
+    const node = UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode);
+    if (!node) {
+      return null;
+    }
+    if (target.kind === 'node' && target.nodeId === node.id) {
+      return previewRefForNode(node, 'node', target.selector ?? authoringSelectorFor(node));
+    }
+    if (target.kind === 'matches') {
+      return previewRefForNode(node, 'all-matches', target.selector);
+    }
+    return null;
+  }
+
+  #onStudioChanged(): void {
+    this.requestUpdate();
+    // While a selector is being re-resolved the target is momentarily pending;
+    // that is not a change of target and must not drop a preview.
+    if (this.#studio.target().kind === 'pending') {
+      return;
+    }
+    const current = this.#currentPreviewRef();
+    const key = current ? previewRefKey(current) : null;
+    if (key === this.#lastPreviewRefKey) {
+      return;
+    }
+    this.#lastPreviewRefKey = key;
+    // Every definite change of target, whether or not a preview is applied yet:
+    // an apply still in flight for the old target must not write.
+    const state = this.#preview.state();
+    if (state.status === 'none' || previewRefKey(state.preview.ref) !== key) {
+      void this.#preview.targetChanged();
+    }
+  }
+
+  /** A DOM change can move a single-element preview's position: verify it exactly again. */
+  #onDomChangedForPreview = (): void => {
+    if (this.#preview.state().status !== 'applied' || this.#previewRevalidationQueued) {
+      return;
+    }
+    this.#previewRevalidationQueued = true;
+    queueMicrotask(() => {
+      this.#previewRevalidationQueued = false;
+      void this.#preview.revalidate();
+    });
+  };
+
+  #onStyleSheetRemoved = (event: Common.EventTarget.EventTargetEvent<SDK.CSSStyleSheetHeader.CSSStyleSheetHeader>):
+      void => {
+        this.#preview.sheetRemoved(event.data.id);
+      };
+
+  #onStyleSheetChanged = (event: Common.EventTarget.EventTargetEvent<SDK.CSSModel.StyleSheetChangedEvent>): void => {
+    if (this.#preview.ownedSheetIds().includes(event.data.styleSheetId)) {
+      void this.#preview.sheetChanged(event.data.styleSheetId);
+    }
+  };
+
+  #observePreviewLifecycle(): void {
+    const targetManager = SDK.TargetManager.TargetManager.instance();
+    for (const type of PREVIEW_DOM_EVENTS) {
+      targetManager.addModelListener(SDK.DOMModel.DOMModel, type, this.#onDomChangedForPreview, this);
+    }
+    targetManager.addModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetRemoved, this.#onStyleSheetRemoved, this);
+    targetManager.addModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetChanged, this.#onStyleSheetChanged, this);
+  }
+
+  #unobservePreviewLifecycle(): void {
+    const targetManager = SDK.TargetManager.TargetManager.instance();
+    for (const type of PREVIEW_DOM_EVENTS) {
+      targetManager.removeModelListener(SDK.DOMModel.DOMModel, type, this.#onDomChangedForPreview, this);
+    }
+    targetManager.removeModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetRemoved, this.#onStyleSheetRemoved, this);
+    targetManager.removeModelListener(
+        SDK.CSSModel.CSSModel, SDK.CSSModel.Events.StyleSheetChanged, this.#onStyleSheetChanged, this);
+  }
+
   #disposeStudio(): void {
     this.#unbindStudio();
     this.#unsubscribePicks();
@@ -510,6 +630,10 @@ export class StyleIntelligencePane extends UI.Widget.VBox {
     this.#pickAction()?.removeEventListener(UI.ActionRegistration.Events.TOGGLED, this.#onPickToggled, this);
     this.#picks.dispose();
     this.#studio.dispose();
+    this.#unobservePreviewLifecycle();
+    window.removeEventListener('pagehide', this.#releasePreviewsNow);
+    window.removeEventListener('beforeunload', this.#releasePreviewsNow);
+    void this.#preview.dispose();
   }
 
   override willHide(): void {
@@ -1172,6 +1296,10 @@ function relationshipNodeIds(relationships: LayoutRelationships): number[] {
   add(relationships.stickyScrollContainers?.horizontal);
   add(relationships.stickyScrollContainers?.vertical);
   return ids;
+}
+
+function previewRefKey(ref: PreviewTargetRef): string {
+  return [ref.targetId, ref.frameId, ref.documentKey, ref.scope, ref.nodeId ?? '', ref.selector].join('|');
 }
 
 let paneInstance: StyleIntelligencePane|null = null;

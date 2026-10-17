@@ -148,3 +148,12 @@ Manual steps for the same pass:
 8. Select a paragraph inside the iframe, type `p`, and choose **All matches**: `2 matching elements` (the iframe document, not the main one).
 9. Select the span inside `#host`'s shadow root: the explicit shadow-root decline.
 10. In the page console, `__studioMutationLog` shows only parser entries from load, and `document.styleSheets.length` is still 1.
+
+## Preview engine (Checkpoint 2A)
+
+`StyleStudioPreview.ts` applies, replaces and reverts one CSS preview at a time. It writes only to a forced inspector stylesheet that Studio created itself, never to the page's stylesheets, the Styles pane's default inspector stylesheet, or another feature's sheet. There is no UI for it yet. Ownership, single-element targeting, async cancellation, the crash-orphan policy, and verification are in `style-studio-checkpoint-2a-findings.md`.
+
+```bash
+chromium/src/third_party/node/mac_arm64/node-darwin-arm64/bin/node \
+  docs/style-intelligence/fixtures/verify-style-studio-preview.mjs /tmp/style-studio-preview
+```

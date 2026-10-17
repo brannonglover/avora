@@ -55,6 +55,12 @@ const color = (page, id) => page.evaluate(i => getComputedStyle(document.getElem
 /** Runs in a DevTools frontend: the primary target's CSSModel, main frame, and inspector sheets. */
 const frontendHelpers = async () => {
   const SDK = await import('./core/sdk/sdk.js');
+  // A freshly opened frontend attaches its target and main frame asynchronously.
+  const ready = () => SDK.TargetManager.TargetManager.instance().primaryPageTarget()
+                          ?.model(SDK.ResourceTreeModel.ResourceTreeModel)?.mainFrame;
+  for (let i = 0; i < 200 && !ready(); i++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   const target = SDK.TargetManager.TargetManager.instance().primaryPageTarget();
   const cssModel = target.model(SDK.CSSModel.CSSModel);
   const frameId = target.model(SDK.ResourceTreeModel.ResourceTreeModel).mainFrame.id;

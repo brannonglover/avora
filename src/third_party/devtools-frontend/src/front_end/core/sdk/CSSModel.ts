@@ -699,6 +699,20 @@ export class CSSModel extends SDKModel<EventTypes> {
     }
   }
 
+  /**
+   * Whether `styleSheetId` is a default inspector stylesheet this model got
+   * from the backend. Only what is already known is consulted; the backend is
+   * never asked, so nothing is created.
+   */
+  isKnownDefaultInspectorStylesheet(styleSheetId: Protocol.DOM.StyleSheetId): boolean {
+    for (const id of this.#defaultInspectorStyleSheetIds.values()) {
+      if (id === styleSheetId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async createInspectorStylesheet(frameId: Protocol.Page.FrameId, force = false): Promise<CSSStyleSheetHeader|null> {
     const result = await this.agent.invoke_createStyleSheet({frameId, force});
     if (result.getError()) {

@@ -20,6 +20,7 @@ import './StyleIntelligenceModel.js';
 import './StyleIntelligencePane.js';
 import './StyleStudioDom.js';
 import './StyleStudioPicker.js';
+import './StyleStudioPreview.js';
 import './StyleStudioTarget.js';
 import './StyleStudioTargeting.js';
 import './StyleStudioView.js';
@@ -39,6 +40,7 @@ import * as StyleIntelligenceModel from './StyleIntelligenceModel.js';
 import * as StyleIntelligencePane from './StyleIntelligencePane.js';
 import * as StyleStudioDom from './StyleStudioDom.js';
 import * as StyleStudioPicker from './StyleStudioPicker.js';
+import * as StyleStudioPreview from './StyleStudioPreview.js';
 import * as StyleStudioTarget from './StyleStudioTarget.js';
 import * as StyleStudioTargeting from './StyleStudioTargeting.js';
 import * as StyleStudioView from './StyleStudioView.js';
@@ -59,6 +61,7 @@ export {
   StyleIntelligencePane,
   StyleStudioDom,
   StyleStudioPicker,
+  StyleStudioPreview,
   StyleStudioTarget,
   StyleStudioTargeting,
   StyleStudioView,

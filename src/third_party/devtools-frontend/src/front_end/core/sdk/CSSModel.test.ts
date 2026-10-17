@@ -346,6 +346,27 @@ describe('CSSModel', () => {
       assert.strictEqual((await cssModel.requestViaInspectorStylesheet(frameId))?.id, 'second-default');
     });
 
+    it('tells a known default inspector stylesheet apart without asking the backend', async () => {
+      const connection = new MockCDPConnection();
+      const target = universe.createTarget({connection});
+      const cssModel = target.model(SDK.CSSModel.CSSModel)!;
+      const frameId = 'frame1' as Protocol.Page.FrameId;
+      let requests = 0;
+      connection.setSuccessHandler('CSS.createStyleSheet', params => {
+        requests++;
+        const id = params.force ? 'forced-sheet' : 'default-sheet';
+        connection.dispatchEvent('CSS.styleSheetAdded', {header: inspectorHeader(id, frameId)}, undefined);
+        return {styleSheetId: id as Protocol.DOM.StyleSheetId};
+      });
+      assert.isFalse(cssModel.isKnownDefaultInspectorStylesheet('default-sheet' as Protocol.DOM.StyleSheetId));
+      assert.strictEqual(requests, 0);
+      await cssModel.createInspectorStylesheet(frameId, true);
+      await cssModel.requestViaInspectorStylesheet(frameId);
+      assert.isTrue(cssModel.isKnownDefaultInspectorStylesheet('default-sheet' as Protocol.DOM.StyleSheetId));
+      assert.isFalse(cssModel.isKnownDefaultInspectorStylesheet('forced-sheet' as Protocol.DOM.StyleSheetId));
+      assert.strictEqual(requests, 2);
+    });
+
     it('returns null when the backend cannot provide a default stylesheet', async () => {
       const connection = new MockCDPConnection();
       const target = universe.createTarget({connection});

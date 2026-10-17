@@ -35,6 +35,7 @@ devtools_ui_module("style_intelligence") {
     "StyleIntelligencePane.ts",
     "StyleStudioDom.ts",
     "StyleStudioPicker.ts",
+    "StyleStudioPreview.ts",
     "StyleStudioTarget.ts",
     "StyleStudioTargeting.ts",
     "StyleStudioView.ts",
@@ -103,12 +104,14 @@ devtools_ui_module("unittests") {
     "StackingChain.test.ts",
     "StackingReasons.test.ts",
     "StyleStudioPicker.test.ts",
+    "StyleStudioPreview.test.ts",
     "StyleStudioTarget.test.ts",
     "StyleStudioTargeting.test.ts",
   ]
 
   deps = [
     ":bundle",
+    "../../testing",
     "../../ui/legacy:bundle",
   ]
 }

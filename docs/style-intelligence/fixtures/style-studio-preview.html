@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Style Studio preview fixture</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; color: rgb(0, 0, 0); }
+  .pv-item { color: rgb(10, 10, 10); margin: 4px 0; }
+  .pv-box { color: rgb(11, 11, 11); }
+  #pv-id { color: rgb(12, 12, 12); }
+  .pv-important { color: rgb(13, 13, 13) !important; }
+  @layer base {
+    #pv-layered { color: rgb(14, 14, 14); }
+  }
+  .pv-token { --pv-gap: 4px; padding-left: var(--pv-gap); }
+  .pv-parent { color: rgb(15, 15, 15); }
+  .pv-m { color: rgb(30, 30, 30); }
+</style>
+</head>
+<body>
+  <h1>Style Studio preview</h1>
+
+  <!-- Three elements sharing a class: single-element and all-matches previews. -->
+  <section id="pv-list">
+    <div class="pv-item" id="pv-a">Item A</div>
+    <div class="pv-item" id="pv-b">Item B</div>
+    <div class="pv-item" id="pv-c">Item C</div>
+  </section>
+
+  <!-- Cascade conflicts. -->
+  <div class="pv-box" id="pv-plain">Same-specificity class rule</div>
+  <div class="pv-box" id="pv-id">Higher-specificity id rule</div>
+  <div class="pv-box" id="pv-inline" style="color: rgb(16, 16, 16)">Inline style</div>
+  <div class="pv-box pv-important" id="pv-imp">Page !important</div>
+  <div class="pv-box pv-layered" id="pv-layered">Layered id rule</div>
+  <div class="pv-token" id="pv-token">Custom property</div>
+  <div class="pv-parent" id="pv-parent"><span id="pv-child">Inherits color</span></div>
+
+  <!-- Position shift: an element inserted before the target takes its old position. -->
+  <section id="pv-shift"><div class="pv-item" id="pv-shift-target">Shift target</div></section>
+
+  <!-- Single-element revalidation: siblings, replacement, movement, class and id changes. -->
+  <section id="pv-mut">
+    <div class="pv-m" id="pv-m1">M1</div>
+    <div class="pv-m" id="pv-m2">M2</div>
+    <div class="pv-m" id="pv-m3">M3</div>
+    <div class="pv-m" id="pv-m4">M4</div>
+  </section>
+  <section id="pv-mut-dest"><div class="pv-m" id="pv-m-dest">Destination</div></section>
+
+  <!-- Removal and frame destruction. -->
+  <div class="pv-item" id="pv-remove">Will be removed</div>
+  <iframe id="pv-frame" srcdoc="<style>.f{color:rgb(20,20,20)}</style><p class='f' id='pv-frame-p'>Frame paragraph</p>"></iframe>
+
+  <script>
+    // Snapshot of every authored rule, to show previews never change them.
+    window.__authored = () => [...document.styleSheets].map(sheet => [...sheet.cssRules].map(rule => rule.cssText).join('\n')).join('\n---\n');
+    window.__authoredBefore = window.__authored();
+    window.__sheetCount = document.styleSheets.length;
+    window.__mutations = [];
+    new MutationObserver(records => {
+      for (const record of records) {
+        window.__mutations.push(`${record.type} ${record.target.nodeName}${record.target.id ? '#' + record.target.id : ''}`);
+      }
+    }).observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+    window.__actions = {
+      shift() {
+        const extra = document.createElement('div');
+        extra.className = 'pv-item';
+        extra.id = 'pv-shift-new';
+        extra.textContent = 'Inserted before the target';
+        document.getElementById('pv-shift').prepend(extra);
+      },
+      remove() {
+        document.getElementById('pv-remove').remove();
+      },
+      removeM1() {
+        document.getElementById('pv-m1').remove();
+      },
+      appendM(id) {
+        const extra = document.createElement('div');
+        extra.className = 'pv-m';
+        extra.id = id;
+        extra.textContent = id;
+        document.getElementById('pv-mut').append(extra);
+      },
+      moveM2() {
+        document.getElementById('pv-mut-dest').prepend(document.getElementById('pv-m2'));
+      },
+      replace(id) {
+        const old = document.getElementById(id);
+        old.replaceWith(old.cloneNode(true));
+      },
+      setClass(id, value) {
+        document.getElementById(id).className = value;
+      },
+      setId(id, value) {
+        document.getElementById(id).id = value;
+      },
+      removeFrame() {
+        document.getElementById('pv-frame').remove();
+      },
+    };
+  </script>
+</body>
+</html>
