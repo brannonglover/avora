@@ -4,8 +4,11 @@
 
 source_set("avora_settings") {
   sources = [
+    "avora_settings_page.h",
     "avora_settings_ui.cc",
     "avora_settings_ui.h",
+    "avora_style_ai_handler.cc",
+    "avora_style_ai_handler.h",
   ]
 
   public_deps = [
@@ -13,6 +16,9 @@ source_set("avora_settings") {
   ]
 
   deps = [
+    "//base",
+    "//chrome/browser/avora",
+    "//chrome/browser/profiles:profile",
     "//chrome/common",
   ]
 }

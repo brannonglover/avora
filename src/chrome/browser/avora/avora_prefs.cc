@@ -13,6 +13,7 @@
 #include "chrome/browser/avora/avora_search_engine.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/style_ai/avora_style_ai_key_store.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 
@@ -29,6 +30,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   BrowserProfileStore::RegisterProfilePrefs(registry);
   SpaceManager::RegisterProfilePrefs(registry);
   SidebarItemStore::RegisterProfilePrefs(registry);
+  StyleAiKeyStore::RegisterProfilePrefs(registry);
 
   LiveFolderStore::RegisterProfilePrefs(registry);
   LiveFolderCredentialStore::RegisterProfilePrefs(registry);

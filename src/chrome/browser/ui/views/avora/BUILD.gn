@@ -54,6 +54,8 @@ source_set("avora") {
     "avora_space_label_view.h",
     "avora_spaces_bar_view.cc",
     "avora_spaces_bar_view.h",
+    "avora_style_ai_key_dialog.cc",
+    "avora_style_ai_key_dialog.h",
     "avora_toast_view.cc",
     "avora_toast_view.h",
   ]
@@ -129,6 +131,7 @@ source_set("browser_tests") {
     "avora_mini_window_identity_browsertest.cc",
     "avora_mini_window_lifecycle_browsertest.cc",
     "avora_mini_window_toolbar_browsertest.cc",
+    "avora_style_ai_settings_browsertest.cc",
   ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -139,10 +142,12 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/browser/avora",
     "//chrome/browser/extensions",
+    "//chrome/browser/profiles:profile",
     "//chrome/browser/sessions:test_support",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/views/tabs/common",
     "//components/keep_alive_registry",
+    "//components/prefs",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
     "//chrome/test/base:interactive_test_utils",

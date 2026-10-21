@@ -61,6 +61,12 @@ source_set("avora") {
     "avora_window_space.h",
     "avora_window_session_data.cc",
     "avora_window_session_data.h",
+    "style_ai/avora_style_ai_key_store.cc",
+    "style_ai/avora_style_ai_key_store.h",
+    "style_ai/avora_style_ai_settings.cc",
+    "style_ai/avora_style_ai_settings.h",
+    "style_ai/avora_style_ai_status.cc",
+    "style_ai/avora_style_ai_status.h",
   ]
 
   public_deps = [ "//chrome/browser/autocomplete" ]
@@ -72,6 +78,7 @@ source_set("avora") {
     "//chrome/browser/ui/browser_window",
     "//components/os_crypt/async/browser",
     "//components/os_crypt/async/common",
+    "//components/os_crypt/common:switches",
     "//components/prefs",
     "//components/sessions",
     "//components/tab_groups",
@@ -131,11 +138,42 @@ source_set("unit_tests") {
   ]
 }
 
+source_set("style_ai_unit_tests") {
+  testonly = true
+
+  sources = [
+    "style_ai/avora_style_ai_key_store_unittest.cc",
+    "style_ai/avora_style_ai_status_unittest.cc",
+  ]
+
+  deps = [
+    ":avora",
+    "//base",
+    "//base/test:test_support",
+    "//components/os_crypt/async/browser:test_support",
+    "//components/os_crypt/common:switches",
+    "//components/prefs:test_support",
+    "//testing/gtest",
+  ]
+}
+
 test("avora_unit_tests") {
   deps = [
+    ":style_ai_unit_tests",
     ":unit_tests",
     "//chrome/browser/avora/import:unit_tests",
     "//chrome/browser/ui/views/avora:unit_tests",
+    "//chrome/test:test_support_unit",
+    "//testing/gtest",
+  ]
+}
+
+# Style Studio AI's unit tests on their own, so they build and run even while
+# another suite in avora_unit_tests does not compile.
+#   autoninja -C out/Default avora_style_ai_unit_tests
+test("avora_style_ai_unit_tests") {
+  deps = [
+    ":style_ai_unit_tests",
     "//chrome/test:test_support_unit",
     "//testing/gtest",
   ]

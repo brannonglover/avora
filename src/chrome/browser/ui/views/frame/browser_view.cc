@@ -82,6 +82,7 @@
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/views/avora/avora_caption_buttons_mac.h"
 #endif
+#include "chrome/browser/ui/views/avora/avora_style_ai_key_dialog.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -191,6 +192,7 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
 #include "chrome/browser/avora/avora_live_folder_service.h"
+#include "chrome/browser/avora/style_ai/avora_style_ai_settings.h"
 #include "chrome/browser/avora/avora_nav_history.h"
 #include "chrome/browser/avora/avora_search_engine.h"
 #include "chrome/browser/extensions/extension_view_host.h"
@@ -215,6 +217,7 @@
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/webui/avora_settings/avora_settings_ui.h"
+#include "chrome/browser/ui/webui/avora_settings/avora_style_ai_handler.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
@@ -1073,6 +1076,12 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   // dependency of //chrome/browser, so it cannot reach g_browser_process
   // itself.
   avora::LiveFolderService::SetOSCryptAsync(g_browser_process->os_crypt_async());
+  // Avora: the same for Style Studio AI's encrypted API key, plus the native
+  // dialog chrome://avora-settings opens to collect it (that WebUI target
+  // cannot depend on //chrome/browser/ui/views).
+  avora::StyleAiSettings::SetOSCryptAsync(g_browser_process->os_crypt_async());
+  AvoraStyleAiHandler::SetKeyDialogLauncher(
+      base::BindRepeating(&avora::ShowStyleAiKeyDialog));
 
   auto* const vertical_tab_strip_state_controller =
       tabs::VerticalTabStripStateController::From(browser_);
