@@ -30,6 +30,7 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
+#include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
@@ -121,6 +122,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/tabs/common/avora_space_tab_filter.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
@@ -980,12 +982,30 @@ BrowserWindowInterface* OpenEmptyWindow(Profile* profile,
                                    true);
   params.should_trigger_session_restore = should_trigger_session_restore;
 
+  // Avora: a new window continues the Space the user is working in, rather
+  // than the profile's default Space, so it can open on that Space's tabs.
+  if (BrowserWindowInterface* current =
+          ProfileBrowserCollection::GetForProfile(profile)
+              ->GetLastActiveBrowser()) {
+    if (avora::WindowSpaceState* space_state =
+            avora::GetWindowSpaceState(current)) {
+      params.avora_active_space_id = space_state->active_space_id();
+    }
+  }
+
   base::TimeTicks now = base::TimeTicks::Now();
   BrowserWindowInterface* browser = CreateBrowserWindow(std::move(params));
   if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
     manager->SetWindowCreationInfo(
         waap::NewWindowCreationSource::kBrowserInitiated, now);
   }
+
+  // Avora: the Space's daily list is shared by all its windows, so the new
+  // window opens on the tabs the Space already has open, with the one the
+  // user was last on selected.  Done before the empty-tab check below so a
+  // window that got tabs this way is not also handed a blank New Tab, which
+  // would then be mirrored into every other window of the Space.
+  avora::CarryDailyTabsIntoNewWindow(browser);
 
   // Startup tabs could be created during browser creation. Add an empty tab
   // only if no tabs are created.

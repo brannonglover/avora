@@ -127,6 +127,7 @@ source_set("browser_tests") {
   testonly = true
 
   sources = [
+    "avora_daily_tab_sync_browsertest.cc",
     "avora_link_preview_browsertest.cc",
     "avora_mini_window_browsertest.cc",
     "avora_mini_window_extensions_browsertest.cc",

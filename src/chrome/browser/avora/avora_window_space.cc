@@ -42,7 +42,10 @@ WindowSpaceState::WindowSpaceState(PrefService* prefs)
 WindowSpaceState::WindowSpaceState(PrefService* prefs,
                                    const std::string& restored_window_guid,
                                    const std::string& restored_space_id)
-    : space_manager_(prefs), window_guid_(restored_window_guid) {
+    : space_manager_(prefs),
+      window_guid_(restored_window_guid.empty()
+                       ? base::Uuid::GenerateRandomV4().AsLowercaseString()
+                       : restored_window_guid) {
   // Use the restored Space if it still exists; otherwise fall back.
   if (!restored_space_id.empty() &&
       space_manager_.GetSpaceById(restored_space_id)) {

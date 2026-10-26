@@ -11,6 +11,7 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space_manager.h"
@@ -45,6 +46,14 @@ namespace avora {
 // Each Space also remembers the tab that was last active in it, so returning to
 // a Space restores the page the user left rather than dumping them on an
 // arbitrary tab.
+//
+// A Space's daily list is also one list across every window of the profile.
+// A WebContents can only live in one tab strip, so each window holds its own
+// copy of every daily tab, and the copies of one logical tab share its Avora
+// tab GUID.  Opening, closing, moving to another Space, and navigating are
+// carried to the other windows' copies (see FlushDailyTabSync()).  A copy made
+// for another window is unloaded -- no renderer, nothing fetched -- until the
+// user selects it there.
 class AvoraSpaceTabFilter : public TabStripModelObserver,
                             public SpaceManagerObserver,
                             public SidebarItemStore::Observer,
@@ -108,6 +117,13 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
 
   // WindowSpaceState::Observer:
   void OnWindowActiveSpaceChanged(const std::string& space_id) override;
+
+  // Fills a brand-new, still-empty window with the daily tabs its Space has
+  // open in the user's other windows, and selects the one the user was last
+  // on.  Returns true when the window now has tabs, in which case the caller
+  // must not add the usual blank New Tab: doing so would mirror an empty tab
+  // into every other window of the Space.
+  bool CarryOverDailyTabs();
 
  private:
   TabStripModel* GetModel() const;
@@ -259,6 +275,80 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
                                    std::set<std::string>* claimed_favorites);
   void MirrorTabGuidOntoContents(tabs::TabInterface* tab);
 
+  // ── Cross-window daily tab sync ──
+  //
+  // Every change is recorded as it happens and carried to the other windows
+  // later, from a posted task: TabStripModel CHECKs against being modified
+  // while it is notifying its observers, and a change in one window would
+  // otherwise be applied to another window's strip from inside a notification
+  // that could, through that window's own observers, lead straight back here.
+
+  // The filters of the other normal windows of this profile.
+  std::vector<AvoraSpaceTabFilter*> SyncPeers() const;
+
+  // Whether this window shares daily tabs at all.  Popups, app windows, and
+  // the mini window keep their tabs to themselves.
+  bool ParticipatesInDailyTabSync() const;
+
+  // Whether |tab| is in the daily list, as opposed to being a Favorite's,
+  // a pinned item's, a natively pinned, or a link preview's tab.
+  bool IsDailyTab(tabs::TabInterface* tab) const;
+
+  // Whether |tab| has anything to copy yet: a GUID and a committed entry.  A
+  // tab is announced to the other windows only once it does.
+  bool CanCopyDailyTab(tabs::TabInterface* tab) const;
+
+  // The tab in this window carrying |guid|, of any kind, or null.
+  tabs::TabInterface* FindTabByGuid(const std::string& guid) const;
+
+  // Whether this window holds, or has shown, |space_id|'s daily list, and so
+  // keeps a copy of every tab in it.
+  bool HasJoinedSpace(const std::string& space_id) const;
+
+  // Posts FlushDailyTabSync() unless it is already pending.
+  void ScheduleDailyTabSync();
+
+  // Announces this window's new daily tabs to the other windows, then the
+  // ones that left the daily list, then the navigations of the rest.
+  void FlushDailyTabSync();
+
+  // Gives this window a copy of every daily tab |space_id| has open in the
+  // other windows, in their order.  Returns this window's copy of the tab the
+  // most recently used other window has selected, when that tab is one of
+  // |space_id|'s daily tabs.
+  tabs::TabInterface* JoinSpace(const std::string& space_id);
+
+  // Inserts an unloaded copy of |source| at |index| as |space_id|'s tab
+  // |guid|.  The copy carries |source|'s whole back/forward history, and
+  // stays unloaded unless |activate| puts it on screen.
+  tabs::TabInterface* InsertDailyTabCopy(content::WebContents* source,
+                                         const std::string& space_id,
+                                         const std::string& guid,
+                                         int index,
+                                         bool activate = false);
+
+  // Builds the unloaded WebContents InsertDailyTabCopy() and
+  // ApplyRemoteNavigation() put in the strip.
+  std::unique_ptr<content::WebContents> CreateDailyTabCopy(
+      content::WebContents* source,
+      const std::string& space_id,
+      const std::string& guid);
+
+  // Closes this window's copy of |guid| without treating it as the user
+  // closing it, which would forget the tab's persisted state and announce the
+  // close all over again.
+  void CloseDailyTabCopy(tabs::TabInterface* tab);
+
+  // Applied to this window when another window announces a change.
+  void ApplyRemoteUpsert(tabs::TabInterface* source,
+                         const std::string& guid,
+                         const std::string& space_id,
+                         const std::string& predecessor_guid,
+                         const std::string& successor_guid);
+  void ApplyRemoteRemove(const std::string& guid);
+  void ApplyRemoteNavigation(tabs::TabInterface* source,
+                             const std::string& guid);
+
   raw_ptr<BrowserWindowInterface> browser_;
   raw_ptr<TabStripView> tab_strip_view_;
   raw_ptr<WindowSpaceState> window_space_state_ = nullptr;
@@ -305,7 +395,48 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // preview's own tab is hidden from the daily list, so both edges change
   // what this filter should be drawing.
   base::CallbackListSubscription link_preview_subscription_;
+
+  // The daily tabs the other windows have been told about, with the GUID and
+  // Space they were told.  A tab missing from here, or listed under another
+  // GUID or Space, is announced on the next flush.
+  struct PublishedTab {
+    std::string guid;
+    std::string space_id;
+  };
+  std::map<tabs::TabHandle, PublishedTab> published_tabs_;
+
+  // GUIDs of published daily tabs the user closed here since the last flush.
+  std::set<std::string> pending_removed_guids_;
+
+  // Published daily tabs that have changed since the last flush, whose copies
+  // may have to follow them to a new page.
+  std::set<tabs::TabHandle> navigated_tabs_;
+
+  // Spaces whose daily list this window has shown.  See HasJoinedSpace().
+  std::set<std::string> joined_spaces_;
+
+  // GUIDs whose copies this window is closing on another window's say-so.
+  // Not forgotten: the tab lives on elsewhere, and may still be persisted by
+  // the window that owns it.
+  std::set<std::string> remote_closing_guids_;
+
+  // Set until this window has been given its Space's daily tabs.  A window
+  // made by Cmd+N gets them from CarryOverDailyTabs() before its first tab;
+  // any other new window -- a tab dragged out, a link opened in a new window
+  // -- gets them on the first flush, behind the tab it was opened for.
+  bool pending_initial_join_ = false;
+
+  bool sync_flush_scheduled_ = false;
+
+  base::WeakPtrFactory<AvoraSpaceTabFilter> weak_factory_{this};
+
+  friend bool CarryDailyTabsIntoNewWindow(BrowserWindowInterface* browser);
 };
+
+// Gives |browser|, a window just created for Cmd+N, its Space's daily tabs
+// from the user's other windows.  Returns true when it now has tabs.  See
+// AvoraSpaceTabFilter::CarryOverDailyTabs().
+bool CarryDailyTabsIntoNewWindow(BrowserWindowInterface* browser);
 
 }  // namespace avora
 

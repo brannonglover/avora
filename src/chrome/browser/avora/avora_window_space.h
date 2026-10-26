@@ -47,6 +47,10 @@ class WindowSpaceState : public SpaceManagerObserver {
   // Construct for a restored window.  |restored_space_id| is the Space this
   // window was showing when the session was last saved.  If that Space no
   // longer exists, falls back to the global default.
+  //
+  // Also used for a new window that should open on a particular Space, such
+  // as the one the user opened it from; an empty |restored_window_guid| gets a
+  // fresh GUID, as a brand-new window does.
   WindowSpaceState(PrefService* prefs,
                    const std::string& restored_window_guid,
                    const std::string& restored_space_id);

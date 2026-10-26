@@ -2,12 +2,18 @@
 
 #include "chrome/browser/ui/views/tabs/common/avora_space_tab_filter.h"
 
+#include <algorithm>
 #include <iterator>
+#include <limits>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "base/functional/bind.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
+#include "base/uuid.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/avora/avora_prefs.h"
@@ -25,13 +31,17 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
+#include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/page_transition_types.h"
@@ -39,6 +49,25 @@
 #include "url/gurl.h"
 
 namespace avora {
+
+namespace {
+
+// Every live filter, so a window can reach the other windows' daily lists.
+// Filters live and die on the UI thread with their window.
+std::vector<AvoraSpaceTabFilter*>& DailyTabSyncRegistry() {
+  static base::NoDestructor<std::vector<AvoraSpaceTabFilter*>> registry;
+  return *registry;
+}
+
+// Tabs dragged out of one window and not yet claimed by the one they were
+// dropped in.  Lets the receiving window tell a moved tab, which takes over
+// from its own copy, apart from a duplicated one, which is a new tab.
+std::set<tabs::TabHandle>& DailyTabsInTransit() {
+  static base::NoDestructor<std::set<tabs::TabHandle>> in_transit;
+  return *in_transit;
+}
+
+}  // namespace
 
 AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
                                          TabStripView* tab_strip_view,
@@ -115,9 +144,16 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
               base::Unretained(this)));
     }
   }
+
+  DailyTabSyncRegistry().push_back(this);
+  if (ParticipatesInDailyTabSync()) {
+    pending_initial_join_ = true;
+    ScheduleDailyTabSync();
+  }
 }
 
 AvoraSpaceTabFilter::~AvoraSpaceTabFilter() {
+  std::erase(DailyTabSyncRegistry(), this);
   if (window_space_state_) {
     window_space_state_->RemoveObserver(this);
   }
@@ -186,6 +222,10 @@ void AvoraSpaceTabFilter::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
+  // Even a change this filter made itself can leave a tab to announce, such as
+  // the blank tab RestoreActiveTabFor() opens in an empty Space.
+  ScheduleDailyTabSync();
+
   if (applying_) {
     return;
   }
@@ -199,6 +239,37 @@ void AvoraSpaceTabFilter::OnTabStripModelChanged(
     for (const auto& removed : change.GetRemove()->contents) {
       if (TabRemoveReasonUtils::WillDeleteTab(removed.remove_reason)) {
         ForgetClosedTab(removed.tab);
+      }
+    }
+  }
+
+  // The same distinction decides what the other windows' copies do.  A tab
+  // closed here closes everywhere.  A tab dragged to another window is still
+  // open, so its copies stay; the window it lands in sorts out its own copy.
+  // A window closing takes nothing with it from the others.
+  //
+  // Not only published tabs: a tab can already have copies elsewhere before
+  // this window has announced it -- a new window copies the list as it finds
+  // it -- so any daily tab's close goes out under its GUID.
+  if (change.type() == TabStripModelChange::kRemoved) {
+    for (const auto& removed : change.GetRemove()->contents) {
+      const tabs::TabHandle handle = removed.tab->GetHandle();
+      const auto published = published_tabs_.find(handle);
+      std::string guid;
+      if (published != published_tabs_.end()) {
+        guid = published->second.guid;
+        published_tabs_.erase(published);
+      } else if (IsDailyTab(removed.tab)) {
+        guid = GetTabGuid(removed.tab->GetContents());
+      }
+      if (guid.empty() || tab_strip_model->closing_all()) {
+        continue;
+      }
+      if (TabRemoveReasonUtils::WillDeleteTab(removed.remove_reason)) {
+        pending_removed_guids_.insert(guid);
+      } else if (removed.remove_reason ==
+                 TabRemovedReason::kInsertedIntoOtherTabStrip) {
+        DailyTabsInTransit().insert(handle);
       }
     }
   }
@@ -233,6 +304,13 @@ void AvoraSpaceTabFilter::OnTabChangedAt(tabs::TabInterface* tab,
   if (applying_ || !tab || change_type != TabChangeType::kAll) {
     return;
   }
+
+  // kAll covers a commit and a title change, either of which the tab's copies
+  // in other windows may have to follow.
+  if (published_tabs_.contains(tab->GetHandle())) {
+    navigated_tabs_.insert(tab->GetHandle());
+  }
+  ScheduleDailyTabSync();
 
   // A "Move to Space" elsewhere in the UI arrives here, as a retag of the
   // tab's WebContents announced through this notification.
@@ -329,6 +407,12 @@ void AvoraSpaceTabFilter::OnActiveSpaceChanged(const std::string& space_id) {
   // before RestoreActiveTabFor() can create one.
   PublishWindowActiveSpace(space_id);
 
+  // Bring in the Space's tabs from the other windows first, so an empty-looking
+  // Space is not handed a blank tab it does not need.
+  if (tabs::TabInterface* peer_selection = JoinSpace(space_id)) {
+    last_active_tab_.try_emplace(space_id, peer_selection->GetHandle());
+  }
+
   // Activate before hiding, so the content area never shows a tab that is
   // about to disappear from the strip.
   RestoreActiveTabFor(space_id);
@@ -354,6 +438,15 @@ void AvoraSpaceTabFilter::OnWindowActiveSpaceChanged(
   // identity depend on observer registration order -- and an empty Space
   // entered first would open its tab in the outgoing Space's partition.
   PublishWindowActiveSpace(space_id);
+
+  // The Space's daily list is the same in every window, so entering it here
+  // brings in whatever the other windows have open in it.  Before
+  // RestoreActiveTabFor(), which would otherwise open a blank tab in a Space
+  // that only looks empty from this window.  A Space never shown here has no
+  // remembered tab yet, so it opens on the one the user was last on elsewhere.
+  if (tabs::TabInterface* peer_selection = JoinSpace(space_id)) {
+    last_active_tab_.try_emplace(space_id, peer_selection->GetHandle());
+  }
 
   RestoreActiveTabFor(space_id);
 
@@ -1042,7 +1135,7 @@ void AvoraSpaceTabFilter::ForgetClosedTab(tabs::TabInterface* tab) {
     return;
   }
   const std::string guid = GetTabGuid(contents);
-  if (!guid.empty()) {
+  if (!guid.empty() && !remote_closing_guids_.contains(guid)) {
     forgotten_tab_guids_.insert(guid);
   }
 }
@@ -1503,6 +1596,612 @@ void AvoraSpaceTabFilter::OnSessionRestored(Profile* profile,
   ResolvePendingTabAssignments(/*sync_store=*/true);
   ApplyVisibility();
   SweepExpiredTodayTabsIfEnabled();
+
+  // Daily tab sync sits out the restore, while each window's tabs are still
+  // arriving and would look missing to the others.  Now every window has its
+  // own back, and the first flush merges them.
+  ScheduleDailyTabSync();
+}
+
+// ── Cross-window daily tab sync ─────────────────────────────────────────────
+
+bool AvoraSpaceTabFilter::CarryOverDailyTabs() {
+  TabStripModel* model = GetModel();
+  if (!model) {
+    return false;
+  }
+  pending_initial_join_ = false;
+
+  tabs::TabInterface* selection = JoinSpace(current_space_id_);
+  if (model->empty()) {
+    return false;
+  }
+
+  // The other windows' selection was a Favorite, a pinned item, or a tab in
+  // another Space, none of which came along; land on the top of the list.
+  for (int i = 0; i < model->count() && !selection; ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    const auto it = tab ? tab_space_.find(tab->GetHandle()) : tab_space_.end();
+    if (it != tab_space_.end() && it->second == current_space_id_) {
+      selection = tab;
+    }
+  }
+  if (selection) {
+    model->ActivateTab(selection);
+  }
+  RememberActiveTab();
+  return true;
+}
+
+std::vector<AvoraSpaceTabFilter*> AvoraSpaceTabFilter::SyncPeers() const {
+  std::vector<AvoraSpaceTabFilter*> peers;
+  if (!ParticipatesInDailyTabSync()) {
+    return peers;
+  }
+  for (AvoraSpaceTabFilter* filter : DailyTabSyncRegistry()) {
+    if (filter != this && filter->ParticipatesInDailyTabSync() &&
+        filter->browser_->GetProfile() == browser_->GetProfile()) {
+      peers.push_back(filter);
+    }
+  }
+  return peers;
+}
+
+bool AvoraSpaceTabFilter::ParticipatesInDailyTabSync() const {
+  return browser_ && browser_->GetProfile() && GetModel() &&
+         browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL;
+}
+
+bool AvoraSpaceTabFilter::IsDailyTab(tabs::TabInterface* tab) const {
+  content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+  if (!contents || tab->IsPinned()) {
+    return false;
+  }
+  const auto it = tab_space_.find(tab->GetHandle());
+  if (it == tab_space_.end() || it->second.empty()) {
+    return false;
+  }
+  return !IsFavoriteTab(contents) && !IsPinnedItemTab(contents) &&
+         !IsLinkPreviewTab(contents);
+}
+
+bool AvoraSpaceTabFilter::CanCopyDailyTab(tabs::TabInterface* tab) const {
+  content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+  if (!contents || GetTabGuid(contents).empty()) {
+    return false;
+  }
+  // A tab that has not committed anything yet holds only the initial blank
+  // entry, which cannot be copied.  It is announced on its first commit, a
+  // moment later for a New Tab.
+  content::NavigationEntry* entry =
+      contents->GetController().GetLastCommittedEntry();
+  return entry && !entry->IsInitialEntry();
+}
+
+tabs::TabInterface* AvoraSpaceTabFilter::FindTabByGuid(
+    const std::string& guid) const {
+  TabStripModel* model = GetModel();
+  if (!model || guid.empty()) {
+    return nullptr;
+  }
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+    if (!contents) {
+      continue;
+    }
+    // A restored tab can carry its GUID on its entries before the filter has
+    // claimed it.  It is still the same tab, and must not be copied in again.
+    std::string tab_guid = GetTabGuid(contents);
+    if (tab_guid.empty()) {
+      tab_guid = FindTabGuidInController(&contents->GetController());
+    }
+    if (tab_guid == guid) {
+      return tab;
+    }
+  }
+  return nullptr;
+}
+
+bool AvoraSpaceTabFilter::HasJoinedSpace(const std::string& space_id) const {
+  if (joined_spaces_.contains(space_id)) {
+    return true;
+  }
+  for (const auto& [handle, tab_space] : tab_space_) {
+    if (tab_space == space_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AvoraSpaceTabFilter::ScheduleDailyTabSync() {
+  if (sync_flush_scheduled_ || !ParticipatesInDailyTabSync()) {
+    return;
+  }
+  sync_flush_scheduled_ = true;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&AvoraSpaceTabFilter::FlushDailyTabSync,
+                                weak_factory_.GetWeakPtr()));
+}
+
+void AvoraSpaceTabFilter::FlushDailyTabSync() {
+  sync_flush_scheduled_ = false;
+  TabStripModel* model = GetModel();
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  if (!model || !profile || !ParticipatesInDailyTabSync() ||
+      SessionRestore::IsRestoring(profile)) {
+    return;
+  }
+
+  if (pending_initial_join_) {
+    pending_initial_join_ = false;
+    JoinSpace(current_space_id_);
+  }
+
+  std::erase_if(published_tabs_, [](const auto& entry) {
+    return entry.first.Get() == nullptr;
+  });
+  std::erase_if(DailyTabsInTransit(), [](const tabs::TabHandle& handle) {
+    return handle.Get() == nullptr;
+  });
+
+  // A peer acts on its own strip only, and never closes its last tab, so none
+  // goes away mid-flush.  Re-checked anyway: a stale pointer here would be a
+  // use-after-free in a different window.
+  const auto still_registered = [](AvoraSpaceTabFilter* peer) {
+    return std::ranges::contains(DailyTabSyncRegistry(), peer);
+  };
+  const std::vector<AvoraSpaceTabFilter*> peers = SyncPeers();
+
+  // Announcements go out before closes; see the commit wait below.
+
+  // ── New daily tabs, and ones moved to another Space ──
+  std::map<std::string, tabs::TabHandle> holders;
+  for (const auto& [handle, published] : published_tabs_) {
+    holders[published.guid] = handle;
+  }
+  std::vector<tabs::TabHandle> announce;
+  std::vector<tabs::TabHandle> superseded;
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    if (!IsDailyTab(tab) || !CanCopyDailyTab(tab)) {
+      continue;
+    }
+    const tabs::TabHandle handle = tab->GetHandle();
+    std::string guid = GetTabGuid(tab->GetContents());
+    const std::string space_id = tab_space_[handle];
+    const auto published = published_tabs_.find(handle);
+    if (published != published_tabs_.end() &&
+        published->second.guid == guid &&
+        published->second.space_id == space_id) {
+      continue;
+    }
+
+    // Two tabs in this window speaking for one logical tab.  A tab dragged in
+    // from another window takes over from the copy this window already had of
+    // it; anything else -- Duplicate Tab copies the GUID along with the
+    // history -- is a new tab, and gets a GUID of its own.
+    const bool moved_here = DailyTabsInTransit().erase(handle) > 0;
+    const auto holder = holders.find(guid);
+    if (holder != holders.end() && holder->second != handle &&
+        holder->second.Get()) {
+      if (moved_here) {
+        published_tabs_.erase(holder->second);
+        superseded.push_back(holder->second);
+      } else {
+        guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
+        SetTabGuid(tab->GetContents(), guid);
+      }
+    }
+    published_tabs_[handle] = {guid, space_id};
+    holders[guid] = handle;
+    announce.push_back(handle);
+  }
+
+  for (const tabs::TabHandle& handle : superseded) {
+    if (tabs::TabInterface* tab = handle.Get()) {
+      CloseDailyTabCopy(tab);
+    }
+  }
+
+  for (const tabs::TabHandle& handle : announce) {
+    tabs::TabInterface* tab = handle.Get();
+    const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
+    if (index == TabStripModel::kNoTab) {
+      continue;
+    }
+    const PublishedTab published = published_tabs_[handle];
+
+    // Its neighbours in this Space, so the other windows can put their copy
+    // in the same place in the list.
+    const auto neighbour_guid = [&](int from, int step) {
+      for (int i = from; i >= 0 && i < model->count(); i += step) {
+        const auto it =
+            published_tabs_.find(model->GetTabAtIndex(i)->GetHandle());
+        if (it != published_tabs_.end() &&
+            it->second.space_id == published.space_id) {
+          return it->second.guid;
+        }
+      }
+      return std::string();
+    };
+    const std::string predecessor = neighbour_guid(index - 1, -1);
+    const std::string successor = neighbour_guid(index + 1, 1);
+
+    for (AvoraSpaceTabFilter* peer : peers) {
+      if (still_registered(peer)) {
+        peer->ApplyRemoteUpsert(tab, published.guid, published.space_id,
+                                predecessor, successor);
+      }
+    }
+  }
+
+  // ── Navigations ──
+  std::set<tabs::TabHandle> navigated = std::move(navigated_tabs_);
+  navigated_tabs_.clear();
+  for (const tabs::TabHandle& handle : navigated) {
+    tabs::TabInterface* tab = handle.Get();
+    const auto published = published_tabs_.find(handle);
+    if (!tab || !tab->GetContents() || published == published_tabs_.end()) {
+      continue;
+    }
+    // Only a page that is actually loaded leads.  A copy that has never been
+    // opened changes only because it was made to follow, and would otherwise
+    // echo that straight back.
+    if (tab->GetContents()->GetController().NeedsReload()) {
+      continue;
+    }
+    for (AvoraSpaceTabFilter* peer : peers) {
+      if (still_registered(peer)) {
+        peer->ApplyRemoteNavigation(tab, published->second.guid);
+      }
+    }
+  }
+
+  // ── Closed here, or no longer in the daily list ──
+  for (auto it = published_tabs_.begin(); it != published_tabs_.end();) {
+    tabs::TabInterface* tab = it->first.Get();
+    if (!tab) {
+      it = published_tabs_.erase(it);
+    } else if (!IsDailyTab(tab)) {
+      // Pinned, made a Favorite, or filed into a pinned folder: the tab is
+      // still open here, but the other windows show it through the pinned
+      // section or Favorites row now, so their daily copies have to go.
+      pending_removed_guids_.insert(it->second.guid);
+      it = published_tabs_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Closing a Space's last daily tab makes this window open a blank one, which
+  // cannot be announced until it commits.  The close waits for it: a window
+  // that loses its last tab of the Space before receiving this one opens a
+  // blank tab of its own, and each window then mirrors the other's.  The
+  // commit raises a tab change, which schedules the next flush.
+  const bool awaiting_first_commit = [&] {
+    for (int i = 0; i < model->count(); ++i) {
+      content::WebContents* contents = model->GetWebContentsAt(i);
+      content::NavigationEntry* entry =
+          contents ? contents->GetController().GetLastCommittedEntry()
+                   : nullptr;
+      if (contents && (!entry || entry->IsInitialEntry()) &&
+          contents->GetController().GetPendingEntry()) {
+        return true;
+      }
+    }
+    return false;
+  }();
+  if (awaiting_first_commit) {
+    return;
+  }
+
+  std::set<std::string> removed = std::move(pending_removed_guids_);
+  pending_removed_guids_.clear();
+  for (const std::string& guid : removed) {
+    // Closed and reopened (Cmd+Shift+T) before the flush: still open.
+    const bool still_open = std::ranges::any_of(
+        published_tabs_,
+        [&](const auto& entry) { return entry.second.guid == guid; });
+    if (still_open) {
+      continue;
+    }
+    for (AvoraSpaceTabFilter* peer : peers) {
+      if (still_registered(peer)) {
+        peer->ApplyRemoteRemove(guid);
+      }
+    }
+  }
+}
+
+tabs::TabInterface* AvoraSpaceTabFilter::JoinSpace(
+    const std::string& space_id) {
+  TabStripModel* model = GetModel();
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  if (!model || !profile || space_id.empty() ||
+      !ParticipatesInDailyTabSync() || SessionRestore::IsRestoring(profile)) {
+    return nullptr;
+  }
+  joined_spaces_.insert(space_id);
+
+  // Most recently used window first: its order is the one the user last saw,
+  // and its selection is the one to land on.
+  std::vector<AvoraSpaceTabFilter*> peers = SyncPeers();
+  std::map<BrowserWindowInterface*, int> recency;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        recency.emplace(browser, static_cast<int>(recency.size()));
+        return true;
+      });
+  const auto rank = [&](const AvoraSpaceTabFilter* peer) {
+    const auto it = recency.find(peer->browser_);
+    return it != recency.end() ? it->second : std::numeric_limits<int>::max();
+  };
+  std::ranges::stable_sort(peers, {}, rank);
+
+  tabs::TabInterface* selection = nullptr;
+  bool added = false;
+
+  // The first tab put in an empty strip becomes its active tab, and the
+  // active tab loads.  So into an empty window the tab that is to be selected
+  // goes first, and the rest are fitted around it, or a background copy
+  // would load for nothing.
+  const bool was_empty = model->empty();
+  if (was_empty) {
+    for (AvoraSpaceTabFilter* peer : peers) {
+      tabs::TabInterface* peer_active = peer->GetModel()->GetActiveTab();
+      if (peer->IsDailyTab(peer_active) && peer->CanCopyDailyTab(peer_active) &&
+          peer->tab_space_.at(peer_active->GetHandle()) == space_id) {
+        selection = InsertDailyTabCopy(peer_active->GetContents(), space_id,
+                                       GetTabGuid(peer_active->GetContents()),
+                                       /*index=*/0, /*activate=*/true);
+        added = selection != nullptr;
+        break;
+      }
+    }
+  }
+
+  for (AvoraSpaceTabFilter* peer : peers) {
+    TabStripModel* peer_model = peer->GetModel();
+    content::WebContents* const peer_active =
+        peer_model->GetActiveWebContents();
+
+    // Where the next missing tab goes: right after the last tab of the Space
+    // matched so far, so a tab missing from the middle of the list lands in
+    // the middle here too.  In a window that was empty, the tabs ahead of the
+    // selection go in front of it.
+    int insert_at =
+        was_empty && peer == peers.front() ? 0 : TabStripModel::kNoTab;
+    for (int i = 0; i < peer_model->count(); ++i) {
+      tabs::TabInterface* peer_tab = peer_model->GetTabAtIndex(i);
+      if (!peer->IsDailyTab(peer_tab) || !peer->CanCopyDailyTab(peer_tab) ||
+          peer->tab_space_.at(peer_tab->GetHandle()) != space_id) {
+        continue;
+      }
+      const std::string guid = GetTabGuid(peer_tab->GetContents());
+      tabs::TabInterface* local = FindTabByGuid(guid);
+      if (!local) {
+        local = InsertDailyTabCopy(
+            peer_tab->GetContents(), space_id, guid,
+            insert_at != TabStripModel::kNoTab ? insert_at : model->count());
+        if (!local) {
+          continue;
+        }
+        added = true;
+      }
+      insert_at = model->GetIndexOfTab(local) + 1;
+      if (!selection && peer_tab->GetContents() == peer_active) {
+        selection = local;
+      }
+    }
+  }
+
+  if (added) {
+    ApplyVisibility();
+    SyncTabsToStore();
+  }
+  return selection;
+}
+
+std::unique_ptr<content::WebContents> AvoraSpaceTabFilter::CreateDailyTabCopy(
+    content::WebContents* source,
+    const std::string& space_id,
+    const std::string& guid) {
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  if (!profile || !source) {
+    return nullptr;
+  }
+
+  // The source's SiteInstance, as WebContents::Clone() does: the copied
+  // entries refer to it, and it is already in the Space's storage partition,
+  // so the copy signs in as the same identity.
+  content::WebContents::CreateParams create_params(profile,
+                                                   source->GetSiteInstance());
+  create_params.initially_hidden = true;
+  std::unique_ptr<content::WebContents> copy =
+      content::WebContents::Create(create_params);
+  if (!copy) {
+    return nullptr;
+  }
+
+  // Back/forward history, titles, and sessionStorage come along.  With
+  // |needs_reload| nothing is fetched until the copy is first shown, so a copy
+  // costs no renderer and no network until the user opens it.
+  copy->GetController().CopyStateFrom(&source->GetController(),
+                                      /*needs_reload=*/true);
+  SetTabGuid(copy.get(), guid);
+  SetTabSpaceId(copy.get(), space_id);
+  return copy;
+}
+
+tabs::TabInterface* AvoraSpaceTabFilter::InsertDailyTabCopy(
+    content::WebContents* source,
+    const std::string& space_id,
+    const std::string& guid,
+    int index,
+    bool activate) {
+  TabStripModel* model = GetModel();
+  std::unique_ptr<content::WebContents> copy =
+      CreateDailyTabCopy(source, space_id, guid);
+  if (!model || !copy) {
+    return nullptr;
+  }
+
+  // Tagged here rather than by AdoptUntaggedTabs(), which would claim the tab
+  // for whichever Space this window happens to be showing.
+  int inserted;
+  {
+    base::AutoReset<bool> applying(&applying_, true);
+    inserted = model->InsertWebContentsAt(
+        index, std::move(copy),
+        activate ? AddTabTypes::ADD_ACTIVE : AddTabTypes::ADD_NONE);
+  }
+  tabs::TabInterface* tab = model->GetTabAtIndex(inserted);
+  if (!tab) {
+    return nullptr;
+  }
+  tab_space_[tab->GetHandle()] = space_id;
+  published_tabs_[tab->GetHandle()] = {guid, space_id};
+  EnsureDiscardObserver(tab);
+  return tab;
+}
+
+void AvoraSpaceTabFilter::CloseDailyTabCopy(tabs::TabInterface* tab) {
+  TabStripModel* model = GetModel();
+  content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+  if (!model || !contents) {
+    return;
+  }
+  published_tabs_.erase(tab->GetHandle());
+  navigated_tabs_.erase(tab->GetHandle());
+
+  // The last tab in a window takes the window with it, and a tab closed in
+  // some other window is no reason to lose this one.
+  if (model->count() == 1 && model->delegate()) {
+    model->delegate()->AddTabAt(GURL(), /*index=*/-1, /*foreground=*/true);
+  }
+
+  const std::string guid = GetTabGuid(contents);
+  remote_closing_guids_.insert(guid);
+  model->CloseWebContents(contents, TabCloseTypes::CLOSE_NONE);
+  remote_closing_guids_.erase(guid);
+}
+
+void AvoraSpaceTabFilter::ApplyRemoteUpsert(
+    tabs::TabInterface* source,
+    const std::string& guid,
+    const std::string& space_id,
+    const std::string& predecessor_guid,
+    const std::string& successor_guid) {
+  TabStripModel* model = GetModel();
+  if (!model || !source || !source->GetContents()) {
+    return;
+  }
+
+  if (tabs::TabInterface* local = FindTabByGuid(guid)) {
+    // Already here.  All an announcement can change is the Space: "Move to
+    // Space" in another window moves this copy too.  AdoptRetaggedTab() is
+    // the same path a move made in this window takes.
+    if (!IsDailyTab(local) ||
+        tab_space_.at(local->GetHandle()) == space_id) {
+      return;
+    }
+    SetTabSpaceId(local->GetContents(), space_id);
+    if (AdoptRetaggedTab(local)) {
+      const auto published = published_tabs_.find(local->GetHandle());
+      if (published != published_tabs_.end()) {
+        published->second.space_id = space_id;
+      }
+      SyncTabsToStore();
+      ApplyVisibility();
+    }
+    return;
+  }
+
+  // A Space this window has never shown gets its tabs when it is first
+  // entered (OnWindowActiveSpaceChanged), not one at a time in the meantime.
+  if (!HasJoinedSpace(space_id)) {
+    return;
+  }
+
+  int index = model->count();
+  if (tabs::TabInterface* before = FindTabByGuid(predecessor_guid)) {
+    index = model->GetIndexOfTab(before) + 1;
+  } else if (tabs::TabInterface* after = FindTabByGuid(successor_guid)) {
+    index = model->GetIndexOfTab(after);
+  }
+  if (InsertDailyTabCopy(source->GetContents(), space_id, guid, index)) {
+    ApplyVisibility();
+    SyncTabsToStore();
+  }
+}
+
+void AvoraSpaceTabFilter::ApplyRemoteRemove(const std::string& guid) {
+  tabs::TabInterface* tab = FindTabByGuid(guid);
+  if (tab && IsDailyTab(tab)) {
+    CloseDailyTabCopy(tab);
+  }
+}
+
+void AvoraSpaceTabFilter::ApplyRemoteNavigation(tabs::TabInterface* source,
+                                                const std::string& guid) {
+  TabStripModel* model = GetModel();
+  tabs::TabInterface* local = FindTabByGuid(guid);
+  content::WebContents* source_contents =
+      source ? source->GetContents() : nullptr;
+  if (!model || !local || !source_contents || !IsDailyTab(local)) {
+    return;
+  }
+  content::WebContents* local_contents = local->GetContents();
+
+  // The page the user has in front of them in this window is theirs; it is
+  // never pulled out from under them.
+  if (model->GetActiveWebContents() == local_contents) {
+    return;
+  }
+
+  if (UrlForTab(local) == UrlForTab(source)) {
+    // Same page.  All there is to carry is a title that arrived after the
+    // commit, and only to a copy that has never loaded and so has no title of
+    // its own.
+    if (!local_contents->GetController().NeedsReload()) {
+      return;
+    }
+    content::NavigationEntry* entry =
+        local_contents->GetController().GetLastCommittedEntry();
+    const std::u16string& title = source_contents->GetTitle();
+    if (!entry || entry->GetTitle() == title) {
+      return;
+    }
+    entry->SetTitle(title);
+    local_contents->NotifyNavigationStateChanged(content::INVALIDATE_TYPE_TITLE);
+    return;
+  }
+
+  // Another page: replace this copy with a fresh, unloaded one of the source.
+  // Whatever this copy had loaded in the background is dropped, which is the
+  // price of the list showing the same page in every window.
+  std::unique_ptr<content::WebContents> copy = CreateDailyTabCopy(
+      source_contents, tab_space_.at(local->GetHandle()), guid);
+  if (!copy) {
+    return;
+  }
+  std::unique_ptr<content::WebContents> retired;
+  {
+    base::AutoReset<bool> applying(&applying_, true);
+    retired = model->DiscardWebContents(local_contents, std::move(copy));
+  }
+  ApplyVisibility();
+}
+
+bool CarryDailyTabsIntoNewWindow(BrowserWindowInterface* browser) {
+  for (AvoraSpaceTabFilter* filter : DailyTabSyncRegistry()) {
+    if (filter->browser_ == browser) {
+      return filter->CarryOverDailyTabs();
+    }
+  }
+  return false;
 }
 
 }  // namespace avora

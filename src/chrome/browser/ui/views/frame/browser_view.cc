@@ -1170,11 +1170,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
     // and spaces bar so they can reference it.
     //
     // On session restore the create_params carry the durable window GUID and
-    // the Space the user was in.  Use the restore constructor when both are
-    // present; otherwise generate a new GUID (brand-new window).
+    // the Space the user was in.  A brand-new window carries no GUID, and a
+    // Space only when it was opened from a window showing one (see
+    // OpenEmptyWindow); it gets a fresh GUID either way.
     const auto& create_params =
         BrowserInitState::From(&*browser_)->create_params();
-    if (!create_params.avora_window_guid.empty()) {
+    if (!create_params.avora_window_guid.empty() ||
+        !create_params.avora_active_space_id.empty()) {
       avora_window_space_state_ =
           std::make_unique<avora::WindowSpaceState>(
               GetProfile()->GetPrefs(),
