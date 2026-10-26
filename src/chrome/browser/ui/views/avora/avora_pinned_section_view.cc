@@ -23,10 +23,13 @@
 #include "chrome/browser/avora/import/arc_sidebar_parser.h"
 #include "chrome/browser/avora/import/avora_import_coordinator.h"
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_callback.h"
@@ -55,6 +58,7 @@
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
+#include "ui/views/controls/button/button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/menu/menu_runner.h"
@@ -159,6 +163,53 @@ gfx::ShadowValues AwayShadowValues() {
 gfx::Insets AwayShadowPadding() {
   return -gfx::ShadowValue::GetMargin(AwayShadowValues());
 }
+
+// Lucide "minus": what a pinned row shows where a daily tab shows its "x".
+// Not an "x" because it does not get rid of anything the user chose -- the
+// pin stays, only its live tab goes.
+constexpr char kCloseTabIconPath[] = "M5 12h14";
+
+// Same glyph size as the daily tab's close "x", inside a larger square hit
+// target, so the two controls are interchangeable at a glance.
+constexpr int kCloseGlyphSize = 14;
+constexpr int kCloseButtonSize = 24;
+
+// The minus button on a live pinned row.
+class PinnedRowCloseButton : public views::Button {
+  METADATA_HEADER(PinnedRowCloseButton, views::Button)
+
+ public:
+  explicit PinnedRowCloseButton(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    SetPreferredSize(gfx::Size(kCloseButtonSize, kCloseButtonSize));
+    SetTooltipText(u"Close Tab");
+    GetViewAccessibility().SetName(u"Close Tab");
+    // As TabCloseButton: reachable by assistive tech, but not a Tab stop of
+    // its own in every row of the sidebar.
+    SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    if (GetState() == views::Button::STATE_HOVERED ||
+        GetState() == views::Button::STATE_PRESSED) {
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      flags.setColor(kRowHoverBg);
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+      canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
+    }
+    gfx::Rect glyph(GetLocalBounds());
+    glyph.ClampToCenteredSize(gfx::Size(kCloseGlyphSize, kCloseGlyphSize));
+    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, kLabelColor);
+  }
+};
+
+BEGIN_METADATA(PinnedRowCloseButton)
+END_METADATA
+
+// How many deactivated tabs AvoraPinnedSectionView remembers.  Only the front
+// is normally used; the rest cover the tab before it having been closed too.
+constexpr size_t kActivationHistoryLimit = 16;
 
 // Paints a simple folder icon at the given position using Skia.  |open| picks
 // the glyph for an expanded folder, whose members are listed below it.
@@ -977,12 +1028,14 @@ PinnedTabRow::PinnedTabRow(
                                  const gfx::Point&)> on_context,
     PinnedTabRow::RenameCallback on_rename,
     base::RepeatingCallback<void(content::WebContents*)> on_return,
+    base::RepeatingCallback<void(content::WebContents*)> on_close,
     bool in_folder)
     : contents_(contents),
       on_click_(std::move(on_click)),
       on_context_(std::move(on_context)),
       on_rename_(std::move(on_rename)),
-      on_return_(std::move(on_return)) {
+      on_return_(std::move(on_return)),
+      on_close_(std::move(on_close)) {
   SetPreferredSize(gfx::Size(0, AvoraPinnedSectionView::kRowHeight));
 
   // Same leading inset FolderTabRow computes for a folder member, so the two
@@ -991,13 +1044,16 @@ PinnedTabRow::PinnedTabRow(
   // shadow), so the leading padding and the icon-to-title gap each give that
   // difference back.  Without it every live row's favicon and title would
   // sit a few pixels right of the unmaterialized rows beside them.
+  // The trailing padding gives back the minus button's hit-target margin the
+  // same way, so the glyph itself sits kHPadding in from the edge.
   const int shadow_inset = PinnedRowIcon::ShadowInset();
+  const int close_inset = (kCloseButtonSize - kCloseGlyphSize) / 2;
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
       gfx::Insets::TLBR(0,
                         AvoraPinnedSectionView::kHPadding - shadow_inset +
                             (in_folder ? AvoraPinnedSectionView::kIndent : 0),
-                        0, AvoraPinnedSectionView::kHPadding),
+                        0, AvoraPinnedSectionView::kHPadding - close_inset),
       8 - shadow_inset));
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
@@ -1040,6 +1096,14 @@ PinnedTabRow::PinnedTabRow(
   field->SetVisible(false);
   rename_field_ = AddChildView(std::unique_ptr<views::Textfield>(field.release()));
   layout->SetFlexForView(rename_field_, 1);
+
+  // Minus (hidden until hovered).  A press on it is the button's own, so it
+  // never reaches PinnedRowView as the start of an activation or a drag.
+  if (on_close_) {
+    close_button_ = AddChildView(std::make_unique<PinnedRowCloseButton>(
+        base::BindRepeating(&PinnedTabRow::CloseTab, base::Unretained(this))));
+    close_button_->SetVisible(false);
+  }
 
   SetTooltipText(title);
   SetNotifyEnterExitOnChild(true);
@@ -1094,6 +1158,26 @@ void PinnedTabRow::ReturnToTarget() {
   }
 }
 
+void PinnedTabRow::CloseTab() {
+  if (on_close_ && contents_) {
+    // Destroys this row (the tab's removal rebuilds the section), so copy
+    // what the call needs and touch nothing afterwards.
+    auto on_close = on_close_;
+    on_close.Run(contents_);
+  }
+}
+
+void PinnedTabRow::UpdateCloseButtonVisibility() {
+  if (!close_button_) {
+    return;
+  }
+  const bool visible = IsMouseHovered() && !is_renaming_;
+  if (close_button_->GetVisible() != visible) {
+    close_button_->SetVisible(visible);
+    InvalidateLayout();
+  }
+}
+
 void PinnedTabRow::SetCustomTitle(const std::u16string& title) {
   if (title_label_ && !title.empty()) {
     title_label_->SetText(title);
@@ -1136,6 +1220,7 @@ void PinnedTabRow::StartRename() {
   rename_field_->SetText(title_label_->GetText());
   rename_field_->SetVisible(true);
   rename_field_->SelectAll(true);
+  UpdateCloseButtonVisibility();
   InvalidateLayout();
   rename_field_->RequestFocus();
 }
@@ -1163,6 +1248,7 @@ void PinnedTabRow::CommitRename() {
     }
     title_label_->SetVisible(true);
   }
+  UpdateCloseButtonVisibility();
   InvalidateLayout();
 
   // Persist the title to prefs.  SetCustomTabTitle no longer triggers
@@ -1205,6 +1291,7 @@ void PinnedTabRow::CancelRename() {
   rename_field_->SetText(title_label_->GetText());
   rename_field_->SetVisible(false);
   title_label_->SetVisible(true);
+  UpdateCloseButtonVisibility();
   InvalidateLayout();
 }
 
@@ -1240,10 +1327,12 @@ void PinnedTabRow::PerformClickAction() {
 }
 
 void PinnedTabRow::OnMouseEntered(const ui::MouseEvent& event) {
+  UpdateCloseButtonVisibility();
   SchedulePaint();
 }
 
 void PinnedTabRow::OnMouseExited(const ui::MouseEvent& event) {
+  UpdateCloseButtonVisibility();
   SchedulePaint();
 }
 
@@ -1332,6 +1421,9 @@ void AvoraPinnedSectionView::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
+  if (selection.active_tab_changed() && selection.old_tab) {
+    RememberDeactivatedTab(selection.old_tab);
+  }
   if (change.type() == TabStripModelChange::kInserted ||
       change.type() == TabStripModelChange::kRemoved) {
     Rebuild();
@@ -1530,6 +1622,8 @@ void AvoraPinnedSectionView::Rebuild() {
         base::BindRepeating(&AvoraPinnedSectionView::OnPinnedTabRenamed,
                             base::Unretained(this)),
         base::BindRepeating(&AvoraPinnedSectionView::OnPinnedTabReturnToTarget,
+                            base::Unretained(this)),
+        base::BindRepeating(&AvoraPinnedSectionView::OnPinnedTabCloseRequested,
                             base::Unretained(this)),
         /*in_folder=*/!folder_id.empty()));
     row->SetDragContext(item_id, folder_id);
@@ -1843,10 +1937,12 @@ bool AvoraPinnedSectionView::BeginExternalRowDrag(
   // The same row class Rebuild() draws for a real pin, built from the tab
   // being dragged, so what the preview shows is what the section will hold.
   // Its callbacks go nowhere: this row exists only to be moved, and it is
-  // removed before anything could click it.
+  // removed before anything could click it.  No close callback, so it has no
+  // minus to show either.
   auto* row = AddChildView(std::make_unique<PinnedTabRow>(
       contents, base::DoNothing(), base::DoNothing(), base::DoNothing(),
-      base::DoNothing()));
+      base::DoNothing(),
+      base::RepeatingCallback<void(content::WebContents*)>()));
 
   // Distinct from any real PinnedItem id, which are generated tokens, so a
   // stand-in can never be mistaken for something persisted.
@@ -2627,9 +2723,90 @@ void AvoraPinnedSectionView::OnPinnedTabClicked(
     return;
   }
   int index = tab_strip_model_->GetIndexOfWebContents(contents);
-  if (index != TabStripModel::kNoTab) {
-    tab_strip_model_->ActivateTabAt(index);
+  if (index == TabStripModel::kNoTab) {
+    return;
   }
+  // Clicking a parked pin is asking for its page back.  Unparking rebuilds
+  // this section (and deletes the clicked row), but |contents| is the tab's,
+  // not the row's, so it is still good for the activation below.
+  UnparkPinnedTab(tab_strip_model_, contents);
+  tab_strip_model_->ActivateTabAt(
+      tab_strip_model_->GetIndexOfWebContents(contents));
+}
+
+void AvoraPinnedSectionView::OnPinnedTabCloseRequested(
+    content::WebContents* contents) {
+  if (!tab_strip_model_ || !contents) {
+    return;
+  }
+  const int index = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (index == TabStripModel::kNoTab) {
+    return;
+  }
+
+  // Nothing persisted would bring this pin back once its tab is gone, so the
+  // tab stays and only its page is set aside.  Parking notifies the tab
+  // strip, whose kAll change rebuilds this section and deletes the row whose
+  // minus was clicked, so nothing may follow this.
+  if (GetPinnedItemIdForTab(contents).empty()) {
+    ParkPinnedTab(tab_strip_model_, contents);
+    return;
+  }
+
+  // Hand focus back first, so the tab being closed is already in the
+  // background when it goes: TabStripModel then has no successor of its own to
+  // pick, and nothing in between ever flashes on screen.
+  if (index == tab_strip_model_->active_index()) {
+    if (tabs::TabInterface* previous =
+            FindPreviouslyActiveTab(tab_strip_model_->GetTabAtIndex(index))) {
+      tab_strip_model_->ActivateTab(previous);
+    }
+  }
+
+  // Only the live tab goes.  The kPinned item is persisted separately, so the
+  // removal's Rebuild() draws it again as a tab-less row that rematerializes
+  // on the next click.  That Rebuild() also deletes the row whose minus was
+  // clicked, so nothing may follow this.
+  const int close_index = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (close_index != TabStripModel::kNoTab) {
+    tab_strip_model_->CloseWebContentsAt(close_index,
+                                         TabCloseTypes::CLOSE_USER_GESTURE);
+  }
+}
+
+void AvoraPinnedSectionView::RememberDeactivatedTab(tabs::TabInterface* tab) {
+  const tabs::TabHandle handle = tab->GetHandle();
+  std::erase_if(activation_history_, [&](const tabs::TabHandle& entry) {
+    return entry == handle || entry.Get() == nullptr;
+  });
+  activation_history_.insert(activation_history_.begin(), handle);
+  if (activation_history_.size() > kActivationHistoryLimit) {
+    activation_history_.resize(kActivationHistoryLimit);
+  }
+}
+
+tabs::TabInterface* AvoraPinnedSectionView::FindPreviouslyActiveTab(
+    tabs::TabInterface* closing) {
+  const std::string active_space =
+      pinned_items_manager_ ? pinned_items_manager_->GetActiveSpaceId()
+                            : std::string();
+  for (const tabs::TabHandle& handle : activation_history_) {
+    tabs::TabInterface* tab = handle.Get();
+    // Gone, the one being closed, or dragged off to another window since.
+    if (!tab || tab == closing || tab_strip_model_->GetIndexOfTab(tab) < 0) {
+      continue;
+    }
+    content::WebContents* contents = tab->GetContents();
+    // A tab another Space owns is hidden from this window's strip, and a link
+    // preview is a glance that has since closed or been promoted -- neither
+    // is somewhere the user was working.
+    if (!contents || !TabBelongsToSpace(contents, active_space) ||
+        IsLinkPreviewTab(contents)) {
+      continue;
+    }
+    return tab;
+  }
+  return nullptr;
 }
 
 void AvoraPinnedSectionView::OnPinnedTabReturnToTarget(

@@ -205,6 +205,7 @@
 #include "chrome/browser/ui/views/avora/avora_loading_bar_view.h"
 #include "chrome/browser/ui/views/avora/avora_mini_extensions_container.h"
 #include "chrome/browser/ui/views/avora/avora_mini_toolbar_view.h"
+#include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
 #include "chrome/browser/ui/views/avora/avora_toast_view.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
@@ -1244,6 +1245,14 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
             base::BindRepeating(
                 &BrowserView::OnAvoraSidebarAnimationProgressed,
                 base::Unretained(this)));
+
+    // Parked pin quote (see avora_parked_pin_view.h).  It follows the active
+    // tab and shows itself only while that tab is parked.  Not held in a
+    // member: browser_view.h is included across most of chrome/browser, so
+    // AddedToWidget() finds it among the children instead of growing that
+    // header.  Added before the other overlays so they all draw above it.
+    AddChildView(std::make_unique<avora::AvoraParkedPinView>(
+        browser_->GetTabStripModel()));
 
     // Quick-nav overlay (CMD+T).
     avora_quick_nav_ =
@@ -5575,6 +5584,11 @@ void BrowserView::AddedToWidget() {
   layout_views.avora_edge_hover = avora_edge_hover_;
   layout_views.avora_spaces_bar = avora_spaces_bar_;
   layout_views.avora_quick_nav = avora_quick_nav_;
+  for (views::View* child : children()) {
+    if (auto* parked_pin = views::AsViewClass<avora::AvoraParkedPinView>(child)) {
+      layout_views.avora_parked_pin = parked_pin;
+    }
+  }
   layout_views.avora_link_preview = avora_link_preview_;
   layout_views.avora_toast = avora_toast_;
   layout_views.avora_mini_toolbar = avora_mini_toolbar_;

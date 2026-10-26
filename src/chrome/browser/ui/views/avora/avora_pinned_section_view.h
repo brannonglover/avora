@@ -15,6 +15,7 @@
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "components/tabs/public/tab_interface.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/image/image_skia.h"
@@ -290,7 +291,9 @@ class PinnedRowIcon : public views::View {
 
 // A standalone pinned tab row (not inside a folder): favicon + title.
 // Click to activate; right-click for context menu with "Unpin Tab".
-// Double-click to rename via an inline textfield.
+// Double-click to rename via an inline textfield.  Hovering shows a minus
+// where a daily tab shows its close "x": it closes the live tab but keeps the
+// pin, which is why it is not drawn as an "x".
 class PinnedTabRow : public PinnedRowView,
                      public views::TextfieldController {
   METADATA_HEADER(PinnedTabRow, PinnedRowView)
@@ -301,6 +304,9 @@ class PinnedTabRow : public PinnedRowView,
 
   // |on_return| runs when the row's favicon is clicked while the tab has
   // left the pinned item's target; see SetPinnedTarget() and PinnedRowIcon.
+  //
+  // |on_close| runs when the row's minus is clicked.  Null means no minus
+  // (the drag stand-in, which nothing can click).
   //
   // |in_folder| indents the row to line up with the unmaterialized folder
   // members drawn by FolderTabRow.  A folder member renders as this row type
@@ -314,6 +320,7 @@ class PinnedTabRow : public PinnedRowView,
                                    const gfx::Point&)> on_context,
       RenameCallback on_rename,
       base::RepeatingCallback<void(content::WebContents*)> on_return,
+      base::RepeatingCallback<void(content::WebContents*)> on_close,
       bool in_folder = false);
   ~PinnedTabRow() override;
 
@@ -356,15 +363,24 @@ class PinnedTabRow : public PinnedRowView,
   // what the user actually clicks.
   void ReturnToTarget();
 
+  // Runs |on_close_| for this row's tab.  Bound into the minus button.
+  void CloseTab();
+
+  // The minus shows while the row is hovered, as a daily tab's "x" does --
+  // never mid-rename, where it would sit on the end of the textfield.
+  void UpdateCloseButtonVisibility();
+
   raw_ptr<content::WebContents> contents_;
   raw_ptr<PinnedRowIcon> favicon_view_ = nullptr;
   raw_ptr<views::Label> title_label_ = nullptr;
   raw_ptr<views::Textfield> rename_field_ = nullptr;
+  raw_ptr<views::Button> close_button_ = nullptr;
   base::RepeatingCallback<void(content::WebContents*)> on_click_;
   base::RepeatingCallback<void(content::WebContents*,
                                const gfx::Point&)> on_context_;
   RenameCallback on_rename_;
   base::RepeatingCallback<void(content::WebContents*)> on_return_;
+  base::RepeatingCallback<void(content::WebContents*)> on_close_;
   GURL target_url_;
   bool is_renaming_ = false;
 };
@@ -628,6 +644,26 @@ class AvoraPinnedSectionView : public views::View,
   // Standalone pinned tab handlers.
   void OnPinnedTabClicked(content::WebContents* contents);
 
+  // The row's minus: closes the live tab and leaves the pinned item in place,
+  // so the row falls back to its unmaterialized form.  Closing the tab that is
+  // on screen hands focus back to the tab that was on screen before it, not
+  // to whichever neighbour TabStripModel would pick.
+  //
+  // A tab with no pinned item behind it would lose its pin by closing, so it
+  // is parked instead (see avora_parked_pin_view.h): it stays open and
+  // pinned, and the content area shows a quote until the pin is clicked.
+  void OnPinnedTabCloseRequested(content::WebContents* contents);
+
+  // Activation history for OnPinnedTabCloseRequested(): every tab that loses
+  // activation is moved to the front, so the front is "the tab before this
+  // one".  Kept by handle so a closed tab simply stops resolving.
+  void RememberDeactivatedTab(tabs::TabInterface* tab);
+
+  // The most recently active tab, other than |closing|, that still lives in
+  // this window and is drawn in the Space this window shows.  Null when none
+  // qualifies, and the close then falls back to TabStripModel's own choice.
+  tabs::TabInterface* FindPreviouslyActiveTab(tabs::TabInterface* closing);
+
   // Takes a pinned tab back to the target it was pinned for, and activates
   // it.  Bound into every live row's favicon; does nothing for a tab that is
   // already on its target.
@@ -689,6 +725,9 @@ class AvoraPinnedSectionView : public views::View,
   // row it stood in front of, or null for "last" -- so a drag that wanders
   // off the section can put it back.
   raw_ptr<views::View> row_drag_origin_before_ = nullptr;
+
+  // Most recently deactivated first; see RememberDeactivatedTab().
+  std::vector<tabs::TabHandle> activation_history_;
 
   // Set when something asked for a rebuild mid-drag.  Rebuilding then would
   // delete the very row the user is holding, so the request is folded into

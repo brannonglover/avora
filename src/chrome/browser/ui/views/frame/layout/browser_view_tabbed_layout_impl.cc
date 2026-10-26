@@ -1480,6 +1480,16 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
                     is_scrim_visible);
   }
 
+  // Avora: the parked pin quote stands in for the page, so it covers exactly
+  // the content area the page would.
+  if (views().avora_parked_pin &&
+      IsParentedTo(views().avora_parked_pin, views().browser_view)) {
+    gfx::Rect overlay_bounds(content_left, content_y,
+                             content_right - content_left, content_height);
+    layout.AddChild(views().avora_parked_pin, overlay_bounds,
+                    views().avora_parked_pin->GetVisible());
+  }
+
   // Avora: quick-nav overlay covers only the main content area when visible.
   // Compute bounds from the layout parameters directly so the overlay can
   // display even before multi_contents_view has been laid out.

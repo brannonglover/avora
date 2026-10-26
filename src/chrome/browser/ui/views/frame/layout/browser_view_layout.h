@@ -94,6 +94,10 @@ struct BrowserViewLayoutViews {
   // Avora leading-edge hover strip that peeks a hidden sidebar back in.
   raw_ptr<views::View> avora_edge_hover = nullptr;
 
+  // Avora parked pin quote, covering the content area while the active tab
+  // is parked.
+  raw_ptr<views::View> avora_parked_pin = nullptr;
+
   // Avora quick-nav overlay (CMD+T).
   raw_ptr<views::View> avora_quick_nav = nullptr;
 
