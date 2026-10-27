@@ -58,6 +58,8 @@ source_set("avora") {
     "avora_spaces_bar_view.h",
     "avora_style_ai_key_dialog.cc",
     "avora_style_ai_key_dialog.h",
+    "avora_tab_sync_watcher.cc",
+    "avora_tab_sync_watcher.h",
     "avora_toast_view.cc",
     "avora_toast_view.h",
   ]
@@ -135,6 +137,7 @@ source_set("browser_tests") {
     "avora_mini_window_lifecycle_browsertest.cc",
     "avora_mini_window_toolbar_browsertest.cc",
     "avora_style_ai_settings_browsertest.cc",
+    "avora_tab_sync_browsertest.cc",
   ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -162,6 +165,7 @@ source_set("browser_tests") {
     "//extensions/browser",
     "//extensions/common",
     "//net:test_support",
+    "//services/network:test_support",
     "//testing/gtest",
     "//ui/views",
   ]

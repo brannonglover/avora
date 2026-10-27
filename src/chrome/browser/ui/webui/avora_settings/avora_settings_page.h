@@ -38,14 +38,46 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
   button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   select { background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
            color: var(--fg); padding: 5px 8px; }
-  #style-ai-message:empty { display: none; }
-  #style-ai-message.error { color: var(--warn); }
+  section + section { margin-top: 16px; }
+  input { background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+          color: var(--fg); font: inherit; padding: 5px 8px; }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #account-email { min-width: 240px; }
+  #account-code { letter-spacing: 0.15em; width: 120px; }
+  button:disabled { cursor: default; opacity: 0.5; }
+  #style-ai-message:empty, #account-message:empty { display: none; }
+  #style-ai-message.error, #account-message.error { color: var(--warn); }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>Avora Settings</h1>
+  <section id="account" aria-labelledby="account-heading">
+    <h2 id="account-heading">Account</h2>
+    <p class="muted">Sign in to see this Mac's open tabs in the Avora app on your
+      phone. Avora sends the address and title of each open web page in every
+      window and Space, and updates them a few seconds after they change.
+      Signing out removes them from your account.</p>
+    <p id="account-state" role="status" aria-live="polite">Loading…</p>
+    <p id="account-message" role="alert"></p>
+    <form class="row" id="account-email-form" hidden>
+      <label for="account-email">Email</label>
+      <input id="account-email" type="email" autocomplete="email" spellcheck="false">
+      <button id="account-send" class="primary" type="submit">Send code</button>
+    </form>
+    <form class="row" id="account-code-form" hidden>
+      <label for="account-code">Code</label>
+      <input id="account-code" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="12" spellcheck="false">
+      <button id="account-verify" class="primary" type="submit">Sign in</button>
+      <button id="account-resend" type="button">Send a new code</button>
+      <button id="account-change-email" type="button">Use a different email</button>
+    </form>
+    <div class="row" id="account-signed-in-row" hidden>
+      <button id="account-sign-out" type="button">Sign out</button>
+    </div>
+  </section>
   <section id="style-ai" aria-labelledby="style-ai-heading">
     <h2 id="style-ai-heading">Style Studio AI</h2>
     <p class="muted">Style Studio in DevTools can generate CSS with Anthropic's
@@ -133,6 +165,109 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
   $('style-ai-remove').addEventListener('click', () => chrome.send('removeStyleAiKey'));
   $('style-ai-model').addEventListener('change', event => chrome.send('setStyleAiModel', [event.target.value]));
   chrome.send('getStyleAiStatus');
+})();
+(() => {
+  const $ = id => document.getElementById(id);
+  let lastStatus = null;
+  function messageFor(status) {
+    switch (status.result) {
+      case 'code-sent':
+        return [`We emailed a code to ${status.email}. It can take a minute to arrive.`, false];
+      case 'signed-in':
+        return ['Signed in. This Mac\'s tabs will appear on your phone in a few seconds.', false];
+      case 'signed-out':
+        return ['Signed out. This Mac\'s tabs were removed from your account.', false];
+      case 'invalid-email':
+        return ['Enter a valid email address.', true];
+      case 'invalid-code':
+        return ['Enter the code from the email: 6 or more digits.', true];
+      case 'wrong-code':
+        return ['That code is wrong or has expired. Check the email, or send a new code.', true];
+      case 'rate-limited':
+        return ['Too many attempts. Wait a few minutes, then try again.', true];
+      case 'network-error':
+        return ['Avora could not reach the server. Check your connection and try again.', true];
+      case 'session-expired':
+        return ['Your session ended, so you were signed out. Sign in again to keep syncing tabs.', true];
+      case 'signed-out-device-not-removed':
+        return ['Signed out, but the server could not be reached to remove this Mac\'s tabs ' +
+                'from your account. Your phone may keep showing them.', true];
+      default:
+        return [null, false];
+    }
+  }
+  function syncLine(status) {
+    if (status.uploadFailing) {
+      return 'Tabs could not be synced just now. Avora will keep trying.';
+    }
+    if (!status.lastUpload) {
+      return 'Syncing tabs…';
+    }
+    const count = status.tabCount === 1 ? '1 tab' : `${status.tabCount} tabs`;
+    const when = new Date(status.lastUpload).toLocaleTimeString();
+    return `${count} from “${status.deviceName}” synced at ${when}.`;
+  }
+  function stateText(status) {
+    if (!status.available) {
+      return 'Accounts are not available in private windows.';
+    }
+    if (status.starting) {
+      return 'Loading your account…';
+    }
+    switch (status.state) {
+      case 'signed-in': {
+        const memory = status.memoryOnly
+            ? ' Secure storage is unavailable, so you will need to sign in again after quitting Avora.'
+            : '';
+        return `Signed in as ${status.email}. ${syncLine(status)}${memory}`;
+      }
+      case 'awaiting-code':
+        return `Enter the code sent to ${status.email}.`;
+      default:
+        return 'Not signed in.';
+    }
+  }
+  function render(status) {
+    const previousState = lastStatus && lastStatus.state;
+    lastStatus = status;
+    $('account-state').textContent = stateText(status);
+    const [message, isError] = messageFor(status);
+    $('account-message').textContent = message || '';
+    $('account-message').classList.toggle('error', Boolean(isError));
+    const ready = status.available && !status.starting;
+    $('account-email-form').hidden = !ready || status.state !== 'signed-out';
+    $('account-code-form').hidden = !ready || status.state !== 'awaiting-code';
+    $('account-signed-in-row').hidden = !ready || status.state !== 'signed-in';
+    for (const id of ['account-send', 'account-verify', 'account-resend',
+                      'account-change-email', 'account-sign-out']) {
+      $(id).disabled = Boolean(status.busy);
+    }
+    if (status.state !== previousState) {
+      if (status.state === 'awaiting-code') {
+        $('account-code').value = '';
+        $('account-code').focus();
+      } else if (status.state === 'signed-out' && status.email) {
+        $('account-email').value = status.email;
+      }
+    }
+  }
+  window.avoraSettings.onSyncStatus = render;
+  $('account-email-form').addEventListener('submit', event => {
+    event.preventDefault();
+    chrome.send('sendSyncCode', [$('account-email').value]);
+  });
+  $('account-code-form').addEventListener('submit', event => {
+    event.preventDefault();
+    chrome.send('verifySyncCode', [$('account-code').value]);
+  });
+  $('account-resend').addEventListener('click', () => {
+    if (lastStatus) {
+      chrome.send('sendSyncCode', [lastStatus.email]);
+    }
+  });
+  $('account-change-email').addEventListener('click', () => chrome.send('cancelSyncSignIn'));
+  $('account-sign-out').addEventListener('click', () => chrome.send('signOutSync'));
+  chrome.send('getSyncStatus');
 })();
 )JS";
 

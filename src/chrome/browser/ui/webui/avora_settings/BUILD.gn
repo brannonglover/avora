@@ -9,6 +9,8 @@ source_set("avora_settings") {
     "avora_settings_ui.h",
     "avora_style_ai_handler.cc",
     "avora_style_ai_handler.h",
+    "avora_sync_handler.cc",
+    "avora_sync_handler.h",
   ]
 
   public_deps = [

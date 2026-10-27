@@ -67,7 +67,26 @@ source_set("avora") {
     "style_ai/avora_style_ai_settings.h",
     "style_ai/avora_style_ai_status.cc",
     "style_ai/avora_style_ai_status.h",
+    "sync/avora_device_name.h",
+    "sync/avora_supabase_client.cc",
+    "sync/avora_supabase_client.h",
+    "sync/avora_sync_config.h",
+    "sync/avora_sync_session_store.cc",
+    "sync/avora_sync_session_store.h",
+    "sync/avora_tab_snapshot.cc",
+    "sync/avora_tab_snapshot.h",
+    "sync/avora_tab_sync_service.cc",
+    "sync/avora_tab_sync_service.h",
+    "sync/avora_upload_scheduler.cc",
+    "sync/avora_upload_scheduler.h",
   ]
+
+  if (is_mac) {
+    sources += [ "sync/avora_device_name_mac.mm" ]
+    frameworks = [ "SystemConfiguration.framework" ]
+  } else {
+    sources += [ "sync/avora_device_name.cc" ]
+  }
 
   public_deps = [ "//chrome/browser/autocomplete" ]
 
@@ -138,6 +157,30 @@ source_set("unit_tests") {
   ]
 }
 
+source_set("sync_unit_tests") {
+  testonly = true
+
+  sources = [
+    "sync/avora_supabase_client_unittest.cc",
+    "sync/avora_sync_session_store_unittest.cc",
+    "sync/avora_tab_snapshot_unittest.cc",
+    "sync/avora_upload_scheduler_unittest.cc",
+  ]
+
+  deps = [
+    ":avora",
+    "//base",
+    "//base/test:test_support",
+    "//components/os_crypt/async/browser:test_support",
+    "//components/prefs:test_support",
+    "//net",
+    "//services/network:test_support",
+    "//services/network/public/cpp",
+    "//testing/gtest",
+    "//url",
+  ]
+}
+
 source_set("style_ai_unit_tests") {
   testonly = true
 
@@ -160,9 +203,21 @@ source_set("style_ai_unit_tests") {
 test("avora_unit_tests") {
   deps = [
     ":style_ai_unit_tests",
+    ":sync_unit_tests",
     ":unit_tests",
     "//chrome/browser/avora/import:unit_tests",
     "//chrome/browser/ui/views/avora:unit_tests",
+    "//chrome/test:test_support_unit",
+    "//testing/gtest",
+  ]
+}
+
+# Tab sync's unit tests on their own, for the same reason as Style Studio AI's
+# below.
+#   autoninja -C out/Default avora_sync_unit_tests
+test("avora_sync_unit_tests") {
+  deps = [
+    ":sync_unit_tests",
     "//chrome/test:test_support_unit",
     "//testing/gtest",
   ]

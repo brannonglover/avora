@@ -83,6 +83,7 @@
 #include "chrome/browser/ui/views/avora/avora_caption_buttons_mac.h"
 #endif
 #include "chrome/browser/ui/views/avora/avora_style_ai_key_dialog.h"
+#include "chrome/browser/ui/views/avora/avora_tab_sync_watcher.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -193,6 +194,7 @@
 #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
 #include "chrome/browser/avora/avora_live_folder_service.h"
 #include "chrome/browser/avora/style_ai/avora_style_ai_settings.h"
+#include "chrome/browser/avora/sync/avora_tab_sync_service.h"
 #include "chrome/browser/avora/avora_nav_history.h"
 #include "chrome/browser/avora/avora_search_engine.h"
 #include "chrome/browser/extensions/extension_view_host.h"
@@ -1083,6 +1085,12 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   avora::StyleAiSettings::SetOSCryptAsync(g_browser_process->os_crypt_async());
   AvoraStyleAiHandler::SetKeyDialogLauncher(
       base::BindRepeating(&avora::ShowStyleAiKeyDialog));
+  // Avora: the same for tab sync's encrypted account session, and the watcher
+  // that tells it when any window's tabs change (it observes window creation
+  // itself, so starting it from the first window is enough).
+  avora::sync::TabSyncService::SetOSCryptAsync(
+      g_browser_process->os_crypt_async());
+  avora::TabSyncWatcher::EnsureStarted();
 
   auto* const vertical_tab_strip_state_controller =
       tabs::VerticalTabStripStateController::From(browser_);

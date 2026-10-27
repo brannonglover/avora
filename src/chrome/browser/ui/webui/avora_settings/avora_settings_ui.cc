@@ -12,6 +12,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/avora_settings/avora_settings_page.h"
 #include "chrome/browser/ui/webui/avora_settings/avora_style_ai_handler.h"
+#include "chrome/browser/ui/webui/avora_settings/avora_sync_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -46,6 +47,7 @@ AvoraSettingsUI::AvoraSettingsUI(content::WebUI* web_ui)
   source->SetRequestFilter(base::BindRepeating(&ShouldServePage),
                            base::BindRepeating(&ServePage));
   web_ui->AddMessageHandler(std::make_unique<AvoraStyleAiHandler>(profile));
+  web_ui->AddMessageHandler(std::make_unique<AvoraSyncHandler>(profile));
 }
 
 AvoraSettingsUI::~AvoraSettingsUI() = default;
