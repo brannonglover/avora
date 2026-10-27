@@ -24,6 +24,7 @@ module.exports = {
   expo: {
     name: 'Avora',
     slug: 'avora',
+    owner: 'brannonglover',
     scheme: 'avora',
     version,
     orientation: 'default',
@@ -76,6 +77,11 @@ module.exports = {
     ],
     experiments: {
       typedRoutes: true,
+    },
+    extra: {
+      eas: {
+        projectId: '432af8f9-a941-4ce4-affc-fe63a00616c0',
+      },
     },
   },
 };
