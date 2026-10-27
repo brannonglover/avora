@@ -37,7 +37,7 @@ export function AccountScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={[styles.header, Platform.OS === 'android' && { paddingTop: insets.top + 8 }]}>
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Pressable hitSlop={10} onPress={close} style={styles.close} accessibilityLabel="Close">
           <X size={18} color={colors.textSecondary} />
         </Pressable>

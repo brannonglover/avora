@@ -14,7 +14,9 @@ export default function RootLayout() {
       <SafeAreaProvider style={{ backgroundColor: colors.background }}>
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
           <Stack.Screen name="index" />
-          <Stack.Screen name="account" options={{ presentation: 'modal' }} />
+          {/* Full screen rather than a card sheet, whose rounded top corners
+              let the dimmed page behind show through. */}
+          <Stack.Screen name="account" options={{ presentation: 'fullScreenModal' }} />
         </Stack>
       </SafeAreaProvider>
     </AuthProvider>
