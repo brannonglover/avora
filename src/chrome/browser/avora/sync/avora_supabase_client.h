@@ -107,10 +107,63 @@ class SupabaseClient {
                     std::string_view device_id,
                     StatusCallback callback);
 
+  // The shared tables of docs/SYNC.md.
+  enum class Table { kSpaces, kItems };
+
+  using RowsCallback =
+      base::OnceCallback<void(RequestStatus, std::optional<base::ListValue>)>;
+  using BytesCallback =
+      base::OnceCallback<void(RequestStatus, std::optional<std::string>)>;
+
+  // GET /rest/v1/{table}?select=*, tombstones included, oldest change first:
+  // rows with updated_at >= `since` (every row when null), `limit` at a time
+  // starting at `offset`.
+  void FetchRows(std::string_view access_token,
+                 Table table,
+                 std::optional<std::string_view> since,
+                 size_t offset,
+                 size_t limit,
+                 RowsCallback callback);
+
+  // POST /rest/v1/rpc/sync_items (or sync_spaces) with {"changes": changes}:
+  // creates or updates each row, writing only the keys each change carries.
+  void SyncRows(std::string_view access_token,
+                Table table,
+                base::ListValue changes,
+                StatusCallback callback);
+
+  // POST /storage/v1/object/tab-previews/{path} with x-upsert: true.
+  void UploadPreview(std::string_view access_token,
+                     std::string_view path,
+                     std::string jpeg,
+                     StatusCallback callback);
+
+  // GET /storage/v1/object/authenticated/tab-previews/{path}.
+  void DownloadPreview(std::string_view access_token,
+                       std::string_view path,
+                       BytesCallback callback);
+
+  // DELETE /storage/v1/object/tab-previews/{path}.
+  void DeletePreview(std::string_view access_token,
+                     std::string_view path,
+                     StatusCallback callback);
+
  private:
   using BodyCallback =
       base::OnceCallback<void(RequestStatus, std::optional<std::string>)>;
   using LoaderList = std::list<std::unique_ptr<network::SimpleURLLoader>>;
+
+  struct Request {
+    std::string_view method;
+    std::string path_and_query;
+    std::optional<std::string_view> access_token;
+    std::optional<std::string> body;
+    std::string_view content_type = "application/json";
+    std::string_view accept = "application/json";
+    std::string_view prefer;
+    bool upsert = false;
+    size_t max_response_bytes = 256 * 1024;
+  };
 
   void Send(std::string_view method,
             std::string_view path_and_query,
@@ -118,6 +171,7 @@ class SupabaseClient {
             std::optional<std::string> json_body,
             std::string_view prefer,
             BodyCallback callback);
+  void Send(Request request, BodyCallback callback);
   void OnComplete(LoaderList::iterator it,
                   BodyCallback callback,
                   std::optional<std::string> body);

@@ -68,6 +68,12 @@ source_set("avora") {
     "style_ai/avora_style_ai_status.cc",
     "style_ai/avora_style_ai_status.h",
     "sync/avora_device_name.h",
+    "sync/avora_fractional_index.cc",
+    "sync/avora_fractional_index.h",
+    "sync/avora_shared_rows.cc",
+    "sync/avora_shared_rows.h",
+    "sync/avora_shared_store.cc",
+    "sync/avora_shared_store.h",
     "sync/avora_supabase_client.cc",
     "sync/avora_supabase_client.h",
     "sync/avora_sync_config.h",
@@ -161,6 +167,9 @@ source_set("sync_unit_tests") {
   testonly = true
 
   sources = [
+    "sync/avora_fractional_index_unittest.cc",
+    "sync/avora_shared_rows_unittest.cc",
+    "sync/avora_shared_store_unittest.cc",
     "sync/avora_supabase_client_unittest.cc",
     "sync/avora_sync_session_store_unittest.cc",
     "sync/avora_tab_snapshot_unittest.cc",
