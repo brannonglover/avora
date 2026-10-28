@@ -2,93 +2,63 @@
 
 #include "chrome/browser/ui/views/avora/avora_tab_sync_watcher.h"
 
-#include <map>
-#include <string>
-
 #include "base/functional/bind.h"
-#include "chrome/browser/avora/avora_space_manager.h"
-#include "chrome/browser/avora/avora_tab_guid.h"
-#include "chrome/browser/avora/avora_tab_space.h"
-#include "chrome/browser/avora/sync/avora_tab_sync_service.h"
+#include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_pinned_items.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 
 namespace avora {
 
 namespace {
 
+using sync::TabSyncService;
+
 // Only ordinary tabbed windows: popups (including the mini window), app and
-// DevTools windows are not tabs the user would look for on their phone.
-bool IsWatchedBrowser(BrowserWindowInterface* browser) {
+// DevTools windows hold no tabs the user shares.
+bool IsSharingBrowser(BrowserWindowInterface* browser) {
   return browser && browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
          browser->GetProfile() && !browser->GetProfile()->IsOffTheRecord();
 }
 
+// Windows closing on the way out are not tabs being closed.
 bool IsQuitting() {
   return browser_shutdown::IsTryingToQuit() ||
          browser_shutdown::HasShutdownStarted();
 }
 
-GURL UrlOf(content::WebContents* contents) {
-  // A tab mid-navigation still shows its committed page; a copy that has
-  // never loaded has only the entry it was created with.
-  GURL url = contents->GetLastCommittedURL();
-  return url.is_empty() ? contents->GetVisibleURL() : url;
+TabSyncService* ServiceFor(Profile* profile) {
+  return IsQuitting() ? nullptr : TabSyncService::GetForProfileIfExists(profile);
+}
+
+TabSyncService::TodayTab ToTodayTab(const AvoraSpaceTabFilter::SharedTab& tab) {
+  return {tab.guid, tab.space_id, tab.url, tab.title};
+}
+
+AvoraSpaceTabFilter::SharedTab ToSharedTab(
+    const TabSyncService::TodayTab& tab) {
+  return {tab.guid, tab.space_id, tab.url, tab.title};
+}
+
+// Tab strips are only changed from a task of their own, never from inside a
+// tab strip notification or a filter's flush (which is where some of these
+// requests come from).
+bool IsLiveProfile(Profile* profile) {
+  return g_browser_process && g_browser_process->profile_manager() &&
+         g_browser_process->profile_manager()->IsValidProfile(profile);
 }
 
 }  // namespace
-
-std::optional<std::vector<sync::OpenTab>> CollectOpenTabs(Profile* profile) {
-  if (IsQuitting()) {
-    return std::nullopt;
-  }
-  std::vector<sync::OpenTab> tabs;
-  if (!profile) {
-    return tabs;
-  }
-  std::map<std::string, std::string> space_names;
-  for (const Space& space : SpaceManager(profile->GetPrefs()).GetSpaces()) {
-    space_names[space.id] = space.name;
-  }
-
-  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-      [&](BrowserWindowInterface* browser) {
-        if (!IsWatchedBrowser(browser) || browser->GetProfile() != profile) {
-          return true;
-        }
-        TabStripModel* model = browser->GetTabStripModel();
-        for (int i = 0; model && i < model->count(); ++i) {
-          tabs::TabInterface* tab = model->GetTabAtIndex(i);
-          content::WebContents* contents = tab ? tab->GetContents() : nullptr;
-          if (!contents || IsLinkPreviewTab(contents)) {
-            continue;
-          }
-          sync::OpenTab open_tab;
-          open_tab.url = UrlOf(contents);
-          open_tab.title = contents->GetTitle();
-          // A natively pinned tab (Favorites ride on that bit too) or the tab
-          // behind a sidebar pinned item.
-          open_tab.pinned = tab->IsPinned() || IsPinnedItemTab(contents);
-          if (auto it = space_names.find(GetTabSpaceId(contents));
-              it != space_names.end()) {
-            open_tab.space = it->second;
-          }
-          open_tab.last_active = contents->GetLastActiveTime();
-          open_tab.guid = GetTabGuid(contents);
-          tabs.push_back(std::move(open_tab));
-        }
-        return true;
-      });
-  return tabs;
-}
 
 // static
 void TabSyncWatcher::EnsureStarted() {
@@ -96,17 +66,18 @@ void TabSyncWatcher::EnsureStarted() {
   if (instance) {
     return;
   }
-  // Never destroyed: it watches for the life of the browser process, and the
+  // Never destroyed: it serves for the life of the browser process, and the
   // collections it observes are torn down at shutdown without it.
   instance = new TabSyncWatcher();
 }
 
 TabSyncWatcher::TabSyncWatcher() {
-  sync::TabSyncService::SetTabCollector(base::BindRepeating(&CollectOpenTabs));
+  TabSyncService::SetTodayTabs(this);
+  AvoraSpaceTabFilter::SetSharedTabsDelegate(this);
   browsers_observation_.Observe(GlobalBrowserCollection::GetInstance());
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this](BrowserWindowInterface* browser) {
-        Watch(browser);
+        OnBrowserCreated(browser);
         return true;
       });
 }
@@ -114,83 +85,135 @@ TabSyncWatcher::TabSyncWatcher() {
 TabSyncWatcher::~TabSyncWatcher() = default;
 
 void TabSyncWatcher::OnBrowserCreated(BrowserWindowInterface* browser) {
-  Watch(browser);
-}
-
-void TabSyncWatcher::OnBrowserClosed(BrowserWindowInterface* browser) {
-  if (!IsWatchedBrowser(browser)) {
-    return;
+  // Creates the profile's service, which starts syncing once its stored
+  // session is read.
+  if (IsSharingBrowser(browser)) {
+    TabSyncService::GetForProfile(browser->GetProfile());
   }
-  if (TabStripModel* model = browser->GetTabStripModel();
-      model && watched_.erase(model)) {
-    model->RemoveObserver(this);
-  }
-  NotifyChanged(browser->GetProfile());
 }
 
 void TabSyncWatcher::OnBrowserActivated(BrowserWindowInterface* browser) {
-  // The front window's tabs become the most recently active ones. A snapshot
-  // identical to the last upload is not sent, so this costs nothing when
-  // nothing moved.
-  if (IsWatchedBrowser(browser)) {
-    NotifyChanged(browser->GetProfile());
+  if (IsSharingBrowser(browser)) {
+    if (TabSyncService* service = ServiceFor(browser->GetProfile())) {
+      service->SyncSoon();
+    }
   }
 }
 
-void TabSyncWatcher::OnTabStripModelChanged(
-    TabStripModel* tab_strip_model,
-    const TabStripModelChange& change,
-    const TabStripSelectionChange& selection) {
-  if (change.type() == TabStripModelChange::kSelectionOnly &&
-      !selection.active_tab_changed()) {
-    return;
-  }
-  NotifyChanged(tab_strip_model->profile());
-}
-
-void TabSyncWatcher::OnTabChangedAt(tabs::TabInterface* tab,
-                                    TabChangeType change_type) {
-  // kAll is what URL and title changes report; the other kinds are loading
-  // spinners, attention dots and the like.
-  if (change_type != TabChangeType::kAll || !tab || !tab->GetContents()) {
-    return;
-  }
-  NotifyChanged(
-      Profile::FromBrowserContext(tab->GetContents()->GetBrowserContext()));
-}
-
-void TabSyncWatcher::OnTabPinnedStateChanged(tabs::TabInterface* tab,
-                                             int index) {
-  if (tab && tab->GetContents()) {
-    NotifyChanged(
-        Profile::FromBrowserContext(tab->GetContents()->GetBrowserContext()));
+void TabSyncWatcher::OnSharedTabOpened(
+    Profile* profile,
+    const AvoraSpaceTabFilter::SharedTab& tab,
+    const std::string& predecessor,
+    const std::string& successor) {
+  if (TabSyncService* service = ServiceFor(profile)) {
+    service->OnTodayTabOpened(ToTodayTab(tab), predecessor, successor);
   }
 }
 
-void TabSyncWatcher::OnTabStripModelDestroyed(TabStripModel* tab_strip_model) {
-  watched_.erase(tab_strip_model);
+void TabSyncWatcher::OnSharedTabNavigated(
+    Profile* profile,
+    const AvoraSpaceTabFilter::SharedTab& tab) {
+  if (TabSyncService* service = ServiceFor(profile)) {
+    service->OnTodayTabNavigated(ToTodayTab(tab));
+  }
 }
 
-void TabSyncWatcher::Watch(BrowserWindowInterface* browser) {
-  if (!IsWatchedBrowser(browser)) {
-    return;
+void TabSyncWatcher::OnSharedTabClosed(Profile* profile,
+                                       const std::string& guid) {
+  if (TabSyncService* service = ServiceFor(profile)) {
+    service->OnTodayTabClosed(guid);
   }
-  TabStripModel* model = browser->GetTabStripModel();
-  if (!model || !watched_.insert(model).second) {
-    return;
-  }
-  model->AddObserver(this);
-  // Creates the profile's service, which uploads once its session is read.
-  NotifyChanged(browser->GetProfile());
 }
 
-void TabSyncWatcher::NotifyChanged(Profile* profile) {
-  if (IsQuitting()) {
-    return;
+std::vector<AvoraSpaceTabFilter::SharedTab> TabSyncWatcher::SharedTabsForSpace(
+    Profile* profile,
+    const std::string& space_id) {
+  std::vector<AvoraSpaceTabFilter::SharedTab> tabs;
+  if (TabSyncService* service = ServiceFor(profile)) {
+    for (const TabSyncService::TodayTab& tab :
+         service->TodayTabsForSpace(space_id)) {
+      tabs.push_back(ToSharedTab(tab));
+    }
   }
-  if (sync::TabSyncService* service =
-          sync::TabSyncService::GetForProfile(profile)) {
-    service->OnTabsChanged();
+  return tabs;
+}
+
+bool TabSyncWatcher::IsReady(Profile* profile) {
+  if (IsQuitting() || SessionRestore::IsRestoring(profile)) {
+    return false;
+  }
+  bool has_window = false;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        has_window = IsSharingBrowser(browser) &&
+                     browser->GetProfile() == profile;
+        return !has_window;
+      });
+  return has_window;
+}
+
+std::vector<TabSyncService::TodayTab> TabSyncWatcher::Collect(
+    Profile* profile) {
+  std::vector<TabSyncService::TodayTab> tabs;
+  for (const AvoraSpaceTabFilter::SharedTab& tab :
+       AvoraSpaceTabFilter::CollectSharedTabs(profile)) {
+    tabs.push_back(ToTodayTab(tab));
+  }
+  return tabs;
+}
+
+void TabSyncWatcher::Upsert(Profile* profile,
+                            const TabSyncService::TodayTab& tab,
+                            const std::vector<std::string>& before) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](Profile* profile, AvoraSpaceTabFilter::SharedTab tab,
+             std::vector<std::string> before) {
+            if (IsLiveProfile(profile) && !IsQuitting()) {
+              AvoraSpaceTabFilter::UpsertSharedTab(profile, tab, before);
+            }
+          },
+          profile, ToSharedTab(tab), before));
+}
+
+void TabSyncWatcher::Remove(Profile* profile, const std::string& guid) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](Profile* profile, std::string guid) {
+                       if (IsLiveProfile(profile) && !IsQuitting()) {
+                         AvoraSpaceTabFilter::RemoveSharedTab(profile, guid);
+                       }
+                     },
+                     profile, guid));
+}
+
+void TabSyncWatcher::RemovePinnedItem(Profile* profile,
+                                      const std::string& item_id) {
+  // The open tab, if any, stays open as an ordinary tab, as when the user
+  // unpins it here.
+  PinnedItemsManager pinned_items(profile->GetPrefs());
+  PinnedFoldersManager pinned_folders(profile->GetPrefs());
+  bool unmarked = false;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        TabStripModel* model = browser->GetTabStripModel();
+        if (!IsSharingBrowser(browser) || browser->GetProfile() != profile ||
+            !model) {
+          return true;
+        }
+        for (int i = 0; i < model->count(); ++i) {
+          content::WebContents* contents = model->GetWebContentsAt(i);
+          if (contents && GetPinnedItemIdForTab(contents) == item_id) {
+            UnpinAndRemovePinnedItem(model, &pinned_items, &pinned_folders,
+                                     contents);
+            unmarked = true;
+          }
+        }
+        return true;
+      });
+  if (!unmarked) {
+    pinned_folders.RemoveItemFromAllFolders(item_id);
   }
 }
 

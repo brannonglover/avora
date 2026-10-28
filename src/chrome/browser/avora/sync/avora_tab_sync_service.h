@@ -16,10 +16,12 @@
 #include "base/observer_list_types.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/avora/sync/avora_shared_models.h"
+#include "chrome/browser/avora/sync/avora_shared_store.h"
 #include "chrome/browser/avora/sync/avora_supabase_client.h"
 #include "chrome/browser/avora/sync/avora_sync_session_store.h"
-#include "chrome/browser/avora/sync/avora_tab_snapshot.h"
-#include "chrome/browser/avora/sync/avora_upload_scheduler.h"
+#include "url/gurl.h"
 
 class Profile;
 
@@ -30,18 +32,26 @@ class OSCryptAsync;
 
 namespace avora::sync {
 
-// Avora account sign-in and tab upload for one regular profile.
+// Avora account sign-in and shared tabs for one regular profile.
 //
 // Signing in is two steps: an email address, to which Supabase sends a
-// one-time code, then that code, which buys a session. While signed in, every
-// change to the profile's tabs (reported by the tab watcher in
-// //chrome/browser/ui/views/avora) marks the snapshot dirty, and
-// UploadScheduler upserts this device's public.devices row with the full set a
-// few seconds later. Signing out deletes the row, then forgets the session.
-// The contract with the phone app is docs/SYNC.md in the avoraapp repository.
+// one-time code, then that code, which buys a session. While signed in, the
+// profile's Spaces, Favorites, pinned items and today tabs are one shared set
+// with every other device on the account (docs/SYNC.md in the avoraapp
+// repository): this device's changes go up as row writes a moment after they
+// happen, and other devices' changes come down every few seconds and are
+// applied to the sidebar models and the tab strips.
+//
+// Spaces, Favorites and pinned items are diffed from their models
+// (SharedModels). Today tabs live in the tab strips, which this target can't
+// see: the views layer reports each one opened, navigated or closed by the
+// user, and opens, updates and closes them for remote changes (TodayTabs).
+//
+// Signing out deletes this device's public.devices row and forgets the
+// session and the shared rows; the tabs stay open here.
 //
 // Attached to the Profile as user data, like LiveFolderService. Off-the-record
-// profiles have none: their tabs are never uploaded.
+// profiles have none: their tabs are never shared.
 class TabSyncService : public base::SupportsUserData::Data {
  public:
   enum class State {
@@ -82,11 +92,12 @@ class TabSyncService : public base::SupportsUserData::Data {
     Result last_result = Result::kNone;
     // The session lives in memory only and ends when Avora quits.
     bool memory_only = false;
-    // When the server last accepted this device's tabs, if ever this run.
+    // When this device last finished a sync with the server, if ever this
+    // run.
     base::Time last_upload;
-    // How many tabs that upload carried.
+    // How many tabs (today tabs, pinned items and Favorites) the account has.
     size_t uploaded_tab_count = 0;
-    // The most recent upload attempt failed; it is being retried.
+    // The most recent sync attempt failed; it is being retried.
     bool upload_failing = false;
   };
 
@@ -95,26 +106,51 @@ class TabSyncService : public base::SupportsUserData::Data {
     virtual void OnTabSyncStatusChanged() = 0;
   };
 
-  // Lists every open tab of a profile, across all of its windows and Spaces,
-  // or null while the browser is quitting: windows closing on the way out are
-  // not tabs being closed, and uploading what is left would empty the phone's
-  // list until the next launch. Supplied from //chrome/browser/ui/views/avora,
-  // which this target cannot depend on.
-  using TabCollector =
-      base::RepeatingCallback<std::optional<std::vector<OpenTab>>(
-          Profile* profile)>;
+  // One today tab, in local ids: `guid` is its Avora tab GUID and
+  // `space_id` its SpaceManager id.
+  struct TodayTab {
+    std::string guid;
+    std::string space_id;
+    GURL url;
+    std::u16string title;
+  };
+
+  // The tab strips, from //chrome/browser/ui/views/avora, which this target
+  // can't depend on.
+  class TodayTabs {
+   public:
+    virtual ~TodayTabs() = default;
+    // Whether the tab strips can be changed: false while session restore is
+    // still adding tabs, or before any window exists.
+    virtual bool IsReady(Profile* profile) = 0;
+    // Every today tab of the profile, once per GUID, in tab strip order
+    // within each Space.
+    virtual std::vector<TodayTab> Collect(Profile* profile) = 0;
+    // Opens `tab` (unloaded) in each window that shows its Space, after the
+    // last of `before` (the GUIDs ahead of it, in order) that the window has,
+    // or updates the copies that are already open.
+    virtual void Upsert(Profile* profile,
+                        const TodayTab& tab,
+                        const std::vector<std::string>& before) = 0;
+    // Closes every copy of the tab.
+    virtual void Remove(Profile* profile, const std::string& guid) = 0;
+    // Removes a pinned item and unmarks its open tab.
+    virtual void RemovePinnedItem(Profile* profile,
+                                  const std::string& item_id) = 0;
+  };
 
   // Set once from //chrome/browser (browser_view.cc), as for StyleAiSettings.
   static void SetOSCryptAsync(os_crypt_async::OSCryptAsync* os_crypt_async);
-  static void SetTabCollector(TabCollector collector);
+  static void SetTodayTabs(TodayTabs* today_tabs);
 
   // Null for a null or off-the-record profile.
   static TabSyncService* GetForProfile(Profile* profile);
   // As above, but never creates one.
   static TabSyncService* GetForProfileIfExists(Profile* profile);
 
-  // Upload debounce for services created after this call; tests use short
-  // ones.
+  // For services created after this call: how long local changes wait
+  // before they are sent, and how often other devices' changes are fetched.
+  // Tests use short ones.
   static void SetUploadDelaysForTesting(base::TimeDelta quiet_period,
                                         base::TimeDelta max_delay);
 
@@ -136,8 +172,23 @@ class TabSyncService : public base::SupportsUserData::Data {
   // Deletes this device's row, revokes the session and forgets it.
   void SignOut();
 
-  // The profile's tabs changed in a way the phone would see.
-  void OnTabsChanged();
+  // The user opened a today tab, or moved one to another Space. `predecessor`
+  // and `successor` are the GUIDs of its neighbours in the Space, if any.
+  void OnTodayTabOpened(const TodayTab& tab,
+                        const std::string& predecessor,
+                        const std::string& successor);
+  // A loaded today tab navigated or was retitled.
+  void OnTodayTabNavigated(const TodayTab& tab);
+  // The user closed a today tab, or it became a Favorite or pinned item.
+  void OnTodayTabClosed(const std::string& guid);
+
+  // The account's today tabs in a Space, in order, for a window showing the
+  // Space for the first time. Empty while signed out.
+  std::vector<TodayTab> TodayTabsForSpace(const std::string& space_id) const;
+
+  // Fetches other devices' changes now, e.g. when a window comes to the
+  // front.
+  void SyncSoon();
 
   Status GetStatus() const;
   State state() const { return state_; }
@@ -145,9 +196,7 @@ class TabSyncService : public base::SupportsUserData::Data {
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
-  // The body the next upload would send, built now. Empty when signed out,
-  // while quitting, or before the device name is known.
-  std::string BuildUploadBodyForTesting() { return BuildUploadBody(); }
+  const SharedStore& shared_store_for_testing() const { return *shared_; }
 
  private:
   using TokenCallback =
@@ -166,20 +215,54 @@ class TabSyncService : public base::SupportsUserData::Data {
   void WithFreshToken(TokenCallback callback);
   void OnRefreshed(RequestStatus status, std::optional<AuthSession> session);
 
-  std::string BuildUploadBody();
-  void Upload(std::string body, base::OnceCallback<void(bool)> done);
-  void SendUpload(std::string body,
-                  bool retried,
-                  base::OnceCallback<void(bool)> done,
+  // ── Shared rows ──
+  bool IsSyncing() const;
+  void StartSync(bool fresh_sign_in);
+  void StopSync();
+  void UpsertDeviceRow();
+  void Pull();
+  void FetchTable(SupabaseClient::Table table,
+                  std::optional<std::string> since,
+                  size_t offset,
+                  base::ListValue rows,
+                  base::OnceCallback<void(bool, base::ListValue)> done,
                   std::optional<std::string> access_token);
-  void OnUploaded(std::string body,
-                  bool retried,
-                  size_t tab_count,
-                  base::OnceCallback<void(bool)> done,
-                  RequestStatus status);
+  void OnTableFetched(SupabaseClient::Table table,
+                      std::optional<std::string> since,
+                      size_t offset,
+                      base::ListValue rows,
+                      base::OnceCallback<void(bool, base::ListValue)> done,
+                      RequestStatus status,
+                      std::optional<base::ListValue> page);
+  void OnSpacesPulled(bool full, bool ok, base::ListValue spaces);
+  void OnPulled(bool full,
+                base::ListValue spaces,
+                bool ok,
+                base::ListValue items);
+  void FinishFirstLoad();
+  void ReconcileModels(bool diff_first);
+  void RebaseModels();
+  void OnModelsChanged();
+  void ApplyTodayRows(const std::vector<std::string>& shared_ids);
+  void RetryDeferredToday();
+  std::string PositionBetween(const std::string& shared_space,
+                              const std::string& predecessor_guid,
+                              const std::string& successor_guid) const;
+  void SchedulePush(base::TimeDelta delay);
+  void Push();
+  void SendPush(bool retried, std::optional<std::string> access_token);
+  void PushTable(SupabaseClient::Table table,
+                 bool retried,
+                 std::string access_token);
+  void OnPushed(SupabaseClient::Table table,
+                bool retried,
+                std::string access_token,
+                RequestStatus status);
+  void FinishPushing(bool ok);
+  void OnSyncFailed();
+  void OnSyncSucceeded();
 
-  // Deletes the row once no upsert is in flight: one that already left could
-  // otherwise reach the server after the delete and put the row back.
+  // Deletes the device row once no push is in flight.
   void ContinueSignOut();
   void DeleteDeviceWithToken(std::optional<std::string> access_token);
   void OnDeviceDeleted(std::string access_token, RequestStatus status);
@@ -194,7 +277,8 @@ class TabSyncService : public base::SupportsUserData::Data {
   raw_ptr<Profile> profile_;
   std::unique_ptr<SessionStore> store_;
   std::unique_ptr<SupabaseClient> client_;
-  std::unique_ptr<UploadScheduler> scheduler_;
+  std::unique_ptr<SharedStore> shared_;
+  std::unique_ptr<SharedModels> models_;
 
   State state_ = State::kSignedOut;
   bool busy_ = false;
@@ -205,12 +289,25 @@ class TabSyncService : public base::SupportsUserData::Data {
   Result last_result_ = Result::kNone;
 
   bool signing_out_ = false;
-  bool upsert_in_flight_ = false;
   bool refresh_in_flight_ = false;
   std::vector<TokenCallback> token_waiters_;
 
-  // Tab count of the body most recently built, reported once it is accepted.
-  size_t last_built_tab_count_ = 0;
+  const base::TimeDelta push_delay_;
+  const base::TimeDelta pull_interval_;
+  bool pulling_ = false;
+  bool pushing_ = false;
+  bool push_again_ = false;
+  // Applying server rows: model changes are not this device's own.
+  bool applying_ = false;
+  bool device_row_written_ = false;
+  int failures_ = 0;
+  // Today rows that arrived while the tab strips weren't ready.
+  std::vector<std::string> deferred_today_;
+  base::RepeatingTimer pull_timer_;
+  base::OneShotTimer push_timer_;
+  base::OneShotTimer reconcile_timer_;
+  base::OneShotTimer retry_timer_;
+
   base::Time last_upload_;
   size_t uploaded_tab_count_ = 0;
   bool upload_failing_ = false;

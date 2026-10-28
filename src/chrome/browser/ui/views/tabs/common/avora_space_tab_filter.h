@@ -18,6 +18,7 @@
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/tabs/public/tab_interface.h"
+#include "url/gurl.h"
 
 class BrowserWindowInterface;
 class Profile;
@@ -125,8 +126,76 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // into every other window of the Space.
   bool CarryOverDailyTabs();
 
+  // ── Shared tabs ──
+  //
+  // A signed-in profile shares its today tabs with the user's other devices
+  // (avora::sync::TabSyncService). Daily tabs the user opens, navigates or
+  // closes here are reported to the delegate from FlushDailyTabSync(), the
+  // same place they are carried to this profile's other windows; tabs opened,
+  // navigated or closed elsewhere come back through UpsertSharedTab() and
+  // RemoveSharedTab().
+  struct SharedTab {
+    std::string guid;
+    std::string space_id;
+    GURL url;
+    std::u16string title;
+  };
+
+  class SharedTabsDelegate {
+   public:
+    virtual ~SharedTabsDelegate() = default;
+    // A daily tab opened here, or moved to another Space. `predecessor` and
+    // `successor` are its neighbours' GUIDs in the Space, if any.
+    virtual void OnSharedTabOpened(Profile* profile,
+                                   const SharedTab& tab,
+                                   const std::string& predecessor,
+                                   const std::string& successor) = 0;
+    // A loaded daily tab navigated or was retitled.
+    virtual void OnSharedTabNavigated(Profile* profile,
+                                      const SharedTab& tab) = 0;
+    // A daily tab was closed by the user, or became a Favorite or pinned item.
+    // Never for a window closing or Avora quitting.
+    virtual void OnSharedTabClosed(Profile* profile,
+                                   const std::string& guid) = 0;
+    // The shared today tabs of a Space, in order, for a window joining it.
+    virtual std::vector<SharedTab> SharedTabsForSpace(
+        Profile* profile,
+        const std::string& space_id) = 0;
+  };
+
+  static void SetSharedTabsDelegate(SharedTabsDelegate* delegate);
+
+  // Every daily tab of `profile`, once per GUID, in tab strip order.
+  static std::vector<SharedTab> CollectSharedTabs(Profile* profile);
+
+  // Opens `tab` unloaded in each window of `profile` that has joined its
+  // Space, after the last tab of `before` the window holds, or updates the
+  // copies already open: a move to another Space, a new page (never pulled out
+  // from under the user: a copy on screen follows once they leave it), or a
+  // title for a copy that hasn't loaded.
+  static void UpsertSharedTab(Profile* profile,
+                              const SharedTab& tab,
+                              const std::vector<std::string>& before);
+
+  // Closes every copy of the tab in `profile`'s windows.
+  static void RemoveSharedTab(Profile* profile, const std::string& guid);
+
  private:
   TabStripModel* GetModel() const;
+
+  // Shared tabs; see UpsertSharedTab().
+  SharedTab SharedTabFor(tabs::TabInterface* tab,
+                         const std::string& guid,
+                         const std::string& space_id) const;
+  std::unique_ptr<content::WebContents> CreateSharedTabContents(
+      const SharedTab& tab);
+  void ApplySharedUpsert(const SharedTab& tab,
+                         const std::vector<std::string>& before);
+  int SharedInsertIndex(const std::string& space_id,
+                        const std::vector<std::string>& before) const;
+  tabs::TabInterface* InsertSharedTab(const SharedTab& tab, int index);
+  void NavigateSharedCopy(tabs::TabInterface* local, const SharedTab& tab);
+  void ApplyDeferredSharedNavigations();
 
   // Caches each Space's owning BrowserProfile so OnSpacesChanged() can tell an
   // identity change apart from a rename, reorder, or icon edit.
@@ -368,6 +437,10 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
 
   // Guards against reentrancy while we mutate visibility or the tab strip.
   bool applying_ = false;
+
+  // Pages other devices moved a tab to while it was on screen here, by GUID;
+  // applied once the user leaves the tab, dropped if they navigate it first.
+  std::map<std::string, SharedTab> deferred_shared_navigations_;
 
   // Remaining kToday (url -> space_ids) claims from the last session.
   std::map<std::string, std::vector<std::string>> today_claims_by_url_;

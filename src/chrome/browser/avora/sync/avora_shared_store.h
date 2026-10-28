@@ -102,6 +102,9 @@ class SharedStore {
   void Delete(SharedTable table, std::string_view shared_id);
 
   bool HasPending() const;
+  // Whether this device has a change to `shared_id` the server hasn't
+  // confirmed.
+  bool HasUnsentChange(SharedTable table, std::string_view shared_id) const;
   // The unsent changes for `table`, ready for sync_items/sync_spaces, each
   // stamped with `device_id`. They stay in flight until FinishPush().
   base::ListValue TakePending(SharedTable table, std::string_view device_id);

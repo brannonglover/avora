@@ -55,10 +55,12 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
   <h1>Avora Settings</h1>
   <section id="account" aria-labelledby="account-heading">
     <h2 id="account-heading">Account</h2>
-    <p class="muted">Sign in to see this Mac's open tabs in the Avora app on your
-      phone. Avora sends the address and title of each open web page in every
-      window and Space, and updates them a few seconds after they change.
-      Signing out removes them from your account.</p>
+    <p class="muted">Sign in to share one set of tabs with the Avora app on your
+      phone and your other Macs: your Spaces, Favorites, pinned pages and
+      today's tabs. A tab you open or close on one device opens or closes on
+      the others. Avora sends each page's address, title and a small preview
+      (never of private windows, or of pages with a password field). Signing
+      out stops sharing; your tabs stay open here.</p>
     <p id="account-state" role="status" aria-live="polite">Loading…</p>
     <p id="account-message" role="alert"></p>
     <form class="row" id="account-email-form" hidden>
@@ -174,9 +176,9 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
       case 'code-sent':
         return [`We emailed a code to ${status.email}. It can take a minute to arrive.`, false];
       case 'signed-in':
-        return ['Signed in. This Mac\'s tabs will appear on your phone in a few seconds.', false];
+        return ['Signed in. Your tabs will be the same on every device in a few seconds.', false];
       case 'signed-out':
-        return ['Signed out. This Mac\'s tabs were removed from your account.', false];
+        return ['Signed out. Your tabs stay open here and stay in your account.', false];
       case 'invalid-email':
         return ['Enter a valid email address.', true];
       case 'invalid-code':
@@ -190,8 +192,8 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
       case 'session-expired':
         return ['Your session ended, so you were signed out. Sign in again to keep syncing tabs.', true];
       case 'signed-out-device-not-removed':
-        return ['Signed out, but the server could not be reached to remove this Mac\'s tabs ' +
-                'from your account. Your phone may keep showing them.', true];
+        return ['Signed out, but the server could not be reached to remove this Mac ' +
+                'from your account\'s devices.', true];
       default:
         return [null, false];
     }
@@ -205,7 +207,7 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
     }
     const count = status.tabCount === 1 ? '1 tab' : `${status.tabCount} tabs`;
     const when = new Date(status.lastUpload).toLocaleTimeString();
-    return `${count} from “${status.deviceName}” synced at ${when}.`;
+    return `${count} in your account, synced at ${when}.`;
   }
   function stateText(status) {
     if (!status.available) {

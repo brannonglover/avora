@@ -71,6 +71,8 @@ source_set("avora") {
     "sync/avora_fractional_index.cc",
     "sync/avora_fractional_index.h",
     "sync/avora_shared_rows.cc",
+    "sync/avora_shared_models.cc",
+    "sync/avora_shared_models.h",
     "sync/avora_shared_rows.h",
     "sync/avora_shared_store.cc",
     "sync/avora_shared_store.h",
@@ -79,12 +81,8 @@ source_set("avora") {
     "sync/avora_sync_config.h",
     "sync/avora_sync_session_store.cc",
     "sync/avora_sync_session_store.h",
-    "sync/avora_tab_snapshot.cc",
-    "sync/avora_tab_snapshot.h",
     "sync/avora_tab_sync_service.cc",
     "sync/avora_tab_sync_service.h",
-    "sync/avora_upload_scheduler.cc",
-    "sync/avora_upload_scheduler.h",
   ]
 
   if (is_mac) {
@@ -172,8 +170,6 @@ source_set("sync_unit_tests") {
     "sync/avora_shared_store_unittest.cc",
     "sync/avora_supabase_client_unittest.cc",
     "sync/avora_sync_session_store_unittest.cc",
-    "sync/avora_tab_snapshot_unittest.cc",
-    "sync/avora_upload_scheduler_unittest.cc",
   ]
 
   deps = [

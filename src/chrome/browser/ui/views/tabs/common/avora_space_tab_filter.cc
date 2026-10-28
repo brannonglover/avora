@@ -42,8 +42,11 @@
 #include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/restore_type.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
@@ -65,6 +68,12 @@ std::vector<AvoraSpaceTabFilter*>& DailyTabSyncRegistry() {
 std::set<tabs::TabHandle>& DailyTabsInTransit() {
   static base::NoDestructor<std::set<tabs::TabHandle>> in_transit;
   return *in_transit;
+}
+
+// The one shared-tabs delegate (the views layer's tab sync bridge), or null.
+AvoraSpaceTabFilter::SharedTabsDelegate*& SharedTabsDelegateInstance() {
+  static AvoraSpaceTabFilter::SharedTabsDelegate* delegate = nullptr;
+  return delegate;
 }
 
 }  // namespace
@@ -1835,6 +1844,11 @@ void AvoraSpaceTabFilter::FlushDailyTabSync() {
                                 predecessor, successor);
       }
     }
+    if (SharedTabsDelegate* delegate = SharedTabsDelegateInstance()) {
+      delegate->OnSharedTabOpened(
+          profile, SharedTabFor(tab, published.guid, published.space_id),
+          predecessor, successor);
+    }
   }
 
   // ── Navigations ──
@@ -1857,7 +1871,17 @@ void AvoraSpaceTabFilter::FlushDailyTabSync() {
         peer->ApplyRemoteNavigation(tab, published->second.guid);
       }
     }
+    // The user took the tab somewhere: that beats a page another device
+    // moved it to while it was on screen.
+    deferred_shared_navigations_.erase(published->second.guid);
+    if (SharedTabsDelegate* delegate = SharedTabsDelegateInstance()) {
+      delegate->OnSharedTabNavigated(
+          profile, SharedTabFor(tab, published->second.guid,
+                                published->second.space_id));
+    }
   }
+
+  ApplyDeferredSharedNavigations();
 
   // ── Closed here, or no longer in the daily list ──
   for (auto it = published_tabs_.begin(); it != published_tabs_.end();) {
@@ -1911,6 +1935,10 @@ void AvoraSpaceTabFilter::FlushDailyTabSync() {
       if (still_registered(peer)) {
         peer->ApplyRemoteRemove(guid);
       }
+    }
+    deferred_shared_navigations_.erase(guid);
+    if (SharedTabsDelegate* delegate = SharedTabsDelegateInstance()) {
+      delegate->OnSharedTabClosed(profile, guid);
     }
   }
 }
@@ -1994,6 +2022,24 @@ tabs::TabInterface* AvoraSpaceTabFilter::JoinSpace(
       if (!selection && peer_tab->GetContents() == peer_active) {
         selection = local;
       }
+    }
+  }
+
+  // The account's tabs in this Space that no window here has: opened on
+  // another device, or left behind when the last window showing them closed.
+  if (SharedTabsDelegate* delegate = SharedTabsDelegateInstance()) {
+    std::vector<std::string> before;
+    for (const SharedTab& shared :
+         delegate->SharedTabsForSpace(profile, space_id)) {
+      if (!FindTabByGuid(shared.guid)) {
+        tabs::TabInterface* local =
+            InsertSharedTab(shared, SharedInsertIndex(space_id, before));
+        added = added || local != nullptr;
+        if (!selection && was_empty) {
+          selection = local;
+        }
+      }
+      before.push_back(shared.guid);
     }
   }
 
@@ -2193,6 +2239,271 @@ void AvoraSpaceTabFilter::ApplyRemoteNavigation(tabs::TabInterface* source,
     retired = model->DiscardWebContents(local_contents, std::move(copy));
   }
   ApplyVisibility();
+}
+
+// ── Shared tabs ─────────────────────────────────────────────────────────────
+
+// static
+void AvoraSpaceTabFilter::SetSharedTabsDelegate(SharedTabsDelegate* delegate) {
+  SharedTabsDelegateInstance() = delegate;
+}
+
+// static
+std::vector<AvoraSpaceTabFilter::SharedTab>
+AvoraSpaceTabFilter::CollectSharedTabs(Profile* profile) {
+  std::vector<SharedTab> tabs;
+  std::set<std::string> seen;
+  for (AvoraSpaceTabFilter* filter : DailyTabSyncRegistry()) {
+    TabStripModel* model = filter->GetModel();
+    if (!model || !filter->ParticipatesInDailyTabSync() ||
+        filter->browser_->GetProfile() != profile) {
+      continue;
+    }
+    for (int i = 0; i < model->count(); ++i) {
+      tabs::TabInterface* tab = model->GetTabAtIndex(i);
+      if (!filter->IsDailyTab(tab) || !filter->CanCopyDailyTab(tab)) {
+        continue;
+      }
+      const std::string guid = GetTabGuid(tab->GetContents());
+      if (guid.empty() || !seen.insert(guid).second) {
+        continue;
+      }
+      tabs.push_back(filter->SharedTabFor(
+          tab, guid, filter->tab_space_.at(tab->GetHandle())));
+    }
+  }
+  return tabs;
+}
+
+// static
+void AvoraSpaceTabFilter::UpsertSharedTab(
+    Profile* profile,
+    const SharedTab& tab,
+    const std::vector<std::string>& before) {
+  // A copy: a filter's work can close a window and so remove its filter.
+  const std::vector<AvoraSpaceTabFilter*> filters = DailyTabSyncRegistry();
+  for (AvoraSpaceTabFilter* filter : filters) {
+    if (std::ranges::contains(DailyTabSyncRegistry(), filter) &&
+        filter->ParticipatesInDailyTabSync() &&
+        filter->browser_->GetProfile() == profile) {
+      filter->ApplySharedUpsert(tab, before);
+    }
+  }
+}
+
+// static
+void AvoraSpaceTabFilter::RemoveSharedTab(Profile* profile,
+                                          const std::string& guid) {
+  const std::vector<AvoraSpaceTabFilter*> filters = DailyTabSyncRegistry();
+  for (AvoraSpaceTabFilter* filter : filters) {
+    if (std::ranges::contains(DailyTabSyncRegistry(), filter) &&
+        filter->ParticipatesInDailyTabSync() &&
+        filter->browser_->GetProfile() == profile) {
+      filter->deferred_shared_navigations_.erase(guid);
+      filter->ApplyRemoteRemove(guid);
+    }
+  }
+}
+
+AvoraSpaceTabFilter::SharedTab AvoraSpaceTabFilter::SharedTabFor(
+    tabs::TabInterface* tab,
+    const std::string& guid,
+    const std::string& space_id) const {
+  SharedTab shared;
+  shared.guid = guid;
+  shared.space_id = space_id;
+  shared.url = UrlForTab(tab);
+  if (tab->GetContents()) {
+    shared.title = tab->GetContents()->GetTitle();
+  }
+  return shared;
+}
+
+std::unique_ptr<content::WebContents>
+AvoraSpaceTabFilter::CreateSharedTabContents(const SharedTab& tab) {
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
+  if (!profile || !tab.url.is_valid()) {
+    return nullptr;
+  }
+  // In the Space's storage partition, so the page signs in as the Space's
+  // identity, and hidden with one restored entry, so nothing loads until the
+  // user selects it.
+  content::WebContents::CreateParams create_params(
+      profile, GetSiteInstanceForSpace(profile, tab.space_id, tab.url));
+  create_params.initially_hidden = true;
+  std::unique_ptr<content::WebContents> contents =
+      content::WebContents::Create(create_params);
+  if (!contents) {
+    return nullptr;
+  }
+  std::unique_ptr<content::NavigationEntry> entry =
+      content::NavigationController::CreateNavigationEntry(
+          tab.url, content::Referrer(), /*initiator_origin=*/std::nullopt,
+          /*initiator_base_url=*/std::nullopt,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false,
+          /*extra_headers=*/std::string(), profile,
+          /*blob_url_loader_factory=*/nullptr);
+  entry->SetTitle(tab.title);
+  std::vector<std::unique_ptr<content::NavigationEntry>> entries;
+  entries.push_back(std::move(entry));
+  contents->GetController().Restore(0, content::RestoreType::kRestored,
+                                    &entries);
+  SetTabGuid(contents.get(), tab.guid);
+  SetTabSpaceId(contents.get(), tab.space_id);
+  return contents;
+}
+
+int AvoraSpaceTabFilter::SharedInsertIndex(
+    const std::string& space_id,
+    const std::vector<std::string>& before) const {
+  TabStripModel* model = GetModel();
+  // After the last tab ahead of it that this window has.
+  for (auto it = before.rbegin(); it != before.rend(); ++it) {
+    if (tabs::TabInterface* tab = FindTabByGuid(*it)) {
+      return model->GetIndexOfTab(tab) + 1;
+    }
+  }
+  // Nothing ahead of it here: first in the Space.
+  for (int i = 0; i < model->count(); ++i) {
+    const auto it = tab_space_.find(model->GetTabAtIndex(i)->GetHandle());
+    if (it != tab_space_.end() && it->second == space_id &&
+        IsDailyTab(model->GetTabAtIndex(i))) {
+      return i;
+    }
+  }
+  return model->count();
+}
+
+tabs::TabInterface* AvoraSpaceTabFilter::InsertSharedTab(const SharedTab& tab,
+                                                         int index) {
+  TabStripModel* model = GetModel();
+  std::unique_ptr<content::WebContents> contents = CreateSharedTabContents(tab);
+  if (!model || !contents) {
+    return nullptr;
+  }
+  int inserted;
+  {
+    base::AutoReset<bool> applying(&applying_, true);
+    inserted = model->InsertWebContentsAt(
+        std::clamp(index, 0, model->count()), std::move(contents),
+        model->empty() ? AddTabTypes::ADD_ACTIVE : AddTabTypes::ADD_NONE);
+  }
+  tabs::TabInterface* local = model->GetTabAtIndex(inserted);
+  if (!local) {
+    return nullptr;
+  }
+  // Published, so the next flush doesn't announce it back: the other windows
+  // insert their own copies, and the account already has it.
+  tab_space_[local->GetHandle()] = tab.space_id;
+  published_tabs_[local->GetHandle()] = {tab.guid, tab.space_id};
+  EnsureDiscardObserver(local);
+  return local;
+}
+
+void AvoraSpaceTabFilter::ApplySharedUpsert(
+    const SharedTab& tab,
+    const std::vector<std::string>& before) {
+  TabStripModel* model = GetModel();
+  if (!model || tab.guid.empty() || tab.space_id.empty()) {
+    return;
+  }
+  tabs::TabInterface* local = FindTabByGuid(tab.guid);
+  if (!local) {
+    if (HasJoinedSpace(tab.space_id) &&
+        InsertSharedTab(tab, SharedInsertIndex(tab.space_id, before))) {
+      ApplyVisibility();
+      SyncTabsToStore();
+    }
+    return;
+  }
+  if (!IsDailyTab(local)) {
+    return;
+  }
+
+  // Moved to another Space.
+  const tabs::TabHandle handle = local->GetHandle();
+  if (tab_space_[handle] != tab.space_id) {
+    SetTabSpaceId(local->GetContents(), tab.space_id);
+    tab_space_[handle] = tab.space_id;
+    if (auto published = published_tabs_.find(handle);
+        published != published_tabs_.end()) {
+      published->second.space_id = tab.space_id;
+    }
+    ApplyVisibility();
+    SyncTabsToStore();
+  }
+
+  NavigateSharedCopy(local, tab);
+}
+
+void AvoraSpaceTabFilter::NavigateSharedCopy(tabs::TabInterface* local,
+                                             const SharedTab& tab) {
+  TabStripModel* model = GetModel();
+  content::WebContents* contents = local->GetContents();
+  if (!model || !contents || !tab.url.is_valid()) {
+    return;
+  }
+  if (UrlForTab(local) == tab.url) {
+    // Already there: no reload. A copy that has never loaded takes the title.
+    if (contents->GetController().NeedsReload() && !tab.title.empty()) {
+      content::NavigationEntry* entry =
+          contents->GetController().GetLastCommittedEntry();
+      if (entry && entry->GetTitle() != tab.title) {
+        entry->SetTitle(tab.title);
+        contents->NotifyNavigationStateChanged(content::INVALIDATE_TYPE_TITLE);
+      }
+    }
+    deferred_shared_navigations_.erase(tab.guid);
+    return;
+  }
+
+  // The page the user has in front of them is never pulled out from under
+  // them; it follows once they leave it.
+  if (model->GetActiveWebContents() == contents) {
+    deferred_shared_navigations_[tab.guid] = tab;
+    return;
+  }
+  deferred_shared_navigations_.erase(tab.guid);
+
+  // Another page: a fresh, unloaded copy of it replaces this one.
+  SharedTab replacement = tab;
+  replacement.space_id = tab_space_.at(local->GetHandle());
+  std::unique_ptr<content::WebContents> fresh =
+      CreateSharedTabContents(replacement);
+  if (!fresh) {
+    return;
+  }
+  std::unique_ptr<content::WebContents> retired;
+  {
+    base::AutoReset<bool> applying(&applying_, true);
+    retired = model->DiscardWebContents(contents, std::move(fresh));
+  }
+  ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::ApplyDeferredSharedNavigations() {
+  TabStripModel* model = GetModel();
+  if (!model || deferred_shared_navigations_.empty()) {
+    return;
+  }
+  std::vector<SharedTab> ready;
+  for (const auto& [guid, tab] : deferred_shared_navigations_) {
+    tabs::TabInterface* local = FindTabByGuid(guid);
+    if (!local) {
+      continue;
+    }
+    if (model->GetActiveWebContents() != local->GetContents()) {
+      ready.push_back(tab);
+    }
+  }
+  std::erase_if(deferred_shared_navigations_, [&](const auto& entry) {
+    return !FindTabByGuid(entry.first);
+  });
+  for (const SharedTab& tab : ready) {
+    if (tabs::TabInterface* local = FindTabByGuid(tab.guid)) {
+      NavigateSharedCopy(local, tab);
+    }
+  }
 }
 
 bool CarryDailyTabsIntoNewWindow(BrowserWindowInterface* browser) {

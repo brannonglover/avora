@@ -325,6 +325,17 @@ bool SharedStore::HasPending() const {
   return false;
 }
 
+bool SharedStore::HasUnsentChange(SharedTable table,
+                                  std::string_view shared_id) const {
+  for (const auto* queue : {&pending_, &in_flight_}) {
+    const auto it = queue->find(table);
+    if (it != queue->end() && it->second.count(std::string(shared_id))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 base::ListValue SharedStore::TakePending(SharedTable table,
                                          std::string_view device_id) {
   base::ListValue changes;
