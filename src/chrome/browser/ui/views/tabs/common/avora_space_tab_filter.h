@@ -197,6 +197,11 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   void NavigateSharedCopy(tabs::TabInterface* local, const SharedTab& tab);
   void ApplyDeferredSharedNavigations();
 
+  // Keeps at most a budget of this window's background daily tabs loaded and
+  // unloads the least recently used of the rest, keeping their history; a
+  // tab playing audio, being captured, or asking before it unloads stays.
+  void EnforceWarmBudget();
+
   // Caches each Space's owning BrowserProfile so OnSpacesChanged() can tell an
   // identity change apart from a rename, reorder, or icon edit.
   void RefreshSpaceProfileCache();

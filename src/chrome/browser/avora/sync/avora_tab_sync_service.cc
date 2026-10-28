@@ -21,6 +21,8 @@
 #include "chrome/browser/avora/sync/avora_sync_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/os_crypt/common/os_crypt_switches.h"
 #include "content/public/browser/storage_partition.h"
@@ -54,6 +56,9 @@ constexpr base::TimeDelta kReconcileDelay = base::Milliseconds(300);
 constexpr base::TimeDelta kCatchUpOverlap = base::Seconds(60);
 constexpr base::TimeDelta kInitialRetryDelay = base::Seconds(15);
 constexpr base::TimeDelta kMaxRetryDelay = base::Minutes(10);
+// docs/SYNC.md: at most one preview a minute per tab.
+constexpr base::TimeDelta kPreviewInterval = base::Minutes(1);
+constexpr size_t kMaxPreviewSize = 256 * 1024;
 // PostgREST's default maximum page on Supabase.
 constexpr size_t kPageSize = 1000;
 
@@ -940,6 +945,7 @@ void TabSyncService::OnTodayTabClosed(const std::string& guid) {
   if (!row || row->deleted || !kind || *kind != kKindToday) {
     return;
   }
+  DeletePreviewOf(id);
   shared_->Delete(SharedTable::kItems, id);
   SchedulePush(push_delay_);
 }
@@ -965,6 +971,123 @@ std::vector<TabSyncService::TodayTab> TabSyncService::TodayTabsForSpace(
     tabs.push_back(std::move(tab));
   }
   return tabs;
+}
+
+// ── Previews ────────────────────────────────────────────────────────────────
+
+// static
+void TabSyncService::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+  registry->RegisterBooleanPref(kPreviewsEnabledPref, true);
+}
+
+bool TabSyncService::previews_enabled() const {
+  return profile_->GetPrefs()->GetBoolean(kPreviewsEnabledPref);
+}
+
+void TabSyncService::SetPreviewsEnabled(bool enabled) {
+  profile_->GetPrefs()->SetBoolean(kPreviewsEnabledPref, enabled);
+  if (!enabled && IsSyncing() && shared_->loaded()) {
+    std::vector<std::string> with_previews;
+    for (const SharedRow* row : shared_->Rows(SharedTable::kItems)) {
+      const std::string* path = row->columns.FindString("preview_path");
+      if (!row->deleted && path && !path->empty()) {
+        with_previews.push_back(row->id);
+      }
+    }
+    for (const std::string& id : with_previews) {
+      DeletePreviewOf(id);
+    }
+    SchedulePush(push_delay_);
+  }
+  NotifyChanged();
+}
+
+bool TabSyncService::WantsPreview(const std::string& guid) const {
+  if (!IsSyncing() || !shared_->loaded() || !previews_enabled()) {
+    return false;
+  }
+  const SharedRow* row = shared_->Find(
+      SharedTable::kItems, shared_->ToShared(SharedTable::kItems, guid));
+  const std::string* kind = row ? row->columns.FindString("kind") : nullptr;
+  if (!row || row->deleted || !kind || *kind != kKindToday) {
+    return false;
+  }
+  const auto last = last_preview_.find(guid);
+  return last == last_preview_.end() ||
+         base::TimeTicks::Now() - last->second >= kPreviewInterval;
+}
+
+void TabSyncService::OnPreviewCaptured(const std::string& guid,
+                                       std::string jpeg) {
+  if (!WantsPreview(guid) || jpeg.empty() || jpeg.size() > kMaxPreviewSize) {
+    return;
+  }
+  last_preview_[guid] = base::TimeTicks::Now();
+  const std::string id = shared_->ToShared(SharedTable::kItems, guid);
+  const std::string path = session_->user_id + "/" + id + ".jpg";
+  WithFreshToken(base::BindOnce(
+      [](base::WeakPtr<TabSyncService> self, std::string id, std::string path,
+         std::string jpeg, std::optional<std::string> token) {
+        if (!self || !token || !self->IsSyncing()) {
+          return;
+        }
+        self->client_->UploadPreview(
+            *token, path, std::move(jpeg),
+            base::BindOnce(
+                [](base::WeakPtr<TabSyncService> self, std::string id,
+                   std::string path, RequestStatus status) {
+                  if (!self || status != RequestStatus::kOk ||
+                      !self->IsSyncing()) {
+                    return;
+                  }
+                  const SharedRow* row =
+                      self->shared_->Find(SharedTable::kItems, id);
+                  if (!row || row->deleted) {
+                    // Closed while uploading.
+                    self->DeletePreviewOf(id);
+                    return;
+                  }
+                  base::DictValue columns;
+                  columns.Set("preview_path", path);
+                  columns.Set("preview_updated_at",
+                              FormatServerTime(base::Time::Now()));
+                  self->shared_->Write(SharedTable::kItems, id,
+                                       std::move(columns));
+                  self->SchedulePush(self->push_delay_);
+                },
+                self, std::move(id), std::move(path)));
+      },
+      weak_factory_.GetWeakPtr(), id, path, std::move(jpeg)));
+}
+
+void TabSyncService::OnPreviewNotAllowed(const std::string& guid) {
+  if (!IsSyncing() || !shared_->loaded()) {
+    return;
+  }
+  last_preview_[guid] = base::TimeTicks::Now();
+  DeletePreviewOf(shared_->ToShared(SharedTable::kItems, guid));
+  SchedulePush(push_delay_);
+}
+
+void TabSyncService::DeletePreviewOf(const std::string& shared_id) {
+  const SharedRow* row = shared_->Find(SharedTable::kItems, shared_id);
+  const std::string* path =
+      row ? row->columns.FindString("preview_path") : nullptr;
+  if (!path || path->empty()) {
+    return;
+  }
+  WithFreshToken(base::BindOnce(
+      [](base::WeakPtr<TabSyncService> self, std::string path,
+         std::optional<std::string> token) {
+        if (self && token) {
+          self->client_->DeletePreview(*token, path, base::DoNothing());
+        }
+      },
+      weak_factory_.GetWeakPtr(), *path));
+  base::DictValue columns;
+  columns.Set("preview_path", base::Value());
+  columns.Set("preview_updated_at", base::Value());
+  shared_->Write(SharedTable::kItems, shared_id, std::move(columns));
 }
 
 // ── Pushing ─────────────────────────────────────────────────────────────────

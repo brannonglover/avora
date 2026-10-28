@@ -16,6 +16,7 @@
 #include "chrome/browser/avora/style_ai/avora_style_ai_key_store.h"
 #include "chrome/browser/avora/sync/avora_shared_store.h"
 #include "chrome/browser/avora/sync/avora_sync_session_store.h"
+#include "chrome/browser/avora/sync/avora_tab_sync_service.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 
@@ -35,6 +36,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   StyleAiKeyStore::RegisterProfilePrefs(registry);
   sync::SessionStore::RegisterProfilePrefs(registry);
   sync::SharedStore::RegisterProfilePrefs(registry);
+  sync::TabSyncService::RegisterProfilePrefs(registry);
 
   LiveFolderStore::RegisterProfilePrefs(registry);
   LiveFolderCredentialStore::RegisterProfilePrefs(registry);

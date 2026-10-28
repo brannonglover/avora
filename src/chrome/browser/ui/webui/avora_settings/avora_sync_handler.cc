@@ -76,6 +76,7 @@ base::DictValue AvoraSyncHandler::StatusForPage(
   }
   dict.Set("tabCount", static_cast<int>(status.uploaded_tab_count));
   dict.Set("uploadFailing", status.upload_failing);
+  dict.Set("previewsEnabled", service->previews_enabled());
   return dict;
 }
 
@@ -97,6 +98,10 @@ void AvoraSyncHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "signOutSync", base::BindRepeating(&AvoraSyncHandler::HandleSignOut,
                                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "setSyncPreviews",
+      base::BindRepeating(&AvoraSyncHandler::HandleSetPreviews,
+                          base::Unretained(this)));
 }
 
 void AvoraSyncHandler::OnJavascriptAllowed() {
@@ -145,6 +150,13 @@ void AvoraSyncHandler::HandleSignOut(const base::ListValue& args) {
   AllowJavascript();
   if (service_) {
     service_->SignOut();
+  }
+}
+
+void AvoraSyncHandler::HandleSetPreviews(const base::ListValue& args) {
+  AllowJavascript();
+  if (service_ && args.size() == 1 && args[0].is_bool()) {
+    service_->SetPreviewsEnabled(args[0].GetBool());
   }
 }
 

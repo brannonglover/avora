@@ -3,6 +3,7 @@
 #ifndef CHROME_BROWSER_AVORA_SYNC_AVORA_TAB_SYNC_SERVICE_H_
 #define CHROME_BROWSER_AVORA_SYNC_AVORA_TAB_SYNC_SERVICE_H_
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,6 +24,7 @@
 #include "chrome/browser/avora/sync/avora_sync_session_store.h"
 #include "url/gurl.h"
 
+class PrefRegistrySimple;
 class Profile;
 
 namespace os_crypt_async {
@@ -190,6 +192,22 @@ class TabSyncService : public base::SupportsUserData::Data {
   // front.
   void SyncSoon();
 
+  // ── Tab previews (docs/SYNC.md) ──
+  static constexpr char kPreviewsEnabledPref[] = "avora.sync.previews_enabled";
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
+
+  bool previews_enabled() const;
+  // Turning previews off deletes the ones this account has.
+  void SetPreviewsEnabled(bool enabled);
+  // Whether a fresh preview of the today tab `guid` would be used now:
+  // signed in, previews on, the tab shared, and none sent in the last minute.
+  bool WantsPreview(const std::string& guid) const;
+  // A JPEG of the tab's visible page, already checked to be shareable.
+  void OnPreviewCaptured(const std::string& guid, std::string jpeg);
+  // The tab's page may not have a preview (a password field, no-store): any
+  // it has is deleted.
+  void OnPreviewNotAllowed(const std::string& guid);
+
   Status GetStatus() const;
   State state() const { return state_; }
 
@@ -261,6 +279,7 @@ class TabSyncService : public base::SupportsUserData::Data {
   void FinishPushing(bool ok);
   void OnSyncFailed();
   void OnSyncSucceeded();
+  void DeletePreviewOf(const std::string& shared_id);
 
   // Deletes the device row once no push is in flight.
   void ContinueSignOut();
@@ -301,6 +320,8 @@ class TabSyncService : public base::SupportsUserData::Data {
   bool applying_ = false;
   bool device_row_written_ = false;
   int failures_ = 0;
+  // When each tab's preview was last sent, by GUID.
+  std::map<std::string, base::TimeTicks> last_preview_;
   // Today rows that arrived while the tab strips weren't ready.
   std::vector<std::string> deferred_today_;
   base::RepeatingTimer pull_timer_;

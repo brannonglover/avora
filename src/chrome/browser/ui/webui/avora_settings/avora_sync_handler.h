@@ -41,6 +41,7 @@ class AvoraSyncHandler : public content::WebUIMessageHandler,
   void HandleVerifyCode(const base::ListValue& args);
   void HandleCancelSignIn(const base::ListValue& args);
   void HandleSignOut(const base::ListValue& args);
+  void HandleSetPreviews(const base::ListValue& args);
 
   void SendStatus();
 

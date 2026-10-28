@@ -77,6 +77,7 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
       <button id="account-change-email" type="button">Use a different email</button>
     </form>
     <div class="row" id="account-signed-in-row" hidden>
+      <label><input id="account-previews" type="checkbox"> Share page previews</label>
       <button id="account-sign-out" type="button">Sign out</button>
     </div>
   </section>
@@ -240,6 +241,7 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
     $('account-email-form').hidden = !ready || status.state !== 'signed-out';
     $('account-code-form').hidden = !ready || status.state !== 'awaiting-code';
     $('account-signed-in-row').hidden = !ready || status.state !== 'signed-in';
+    $('account-previews').checked = Boolean(status.previewsEnabled);
     for (const id of ['account-send', 'account-verify', 'account-resend',
                       'account-change-email', 'account-sign-out']) {
       $(id).disabled = Boolean(status.busy);
@@ -269,6 +271,8 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
   });
   $('account-change-email').addEventListener('click', () => chrome.send('cancelSyncSignIn'));
   $('account-sign-out').addEventListener('click', () => chrome.send('signOutSync'));
+  $('account-previews').addEventListener(
+      'change', event => chrome.send('setSyncPreviews', [event.target.checked]));
   chrome.send('getSyncStatus');
 })();
 )JS";

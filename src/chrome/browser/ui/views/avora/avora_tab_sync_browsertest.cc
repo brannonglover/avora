@@ -16,6 +16,7 @@
 #include "base/run_loop.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
@@ -650,6 +651,88 @@ IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignOutStopsSharing) {
   EXPECT_EQ(supabase_->RequestsTo("POST", "/rest/v1/rpc/sync_items").size(),
             writes);
   EXPECT_TRUE(supabase_->LiveItemsWithUrl(after).empty());
+}
+
+// The tab in front gets a preview a moment after it loads: a JPEG in the
+// owner's folder of tab-previews, linked from its row. A page with a password
+// field gets none.
+IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, PreviewsSkipPrivatePages) {
+  SignInThroughSettings();
+
+  const GURL page = TestURL("preview.example");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), page, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  std::optional<base::DictValue> row = WaitForOneRow(page);
+  ASSERT_TRUE(row);
+  const std::string id = *row->FindString("id");
+  const std::string path = base::StrCat({"user-1/", id, ".jpg"});
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    std::optional<base::DictValue> now = supabase_->Row("items", id);
+    const std::string* preview =
+        now ? now->FindString("preview_path") : nullptr;
+    return preview && *preview == path;
+  }));
+  std::vector<Request> uploads = supabase_->RequestsTo(
+      "POST", base::StrCat({"/storage/v1/object/tab-previews/", path}));
+  ASSERT_FALSE(uploads.empty());
+  // A JPEG, and small.
+  EXPECT_TRUE(uploads[0].body.starts_with("\xFF\xD8"));
+  EXPECT_LE(uploads[0].body.size(), 256u * 1024u);
+
+  const GURL secret = embedded_test_server()->GetURL(
+      "secret.example", "/password/filled_simple_password_form.html");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), secret, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  std::optional<base::DictValue> secret_row = WaitForOneRow(secret);
+  ASSERT_TRUE(secret_row);
+  Wait(base::Seconds(4));
+  const std::string secret_id = *secret_row->FindString("id");
+  EXPECT_TRUE(supabase_
+                  ->RequestsTo("POST",
+                               base::StrCat({"/storage/v1/object/tab-previews/"
+                                             "user-1/",
+                                             secret_id}))
+                  .empty());
+  const base::Value* secret_preview =
+      supabase_->Row("items", secret_id)->Find("preview_path");
+  EXPECT_TRUE(!secret_preview || secret_preview->is_none());
+}
+
+// A window keeps a budget of background tabs loaded and unloads the least
+// recently used of the rest, keeping their place and history.
+IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, UnloadsTabsBeyondTheBudget) {
+  std::vector<GURL> urls;
+  for (int i = 0; i < 16; ++i) {
+    urls.push_back(TestURL(base::StrCat({"warm", base::NumberToString(i),
+                                         ".example"})));
+    ui_test_utils::NavigateToURLWithDisposition(
+        browser(), urls.back(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  }
+  TabStripModel* model = browser()->GetTabStripModel();
+  const auto loaded_background = [&] {
+    int loaded = 0;
+    for (int i = 0; i < model->count(); ++i) {
+      content::WebContents* contents = model->GetWebContentsAt(i);
+      if (contents != active_contents() &&
+          !contents->GetController().NeedsReload() &&
+          contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
+        ++loaded;
+      }
+    }
+    return loaded;
+  };
+  ASSERT_TRUE(base::test::RunUntil([&] { return loaded_background() <= 12; }));
+  EXPECT_EQ(loaded_background(), 12);
+  // The oldest went cold; every page is still there.
+  for (const GURL& url : urls) {
+    EXPECT_TRUE(FindTab(url)) << url;
+  }
+  EXPECT_TRUE(FindTab(urls[0])->GetContents()->GetController().NeedsReload());
+  EXPECT_FALSE(
+      FindTab(urls[14])->GetContents()->GetController().NeedsReload());
 }
 
 IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, WrongCodeKeepsAskingForIt) {

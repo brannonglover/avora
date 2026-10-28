@@ -4,6 +4,9 @@
 
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/avora/avora_tab_guid.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
 #include "chrome/browser/browser_process.h"
@@ -16,7 +19,16 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/common/chrome_isolated_world_ids.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "net/http/http_response_headers.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/codec/jpeg_codec.h"
 
 namespace avora {
 
@@ -58,7 +70,48 @@ bool IsLiveProfile(Profile* profile) {
          g_browser_process->profile_manager()->IsValidProfile(profile);
 }
 
+// docs/SYNC.md: at most 640 px wide and 256 KB.
+constexpr int kPreviewWidth = 640;
+constexpr size_t kMaxPreviewBytes = 256 * 1024;
+// Lets late layout and web fonts settle before the picture is taken.
+constexpr base::TimeDelta kPreviewSettleDelay = base::Milliseconds(1500);
+
+// Encodes off the UI thread: a smaller quality if the first is too big.
+std::string EncodePreview(SkBitmap bitmap) {
+  for (int quality : {60, 40}) {
+    std::optional<std::vector<uint8_t>> jpeg =
+        gfx::JPEGCodec::Encode(bitmap, quality);
+    if (jpeg && jpeg->size() <= kMaxPreviewBytes) {
+      return std::string(jpeg->begin(), jpeg->end());
+    }
+  }
+  return std::string();
+}
+
 }  // namespace
+
+// A window's front tab: a preview is taken a moment after it is brought to
+// the front or finishes loading.
+class TabSyncWatcher::FrontTab : public content::WebContentsObserver {
+ public:
+  FrontTab(TabSyncWatcher* watcher, content::WebContents* contents)
+      : content::WebContentsObserver(contents), watcher_(watcher) {
+    Schedule();
+  }
+
+  void DidStopLoading() override { Schedule(); }
+
+ private:
+  void Schedule() {
+    timer_.Start(FROM_HERE, kPreviewSettleDelay,
+                 base::BindOnce(&TabSyncWatcher::CapturePreview,
+                                base::Unretained(watcher_),
+                                web_contents()->GetWeakPtr()));
+  }
+
+  raw_ptr<TabSyncWatcher> watcher_;
+  base::OneShotTimer timer_;
+};
 
 // static
 void TabSyncWatcher::EnsureStarted() {
@@ -89,7 +142,117 @@ void TabSyncWatcher::OnBrowserCreated(BrowserWindowInterface* browser) {
   // session is read.
   if (IsSharingBrowser(browser)) {
     TabSyncService::GetForProfile(browser->GetProfile());
+    if (TabStripModel* model = browser->GetTabStripModel();
+        model && !front_tabs_.count(model)) {
+      model->AddObserver(this);
+      WatchFrontTab(model);
+    }
   }
+}
+
+void TabSyncWatcher::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  if (selection.active_tab_changed()) {
+    WatchFrontTab(tab_strip_model);
+  }
+}
+
+void TabSyncWatcher::OnTabStripModelDestroyed(TabStripModel* tab_strip_model) {
+  front_tabs_.erase(tab_strip_model);
+}
+
+void TabSyncWatcher::WatchFrontTab(TabStripModel* model) {
+  content::WebContents* active = model->GetActiveWebContents();
+  std::unique_ptr<FrontTab>& front = front_tabs_[model];
+  if (!active) {
+    front.reset();
+  } else if (!front || front->web_contents() != active) {
+    front = std::make_unique<FrontTab>(this, active);
+  }
+}
+
+void TabSyncWatcher::CapturePreview(
+    base::WeakPtr<content::WebContents> contents) {
+  if (!contents || contents->IsLoading() || IsQuitting()) {
+    return;
+  }
+  Profile* profile =
+      Profile::FromBrowserContext(contents->GetBrowserContext());
+  TabSyncService* service = ServiceFor(profile);
+  const std::string guid = GetTabGuid(contents.get());
+  if (!service || guid.empty() || !service->WantsPreview(guid)) {
+    return;
+  }
+
+  // Banks, mail and account pages usually say no-store.
+  content::RenderFrameHost* frame = contents->GetPrimaryMainFrame();
+  const network::mojom::URLResponseHead* head = frame->GetLastResponseHead();
+  if (head && head->headers &&
+      head->headers->HasHeaderValue("cache-control", "no-store")) {
+    service->OnPreviewNotAllowed(guid);
+    return;
+  }
+  // In an isolated world, so the page's own scripts can't answer for it.
+  frame->ExecuteJavaScriptInIsolatedWorld(
+      u"!!document.querySelector('input[type=password]')",
+      base::BindOnce(
+          [](base::WeakPtr<content::WebContents> contents, std::string guid,
+             base::Value has_password) {
+            if (!contents || IsQuitting()) {
+              return;
+            }
+            TabSyncService* service = ServiceFor(Profile::FromBrowserContext(
+                contents->GetBrowserContext()));
+            if (!service) {
+              return;
+            }
+            if (!has_password.is_bool() || has_password.GetBool()) {
+              service->OnPreviewNotAllowed(guid);
+              return;
+            }
+            content::RenderWidgetHostView* view =
+                contents->GetRenderWidgetHostView();
+            const gfx::Size size = view ? view->GetViewBounds().size()
+                                        : gfx::Size();
+            if (size.IsEmpty()) {
+              return;
+            }
+            const int width = std::min(kPreviewWidth, size.width());
+            const gfx::Size output(
+                width, size.height() * width / std::max(1, size.width()));
+            view->CopyFromSurface(
+                gfx::Rect(), output, base::Seconds(5),
+                base::BindOnce(
+                    [](base::WeakPtr<content::WebContents> contents,
+                       std::string guid,
+                       const content::CopyFromSurfaceResult& result) {
+                      if (!result.has_value() || result->bitmap.drawsNothing()) {
+                        return;
+                      }
+                      base::ThreadPool::PostTaskAndReplyWithResult(
+                          FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+                          base::BindOnce(&EncodePreview, result->bitmap),
+                          base::BindOnce(
+                              [](base::WeakPtr<content::WebContents> contents,
+                                 std::string guid, std::string jpeg) {
+                                if (!contents || jpeg.empty()) {
+                                  return;
+                                }
+                                if (TabSyncService* service =
+                                        ServiceFor(Profile::FromBrowserContext(
+                                            contents->GetBrowserContext()))) {
+                                  service->OnPreviewCaptured(guid,
+                                                             std::move(jpeg));
+                                }
+                              },
+                              contents, guid));
+                    },
+                    contents, guid));
+          },
+          contents, guid),
+      ISOLATED_WORLD_ID_CHROME_INTERNAL);
 }
 
 void TabSyncWatcher::OnBrowserActivated(BrowserWindowInterface* browser) {

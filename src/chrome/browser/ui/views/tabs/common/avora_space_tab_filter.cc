@@ -70,6 +70,10 @@ std::set<tabs::TabHandle>& DailyTabsInTransit() {
   return *in_transit;
 }
 
+// Background daily tabs a window keeps loaded; switching back to one of them
+// is instant, and the rest wait unloaded (each costs a renderer otherwise).
+constexpr size_t kWarmTabBudget = 12;
+
 // The one shared-tabs delegate (the views layer's tab sync bridge), or null.
 AvoraSpaceTabFilter::SharedTabsDelegate*& SharedTabsDelegateInstance() {
   static AvoraSpaceTabFilter::SharedTabsDelegate* delegate = nullptr;
@@ -1882,6 +1886,7 @@ void AvoraSpaceTabFilter::FlushDailyTabSync() {
   }
 
   ApplyDeferredSharedNavigations();
+  EnforceWarmBudget();
 
   // ── Closed here, or no longer in the daily list ──
   for (auto it = published_tabs_.begin(); it != published_tabs_.end();) {
@@ -2479,6 +2484,59 @@ void AvoraSpaceTabFilter::NavigateSharedCopy(tabs::TabInterface* local,
     retired = model->DiscardWebContents(contents, std::move(fresh));
   }
   ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::EnforceWarmBudget() {
+  TabStripModel* model = GetModel();
+  if (!model || applying_) {
+    return;
+  }
+  content::WebContents* const active = model->GetActiveWebContents();
+  std::vector<tabs::TabInterface*> warm;
+  size_t pinned_warm = 0;
+  for (int i = 0; i < model->count(); ++i) {
+    tabs::TabInterface* tab = model->GetTabAtIndex(i);
+    content::WebContents* contents = tab->GetContents();
+    if (!contents || contents == active || !IsDailyTab(tab) ||
+        contents->GetController().NeedsReload() || contents->WasDiscarded()) {
+      continue;
+    }
+    if (contents->IsCurrentlyAudible() || contents->IsBeingCaptured() ||
+        contents->NeedToFireBeforeUnloadOrUnloadEvents()) {
+      // Counted, never unloaded.
+      ++pinned_warm;
+      continue;
+    }
+    warm.push_back(tab);
+  }
+  if (warm.size() + pinned_warm <= kWarmTabBudget) {
+    return;
+  }
+  std::ranges::sort(warm, {}, [](tabs::TabInterface* tab) {
+    return tab->GetContents()->GetLastActiveTimeTicks();
+  });
+  size_t excess = warm.size() + pinned_warm - kWarmTabBudget;
+  for (tabs::TabInterface* tab : warm) {
+    if (excess == 0) {
+      break;
+    }
+    const auto space = tab_space_.find(tab->GetHandle());
+    const std::string guid = GetTabGuid(tab->GetContents());
+    if (space == tab_space_.end() || guid.empty()) {
+      continue;
+    }
+    std::unique_ptr<content::WebContents> cold =
+        CreateDailyTabCopy(tab->GetContents(), space->second, guid);
+    if (!cold) {
+      continue;
+    }
+    std::unique_ptr<content::WebContents> retired;
+    {
+      base::AutoReset<bool> applying(&applying_, true);
+      retired = model->DiscardWebContents(tab->GetContents(), std::move(cold));
+    }
+    --excess;
+  }
 }
 
 void AvoraSpaceTabFilter::ApplyDeferredSharedNavigations() {
