@@ -1438,6 +1438,21 @@ class BrowserView : public BrowserWindow,
   // handed the new WebContents.
   void PromoteAvoraLinkPreviewIfActivated(content::WebContents* new_contents);
 
+  // Hands a sign-in that finished inside the overlay back to the tab it was
+  // started from.  Called for every committed navigation of the active tab;
+  // acts only when that tab is the attached preview and it has just landed
+  // back on its host's site -- see avora::IsLinkPreviewReturnToHost().
+  void MaybeReturnAvoraLinkPreviewToHost(
+      content::NavigationHandle* navigation_handle);
+  // Dismisses the overlay and loads |url| in |host_tab|, so the tab the user
+  // signed in from is the one showing the signed-in page.  Posted from
+  // MaybeReturnAvoraLinkPreviewToHost(): tearing the overlay down closes the
+  // preview, which must not happen inside its own navigation callback.
+  void ReturnAvoraLinkPreviewToHost(
+      base::WeakPtr<content::WebContents> host_tab,
+      base::WeakPtr<content::WebContents> preview,
+      const GURL& url);
+
   // Outward-projecting corners of the vertical tab strip.
   raw_ptr<CustomFloatingCorner> vertical_tab_strip_top_corner_ = nullptr;
   raw_ptr<CustomFloatingCorner> vertical_tab_strip_bottom_corner_ = nullptr;

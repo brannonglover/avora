@@ -2,20 +2,30 @@
 
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 
+#include <algorithm>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/no_destructor.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "url/origin.h"
 
 namespace avora {
 
@@ -196,6 +206,61 @@ content::WebContents* GetLinkPreviewContents(content::WebContents* tab) {
 GURL GetLinkPreviewUrl(content::WebContents* tab) {
   LinkPreviewTabState* state = LinkPreviewTabState::Get(tab);
   return state ? state->previewed_url() : GURL();
+}
+
+bool IsLinkPreviewReturnToHost(content::WebContents* host,
+                               content::WebContents* preview) {
+  if (!host || !preview || host == preview) {
+    return false;
+  }
+  content::NavigationController& controller = preview->GetController();
+  content::NavigationEntry* const landed = controller.GetLastCommittedEntry();
+  if (!landed || !landed->GetURL().SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+
+  // Where the preview first opened.  A renderer-created window starts on an
+  // initial about:blank entry, so skip ahead to the first real page.
+  const int landed_index = controller.GetLastCommittedEntryIndex();
+  content::NavigationEntry* opened = nullptr;
+  for (int i = 0; i < landed_index; ++i) {
+    content::NavigationEntry* const entry = controller.GetEntryAtIndex(i);
+    if (entry && entry->GetURL().SchemeIsHTTPOrHTTPS()) {
+      opened = entry;
+      break;
+    }
+  }
+  if (!opened) {
+    return false;
+  }
+
+  std::vector<url::Origin> host_origins;
+  host_origins.push_back(host->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+  if (content::NavigationEntry* const entry =
+          host->GetController().GetLastCommittedEntry()) {
+    // Only the start of the redirect chain: the hops in between are often
+    // the identity provider itself, which is exactly where the preview opens.
+    host_origins.push_back(url::Origin::Create(entry->GetOriginalRequestURL()));
+  }
+  std::string item_id = GetFavoriteIdForTab(host);
+  if (item_id.empty()) {
+    item_id = GetPinnedItemIdForTab(host);
+  }
+  if (!item_id.empty()) {
+    SidebarItemStore store(
+        Profile::FromBrowserContext(host->GetBrowserContext())->GetPrefs());
+    if (const SidebarItem* item = store.GetItemById(item_id)) {
+      host_origins.push_back(url::Origin::Create(GURL(item->url)));
+    }
+  }
+
+  auto belongs_to_host = [&](const GURL& url) {
+    return std::ranges::any_of(host_origins, [&](const url::Origin& origin) {
+      return origin.IsSameOriginWith(url);
+    });
+  };
+  return !belongs_to_host(opened->GetURL()) &&
+         belongs_to_host(landed->GetURL());
 }
 
 std::unique_ptr<content::WebContents> CreateLinkPreviewContents(

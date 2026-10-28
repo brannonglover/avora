@@ -1,5 +1,6 @@
 // Copyright 2026 Avora. All rights reserved.
 
+#include "base/run_loop.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -36,6 +37,12 @@ using SecondaryContentsMode = MultiContentsView::SecondaryContentsMode;
 constexpr char kHostPage[] =
     "/avora_link_preview_host.html";
 
+// A host page whose target="_blank" link goes to another origin, standing in
+// for a logged-out site whose "Sign in" opens an identity provider.
+constexpr char kSignInHostPage[] = "/avora_link_preview_signin_host.html";
+constexpr char kAppHost[] = "app.test";
+constexpr char kIdentityHost[] = "idp.test";
+
 }  // namespace
 
 // Covers the Window Overlay's tab lifecycle.  The overlay makes its preview
@@ -69,6 +76,11 @@ class AvoraLinkPreviewBrowserTest : public InProcessBrowserTest {
           "<!doctype html><title>host</title>"
           "<a id='go' href='/target.html' target='_blank'>open</a>"
           "<script>window.cookieAtLoad = document.cookie;</script>");
+    } else if (request.relative_url == kSignInHostPage) {
+      response->set_content(
+          "<!doctype html><title>signed out</title><a id='go' href='" +
+          embedded_test_server()->GetURL(kIdentityHost, "/signin.html").spec() +
+          "' target='_blank'>sign in</a>");
     } else {
       // Writes a cookie the host would only pick up after a reload, so tests
       // can tell whether dismissing the overlay navigated the tab underneath.
@@ -390,6 +402,48 @@ IN_PROC_BROWSER_TEST_F(AvoraLinkPreviewBrowserTest,
 
   EXPECT_EQ("", content::EvalJs(host, "window.cookieAtLoad").ExtractString());
   EXPECT_FALSE(host->IsLoading());
+}
+
+// A sign-in that opens in the card and lands back on the host's site belongs
+// to the host: the overlay goes away and the host loads the signed-in page,
+// rather than the host staying signed out while the card holds the session.
+IN_PROC_BROWSER_TEST_F(AvoraLinkPreviewBrowserTest, SignInReturnLoadsInHost) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL(kAppHost, kSignInHostPage)));
+  content::WebContents* const preview = OpenOverlay();
+  ASSERT_TRUE(preview);
+  content::WebContents* const host = host_tab();
+  ASSERT_TRUE(content::WaitForLoadStop(preview));
+  // Opening onto the identity provider is an ordinary preview.
+  ASSERT_EQ(preview, GetLinkPreviewContents(host));
+
+  const GURL landed = embedded_test_server()->GetURL(kAppHost, "/inbox.html");
+  ASSERT_TRUE(content::ExecJs(
+      preview, content::JsReplace("location.href = $1;", landed)));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GetLinkPreviewContents(host) &&
+           model()->GetActiveWebContents() == host;
+  }));
+  ASSERT_TRUE(content::WaitForLoadStop(host));
+
+  EXPECT_EQ(landed, host->GetLastCommittedURL());
+  EXPECT_EQ(SecondaryContentsMode::kNone,
+            multi_contents_view()->secondary_contents_mode());
+}
+
+// A preview that opened on the host's own site is just a link, however far
+// the user browses inside it, and must stay in the card.
+IN_PROC_BROWSER_TEST_F(AvoraLinkPreviewBrowserTest, SameSitePreviewStaysInCard) {
+  content::WebContents* const preview = OpenOverlay();
+  ASSERT_TRUE(preview);
+  ASSERT_TRUE(content::WaitForLoadStop(preview));
+
+  ASSERT_TRUE(content::NavigateToURL(
+      preview, embedded_test_server()->GetURL("/another.html")));
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(preview, GetLinkPreviewContents(host_tab()));
+  EXPECT_EQ(preview, model()->GetActiveWebContents());
 }
 
 }  // namespace avora

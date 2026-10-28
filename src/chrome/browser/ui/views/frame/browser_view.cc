@@ -3373,6 +3373,7 @@ void BrowserView::DidFinishNavigation(
   }
 
   UpdateAvoraSidebarURL();
+  MaybeReturnAvoraLinkPreviewToHost(navigation_handle);
 
   if (AppUsesUnframedMode() && !window_management_subscription_id_) {
     SetWindowManagementPermissionSubscriptionForUnframedMode(
@@ -7143,6 +7144,50 @@ void BrowserView::PromoteAvoraLinkPreviewIfActivated(
     return;
   }
   PromoteAvoraLinkPreview(new_contents);
+}
+
+void BrowserView::MaybeReturnAvoraLinkPreviewToHost(
+    content::NavigationHandle* navigation_handle) {
+  // A sign-in comes back as a document load; a same-document commit is the
+  // page rearranging itself, not a return.
+  if (!avora_link_preview_ || navigation_handle->IsSameDocument() ||
+      navigation_handle->IsErrorPage()) {
+    return;
+  }
+  content::WebContents* const preview = navigation_handle->GetWebContents();
+  content::WebContents* const host_tab = avora_link_preview_->host_tab();
+  if (avora_link_preview_->attached_preview() != preview ||
+      !avora::IsLinkPreviewReturnToHost(host_tab, preview)) {
+    return;
+  }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&BrowserView::ReturnAvoraLinkPreviewToHost,
+                     weak_ptr_factory_.GetWeakPtr(), host_tab->GetWeakPtr(),
+                     preview->GetWeakPtr(), navigation_handle->GetURL()));
+}
+
+void BrowserView::ReturnAvoraLinkPreviewToHost(
+    base::WeakPtr<content::WebContents> host_tab,
+    base::WeakPtr<content::WebContents> preview,
+    const GURL& url) {
+  // Anything may have happened since the post: the user closed or expanded
+  // the card, or switched it out for another tab's.  Only the same pairing
+  // that landed is handed back.
+  if (!host_tab || !preview || !avora_link_preview_ ||
+      avora_link_preview_->attached_preview() != preview.get() ||
+      avora_link_preview_->host_tab() != host_tab.get()) {
+    return;
+  }
+  // The preview renders in its host's storage partition -- the renderer
+  // creates it from the opener's SiteInstance -- so the cookies the sign-in
+  // just set are already the host's.  Loading the page the flow landed on is
+  // all it takes for the host to show the signed-in session, and the preview
+  // that carried the sign-in is closed rather than left behind as a second
+  // copy of the same page.
+  HideAvoraLinkPreview();
+  host_tab->GetController().LoadURL(url, content::Referrer(),
+                                    ui::PAGE_TRANSITION_LINK, std::string());
 }
 
 void BrowserView::MountAvoraLinkPreview(content::WebContents* preview) {

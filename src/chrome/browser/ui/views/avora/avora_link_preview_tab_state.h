@@ -88,6 +88,21 @@ bool TabHasLinkPreview(content::WebContents* tab);
 content::WebContents* GetLinkPreviewContents(content::WebContents* tab);
 GURL GetLinkPreviewUrl(content::WebContents* tab);
 
+// True when |preview|, the preview parked on |host|, has just come back to
+// the site |host| belongs to after opening somewhere else -- the shape of a
+// sign-in that started in the card and finished there.  The session that
+// sign-in produced belongs to the host tab, which is still showing the page
+// from before the user logged in.
+//
+// "The site |host| belongs to" is any of: the origin it is showing, the
+// origin it originally asked for before redirects bounced it elsewhere (a
+// logged-out Gmail redirects to a marketing page), and the saved destination
+// of the Favorite or pinned item it backs.  The preview must have opened onto
+// a different origin first, so an ordinary same-site link is never mistaken
+// for a returning sign-in.
+bool IsLinkPreviewReturnToHost(content::WebContents* host,
+                               content::WebContents* preview);
+
 // Creates an unnavigated WebContents suitable for previewing |url| in
 // |browser|.  Previews render in the Space's own partition, so an isolated
 // Space previews links as the identity that Space belongs to.
