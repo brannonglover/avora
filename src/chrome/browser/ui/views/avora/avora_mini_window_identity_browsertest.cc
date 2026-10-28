@@ -15,7 +15,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -44,8 +43,8 @@ namespace avora {
 // page it was showing: ExtensionTabUtil::GetTabById only finds tabs in the
 // strips of the windows in WindowControllerList.  These tests pin down that
 // the page is now a real tab in a real window, that the window stays a
-// one-page window, that its Space identity survives navigation and reuse, and
-// that closing it leaves nothing stale behind.
+// one-page window, that its Space identity survives navigation and stays its
+// own when several are open, and that closing it leaves nothing stale behind.
 class AvoraMiniWindowIdentityBrowserTest : public InProcessBrowserTest {
  public:
   AvoraMiniWindowIdentityBrowserTest() = default;
@@ -164,23 +163,40 @@ IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
   EXPECT_EQ(0, tab_index);
 }
 
-// A second external link re-points the open window rather than stacking
-// another one on screen.
+// A second external link opens a second window rather than re-pointing the
+// first, which is still showing a page the user has not decided about.
 IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
-                       ReusesTheOpenWindowForTheSameSpace) {
-  BrowserWindowInterface* first =
-      OpenMiniWindow(TestURL("a.test", "/title1.html"));
+                       OpensANewWindowForEachLink) {
+  const GURL first_url = TestURL("a.test", "/title1.html");
+  BrowserWindowInterface* first = OpenMiniWindow(first_url);
   ASSERT_TRUE(first);
+  ASSERT_TRUE(content::WaitForLoadStop(MiniWindowContents()));
 
   const GURL second_url = TestURL("b.test", "/title2.html");
   ShowMiniWindow(profile(), second_url);
   ASSERT_TRUE(base::test::RunUntil([&]() {
-    content::WebContents* contents = MiniWindowContents();
-    return contents && contents->GetLastCommittedURL() == second_url;
+    BrowserWindowInterface* mini = GetMiniWindowBrowser();
+    return mini && mini != first &&
+           mini->GetTabStripModel()->GetActiveWebContents();
   }));
+  BrowserWindowInterface* second = GetMiniWindowBrowser();
+  ASSERT_TRUE(content::WaitForLoadStop(MiniWindowContents()));
 
-  EXPECT_EQ(first, GetMiniWindowBrowser());
+  EXPECT_TRUE(IsMiniWindow(first));
+  EXPECT_TRUE(IsMiniWindow(second));
+  EXPECT_EQ(first_url, first->GetTabStripModel()
+                           ->GetActiveWebContents()
+                           ->GetLastCommittedURL());
+  EXPECT_EQ(second_url, second->GetTabStripModel()
+                            ->GetActiveWebContents()
+                            ->GetLastCommittedURL());
   EXPECT_EQ(1, first->GetTabStripModel()->count());
+  EXPECT_EQ(1, second->GetTabStripModel()->count());
+
+  // Committing one glance leaves the other on screen.
+  SendMiniWindowToSpace(second, std::string());
+  EXPECT_EQ(first, GetMiniWindowBrowser());
+  EXPECT_TRUE(IsMiniWindowShowing());
 }
 
 // The identity the window is pinned to has to survive the navigations the page
@@ -206,23 +222,19 @@ IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
   EXPECT_EQ(expected, PartitionOf(contents));
 }
 
-// Reuse is only reuse while the identity still matches.  Once the user has
-// moved to another Space, the next link belongs to that Space, and a tab
-// already pinned to the old one cannot host it.
+// Each window keeps the identity it opened with.  Once the user has moved to
+// another Space, the next link opens as that Space, and the window already on
+// screen stays pinned to the old one.
 IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
-                       ReplacesTheWindowWhenTheSpaceHasChanged) {
+                       EachWindowKeepsItsOwnSpace) {
   const std::string first_space = CreateAndActivateSpace("Work");
   BrowserWindowInterface* first =
       OpenMiniWindow(TestURL("a.test", "/title1.html"));
   ASSERT_TRUE(first);
-  ASSERT_EQ(first_space, MiniWindowController::Get()->space_id());
-  const size_t windows_with_one_mini =
-      GlobalBrowserCollection::GetInstance()->GetSize();
+  MiniWindowController* first_controller = MiniWindowController::Get();
+  ASSERT_EQ(first_space, first_controller->space_id());
 
   const std::string second_space = CreateAndActivateSpace("Personal");
-  const content::StoragePartitionConfig expected =
-      PartitionForSpace(second_space);
-
   const GURL second_url = TestURL("b.test", "/title2.html");
   ShowMiniWindow(profile(), second_url);
   ASSERT_TRUE(base::test::RunUntil([&]() {
@@ -232,15 +244,13 @@ IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
   }));
 
   EXPECT_EQ(second_space, MiniWindowController::Get()->space_id());
-  EXPECT_EQ(expected, PartitionOf(MiniWindowContents()));
+  EXPECT_EQ(PartitionForSpace(second_space),
+            PartitionOf(MiniWindowContents()));
 
-  // The window it replaced goes away rather than lingering behind it: one
-  // window opened, one closed, so the count is where it was.  Counted rather
-  // than compared against |first|, which by now may be destroyed.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return GlobalBrowserCollection::GetInstance()->GetSize() ==
-           windows_with_one_mini;
-  }));
+  EXPECT_EQ(first_controller, MiniWindowController::FromBrowser(first));
+  EXPECT_EQ(first_space, first_controller->space_id());
+  EXPECT_EQ(PartitionForSpace(first_space),
+            PartitionOf(first->GetTabStripModel()->GetActiveWebContents()));
 }
 
 // A link the page opens in a new tab has nowhere to go in a one-page window,
@@ -272,7 +282,7 @@ IN_PROC_BROWSER_TEST_F(AvoraMiniWindowIdentityBrowserTest,
   ASSERT_TRUE(OpenMiniWindow(url));
   const int tabs_before = browser()->GetTabStripModel()->count();
 
-  SendMiniWindowToSpace(space);
+  SendMiniWindowToSpace(GetMiniWindowBrowser(), space);
 
   EXPECT_FALSE(IsMiniWindowShowing());
   EXPECT_EQ(tabs_before + 1, browser()->GetTabStripModel()->count());

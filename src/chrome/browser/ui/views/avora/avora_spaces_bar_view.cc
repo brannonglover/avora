@@ -18,6 +18,7 @@
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_storage_partition.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/avora/avora_account_button.h"
 #include "chrome/browser/ui/views/avora/avora_downloads_button.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
@@ -388,6 +389,7 @@ void AvoraSpacesBarView::RebuildLegacy() {
   space_buttons_.clear();
   create_button_ = nullptr;
   downloads_button_ = nullptr;
+  account_button_ = nullptr;
   for (const auto& space : legacy_spaces_) {
     auto btn = std::make_unique<views::LabelButton>(
         base::BindRepeating(
@@ -529,6 +531,7 @@ void AvoraSpacesBarView::RebuildManaged() {
   space_buttons_.clear();
   create_button_ = nullptr;
   downloads_button_ = nullptr;
+  account_button_ = nullptr;
 
   if (!space_manager_) {
     return;
@@ -541,7 +544,15 @@ void AvoraSpacesBarView::RebuildManaged() {
   // the "+" pinned to the right edge.  Downloads take that leading slot: the
   // same width, so the Space icons stay centred, and the far edge from the
   // "+" so creating and finding things sit at opposite ends of the bar.
+  //
+  // The person comes first of all, at the very corner: their avatar is the
+  // way into their account, every Space's identity, and Settings.  An empty
+  // slot of the same width beside the "+" keeps the icons centred.
+  const bool has_account_button = profile_ != nullptr;
   if (profile_) {
+    account_button_ = AddChildView(std::make_unique<avora::AccountButton>(
+        profile_, browser_, window_space_state_));
+    AddChildView(MakeSpacer(kIconGap));
     downloads_button_ = AddChildView(
         std::make_unique<avora::DownloadsButton>(profile_, browser_));
   } else {
@@ -574,6 +585,9 @@ void AvoraSpacesBarView::RebuildManaged() {
 
   AddChildView(std::move(icons));
   views::View* trailing_flex = AddChildView(MakeSpacer(0));
+  if (has_account_button) {
+    AddChildView(MakeSpacer(kAddBtnSize + kIconGap));
+  }
 
   create_button_ = AddChildView(std::make_unique<CreateSpaceButton>(
       base::BindRepeating(&AvoraSpacesBarView::OnCreateSpaceClicked,

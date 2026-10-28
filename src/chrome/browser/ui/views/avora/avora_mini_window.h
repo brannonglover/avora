@@ -34,26 +34,30 @@ inline constexpr int kMiniWindowDefaultHeight = 1080;
 inline constexpr int kMiniWindowMinWidth = 480;
 inline constexpr int kMiniWindowMinHeight = 400;
 
-// Opens |url| in Avora's mini window, creating the window or reusing the one
-// already open.  This is where links arriving from outside Avora land: a link
-// clicked in Mail or Slack is a glance, not a commitment, so it gets a window
-// of its own instead of a tab in the user's working set.
+// Opens |url| in a new mini window.  This is where links arriving from outside
+// Avora land: a link clicked in Mail or Slack is a glance, not a commitment, so
+// it gets a window of its own instead of a tab in the user's working set.
+//
+// Every link gets its own window, even while another mini window is open.  A
+// second link is a second glance, and re-pointing the window already on screen
+// would throw away the first page before the user had decided what to do with
+// it.
 //
 // The mini window deliberately does not become a tabbed window.  It can be the
 // only Avora window on screen; a tabbed window is created only if the user
 // commits the link to a Space and none exists to receive it.
 void ShowMiniWindow(Profile* profile, const GURL& url);
 
-// Whether a mini window is currently open.  False from the moment the window
-// is asked to close, so a window still running its unload handlers is never
-// offered up for reuse.
+// Whether any mini window is currently open.  A window stops counting from
+// the moment it is asked to close, so one still running its unload handlers is
+// never handed out.
 bool IsMiniWindowShowing();
 
-// Closes the mini window if one is open.  No-op otherwise.
+// Closes every open mini window.  No-op when none is open.
 void CloseMiniWindow();
 
-// The open mini window's browser, or null when none is open (or the open one
-// is already on its way out).
+// The most recently opened mini window's browser, or null when none is open
+// (or every open one is already on its way out).
 BrowserWindowInterface* GetMiniWindowBrowser();
 
 // Whether |browser| is a mini window.  Tolerates null.  Reads the marker the
@@ -72,14 +76,17 @@ std::string PreferredMiniWindowSpaceId(Profile* profile);
 std::vector<Space> OrderMiniWindowSpaces(const std::vector<Space>& spaces,
                                          const std::string& preferred);
 
-// The Spaces the open mini window offers, already ordered.  Empty when no mini
-// window is open.
-std::vector<Space> MiniWindowOrderedSpaces();
+// The Spaces the mini window |browser| offers, already ordered.  Empty when
+// |browser| is not an open mini window.
+std::vector<Space> MiniWindowOrderedSpaces(
+    const BrowserWindowInterface* browser);
 
-// Commits the open mini window's page to |space_id|, opening it as a new tab
-// there and closing the mini window.  Creates a tabbed window only when there
-// is none to receive the tab.  No-op when no mini window is open.
-void SendMiniWindowToSpace(const std::string& space_id);
+// Commits the mini window |browser|'s page to |space_id|, opening it as a new
+// tab there and closing that mini window.  Creates a tabbed window only when
+// there is none to receive the tab.  No-op when |browser| is not an open mini
+// window.
+void SendMiniWindowToSpace(const BrowserWindowInterface* browser,
+                           const std::string& space_id);
 
 // Marks a browser window as Avora's mini window.  Published by
 // MiniWindowController on its own window's UnownedUserDataHost, which is what
@@ -119,15 +126,19 @@ class MiniWindowState {
 // refuses new tabs once it holds one (see WindowCanOpenTabs), which is what
 // keeps a one-page window one page without any policing here.
 //
-// At most one mini window exists.  A second external link re-points the open
-// one rather than stacking another on screen -- unless the link belongs to a
-// different Space than the open window's identity, in which case the window is
-// replaced, because a tab pinned to one Space's storage partition cannot host
-// another's.
+// Each external link gets a mini window of its own, so several can be open at
+// once, each pinned to the Space that was current when it opened.  Nothing is
+// shared between them: committing or closing one leaves the others alone.
 class MiniWindowController {
  public:
-  // The open mini window's controller, or null when none is open.
+  // The most recently opened mini window's controller, or null when none is
+  // open.
   static MiniWindowController* Get();
+
+  // The controller of the open mini window |browser|, or null when |browser|
+  // is not one (or is already on its way out).  Tolerates null.
+  static MiniWindowController* FromBrowser(
+      const BrowserWindowInterface* browser);
 
   // Creates the window and points it at |url|.  Check browser() afterwards:
   // window creation can be refused (profile shutdown, policy), and a
@@ -162,9 +173,9 @@ class MiniWindowController {
   // Opens current_url() as a new tab in |space_id| and closes this window.
   void SendToSpace(const std::string& space_id);
 
-  // Asks the window to close.  The mini window stops being the open one
-  // immediately; the window itself goes away once it has run its unload
-  // handlers, and this controller with it.
+  // Asks the window to close.  The window stops counting as open immediately;
+  // the window itself goes away once it has run its unload handlers, and this
+  // controller with it.
   void Close();
 
   // Transitional, for the web-modal browser tests written against the

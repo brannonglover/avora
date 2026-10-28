@@ -2768,8 +2768,8 @@ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
   // link into a daily tab.
   //
   // Only a lone link takes this path.  Several URLs arriving at once is a bulk
-  // open (a multi-selection dropped on the Dock icon), and a single mini
-  // window would show only the last of them, so those still open as tabs.
+  // open (a multi-selection dropped on the Dock icon), and a mini window
+  // apiece would bury the screen, so those still open as tabs.
   if (tabs.size() == 1 && tabs.front().url.SchemeIsHTTPOrHTTPS()) {
     avora::ShowMiniWindow(profile, tabs.front().url);
     return;

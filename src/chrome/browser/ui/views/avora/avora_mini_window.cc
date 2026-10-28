@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_tab_space.h"
@@ -29,6 +31,21 @@ namespace avora {
 
 namespace {
 
+// How far each open mini window pushes a new one down and to the right.
+constexpr int kMiniWindowCascadeOffset = 28;
+
+// The open mini windows, oldest first.  A controller leaves this list the
+// moment its window is asked to close, not when the window is finally gone, so
+// nothing listed here is on its way out.
+std::vector<MiniWindowController*>& OpenMiniWindows() {
+  static base::NoDestructor<std::vector<MiniWindowController*>> windows;
+  return *windows;
+}
+
+void Unregister(MiniWindowController* controller) {
+  std::erase(OpenMiniWindows(), controller);
+}
+
 gfx::Rect InitialBounds() {
   gfx::Rect bounds(0, 0, kMiniWindowDefaultWidth, kMiniWindowDefaultHeight);
   display::Screen* screen = display::Screen::Get();
@@ -46,10 +63,14 @@ gfx::Rect InitialBounds() {
   bounds.set_origin(
       gfx::Point(work_area.x() + (work_area.width() - bounds.width()) / 2,
                  work_area.y() + (work_area.height() - bounds.height()) / 3));
+  // Cascaded past the mini windows already open, so a second link visibly
+  // lands in a second window rather than exactly on top of the first.
+  const int cascade =
+      kMiniWindowCascadeOffset * static_cast<int>(OpenMiniWindows().size());
+  bounds.Offset(cascade, cascade);
+  bounds.AdjustToFit(work_area);
   return bounds;
 }
-
-MiniWindowController* g_mini_window = nullptr;
 
 }  // namespace
 
@@ -67,21 +88,8 @@ void ShowMiniWindow(Profile* profile, const GURL& url) {
     return;
   }
 
-  if (MiniWindowController* open = MiniWindowController::Get()) {
-    if (open->profile() == profile &&
-        open->space_id() == PreferredMiniWindowSpaceId(profile)) {
-      open->NavigateTo(url);
-      open->ShowAndFocus();
-      return;
-    }
-    // The link belongs to a different identity than the window on screen is
-    // pinned to -- the user has moved to another Space since it opened.
-    // Reusing the window would load the link as the wrong Space, and a tab's
-    // storage partition is fixed when the tab is created, so the window is
-    // replaced instead of re-pointed.
-    open->Close();
-  }
-
+  // Always a new window, never the one already on screen: that one is showing
+  // a page the user has not decided about yet.
   auto* controller = new MiniWindowController(profile, url);
   if (!controller->browser()) {
     // Window creation was refused.  Nothing to show and nothing to own it.
@@ -96,8 +104,10 @@ bool IsMiniWindowShowing() {
 }
 
 void CloseMiniWindow() {
-  if (MiniWindowController* open = MiniWindowController::Get()) {
-    open->Close();
+  // Copied first: each Close() takes its controller off the list.
+  const std::vector<MiniWindowController*> open = OpenMiniWindows();
+  for (MiniWindowController* controller : open) {
+    controller->Close();
   }
 }
 
@@ -151,8 +161,9 @@ std::vector<Space> OrderMiniWindowSpaces(const std::vector<Space>& spaces,
   return ordered;
 }
 
-std::vector<Space> MiniWindowOrderedSpaces() {
-  MiniWindowController* open = MiniWindowController::Get();
+std::vector<Space> MiniWindowOrderedSpaces(
+    const BrowserWindowInterface* browser) {
+  MiniWindowController* open = MiniWindowController::FromBrowser(browser);
   if (!open || !open->profile() || !open->profile()->GetPrefs()) {
     return {};
   }
@@ -160,8 +171,9 @@ std::vector<Space> MiniWindowOrderedSpaces() {
   return OrderMiniWindowSpaces(manager.GetSpaces(), open->space_id());
 }
 
-void SendMiniWindowToSpace(const std::string& space_id) {
-  if (MiniWindowController* open = MiniWindowController::Get()) {
+void SendMiniWindowToSpace(const BrowserWindowInterface* browser,
+                           const std::string& space_id) {
+  if (MiniWindowController* open = MiniWindowController::FromBrowser(browser)) {
     open->SendToSpace(space_id);
   }
 }
@@ -174,7 +186,22 @@ MiniWindowView* GetMiniWindowViewForTesting() {
 
 // static
 MiniWindowController* MiniWindowController::Get() {
-  return g_mini_window;
+  const std::vector<MiniWindowController*>& open = OpenMiniWindows();
+  return open.empty() ? nullptr : open.back();
+}
+
+// static
+MiniWindowController* MiniWindowController::FromBrowser(
+    const BrowserWindowInterface* browser) {
+  if (!browser) {
+    return nullptr;
+  }
+  for (MiniWindowController* controller : OpenMiniWindows()) {
+    if (controller->browser() == browser) {
+      return controller;
+    }
+  }
+  return nullptr;
 }
 
 MiniWindowController::MiniWindowController(Profile* profile, const GURL& url)
@@ -231,14 +258,12 @@ MiniWindowController::MiniWindowController(Profile* profile, const GURL& url)
   mini_window_state_holder_.emplace(browser->GetUnownedUserDataHost(),
                                     mini_window_state_);
 
-  g_mini_window = this;
+  OpenMiniWindows().push_back(this);
   NavigateTo(url);
 }
 
 MiniWindowController::~MiniWindowController() {
-  if (g_mini_window == this) {
-    g_mini_window = nullptr;
-  }
+  Unregister(this);
   // Nothing may still be registered on a window that is being destroyed; by
   // the time this runs OnBrowserDidClose has already unpublished it, and this
   // is only a backstop for a controller that never got a window.
@@ -334,12 +359,10 @@ void MiniWindowController::Close() {
     return;
   }
   closing_ = true;
-  // No longer the open mini window, from this moment: the window may take a
+  // No longer an open mini window, from this moment: the window may take a
   // trip through its unload handlers before it goes, and a window on its way
-  // out must not be offered up for reuse.
-  if (g_mini_window == this) {
-    g_mini_window = nullptr;
-  }
+  // out must not be handed out.
+  Unregister(this);
   if (browser_) {
     browser_->GetWindow()->Close();
   }
@@ -347,9 +370,7 @@ void MiniWindowController::Close() {
 
 void MiniWindowController::OnBrowserDidClose(BrowserWindowInterface* browser) {
   closing_ = true;
-  if (g_mini_window == this) {
-    g_mini_window = nullptr;
-  }
+  Unregister(this);
   Detach();
   // The window is gone; so is the reason this exists.  Deleted on the next
   // turn of the loop rather than here, because this runs from the window's own

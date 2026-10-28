@@ -73,7 +73,8 @@ class AvoraSpacesBarView : public views::View,
   void ConnectToProfile(Profile* profile);
 
   // The window this bar belongs to.  The downloads button needs it to open
-  // the full download history; set it before or shortly after AddedToWidget().
+  // the full download history, and the account menu to open Settings; set it
+  // before or shortly after AddedToWidget().
   void SetBrowser(BrowserWindowInterface* browser);
 
   // Attach this bar to a per-window active-Space holder.  Once set, space
@@ -154,6 +155,9 @@ class AvoraSpacesBarView : public views::View,
   // Downloads, in the slot opposite the "+".  Null in legacy mode, which has
   // no Profile to read downloads from.
   raw_ptr<views::View> downloads_button_ = nullptr;
+
+  // The person's avatar, ahead of downloads.  Null in legacy mode.
+  raw_ptr<views::View> account_button_ = nullptr;
 
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
   std::unique_ptr<ui::SimpleMenuModel::Delegate> context_menu_delegate_;

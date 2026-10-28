@@ -280,7 +280,7 @@ IN_PROC_BROWSER_TEST_F(AvoraMiniToolbarBrowserTest,
   // More than one Space to choose from, so the dropdown has a job.
   EXPECT_TRUE(toolbar->space_menu_button_for_testing()->GetVisible());
 
-  const std::vector<Space> offered = MiniWindowOrderedSpaces();
+  const std::vector<Space> offered = MiniWindowOrderedSpaces(GetMiniWindowBrowser());
   ASSERT_FALSE(offered.empty());
   EXPECT_EQ("Work", offered.front().name);
 }

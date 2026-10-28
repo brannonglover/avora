@@ -558,7 +558,7 @@ void AvoraMiniToolbarView::UpdateSpaceButton() {
   if (!space_button_ || !profile() || !profile()->GetPrefs()) {
     return;
   }
-  const std::vector<Space> spaces = MiniWindowOrderedSpaces();
+  const std::vector<Space> spaces = MiniWindowOrderedSpaces(browser_);
   if (spaces.empty()) {
     // A profile with no Spaces yet still needs a way out of the mini window,
     // so the button commits the link untagged rather than disappearing.
@@ -586,12 +586,12 @@ void AvoraMiniToolbarView::UpdateSpaceButton() {
 }
 
 void AvoraMiniToolbarView::OnSpaceButtonPressed() {
-  const std::vector<Space> spaces = MiniWindowOrderedSpaces();
-  SendMiniWindowToSpace(spaces.empty() ? std::string() : spaces.front().id);
+  const std::vector<Space> spaces = MiniWindowOrderedSpaces(browser_);
+  SendMiniWindowToSpace(browser_, spaces.empty() ? std::string() : spaces.front().id);
 }
 
 void AvoraMiniToolbarView::ShowSpaceMenu() {
-  const std::vector<Space> spaces = MiniWindowOrderedSpaces();
+  const std::vector<Space> spaces = MiniWindowOrderedSpaces(browser_);
   if (spaces.size() < 2) {
     return;
   }
@@ -610,7 +610,7 @@ void AvoraMiniToolbarView::ShowSpaceMenu() {
           [](base::WeakPtr<AvoraMiniToolbarView> toolbar,
              const std::string& space_id) {
             if (toolbar) {
-              SendMiniWindowToSpace(space_id);
+              SendMiniWindowToSpace(toolbar->browser_, space_id);
             }
           },
           weak_factory_.GetWeakPtr()));

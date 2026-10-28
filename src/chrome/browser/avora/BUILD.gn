@@ -57,6 +57,8 @@ source_set("avora") {
     "avora_tab_space.h",
     "avora_tab_site_instance.cc",
     "avora_tab_site_instance.h",
+    "avora_local_user.cc",
+    "avora_local_user.h",
     "avora_window_space.cc",
     "avora_window_space.h",
     "avora_window_session_data.cc",
@@ -86,8 +88,15 @@ source_set("avora") {
   ]
 
   if (is_mac) {
-    sources += [ "sync/avora_device_name_mac.mm" ]
-    frameworks = [ "SystemConfiguration.framework" ]
+    sources += [
+      "avora_local_user_mac.mm",
+      "sync/avora_device_name_mac.mm",
+    ]
+    frameworks = [
+      "AppKit.framework",
+      "Collaboration.framework",
+      "SystemConfiguration.framework",
+    ]
   } else {
     sources += [ "sync/avora_device_name.cc" ]
   }
@@ -96,6 +105,7 @@ source_set("avora") {
 
   deps = [
     "//base",
+    "//base:i18n",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/tab_contents",
     "//chrome/browser/ui/browser_window",
@@ -146,6 +156,7 @@ source_set("unit_tests") {
 
   sources = [
     "avora_import_provenance_unittest.cc",
+    "avora_local_user_unittest.cc",
     "avora_imported_link_store_unittest.cc",
     "avora_pinned_folders_unittest.cc",
     "avora_pinned_items_unittest.cc",

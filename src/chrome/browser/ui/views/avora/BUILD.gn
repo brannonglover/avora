@@ -2,6 +2,8 @@ import("//build/config/ui.gni")
 
 source_set("avora") {
   sources = [
+    "avora_account_button.cc",
+    "avora_account_button.h",
     "avora_downloads_button.cc",
     "avora_downloads_button.h",
     "avora_downloads_panel_view.cc",
@@ -73,6 +75,7 @@ source_set("avora") {
 
   deps = [
     "//base",
+    "//base:i18n",
     "//chrome/browser/avora",
     "//chrome/browser/avora/import",
     "//chrome/browser/favicon",
@@ -129,6 +132,7 @@ source_set("browser_tests") {
   testonly = true
 
   sources = [
+    "avora_account_button_browsertest.cc",
     "avora_daily_tab_sync_browsertest.cc",
     "avora_link_preview_browsertest.cc",
     "avora_mini_window_browsertest.cc",
@@ -168,5 +172,6 @@ source_set("browser_tests") {
     "//services/network:test_support",
     "//testing/gtest",
     "//ui/views",
+    "//ui/views:test_support",
   ]
 }

@@ -5,6 +5,12 @@ target_cpu = "arm64"
 blink_symbol_level = 0
 dcheck_always_on = false
 
+# Enable H.264/AAC/MP3 decoding.  Without these, sites that serve
+# proprietary-codec media (Instagram reels, Twitter/X video, many news
+# players) fail with "trouble playing this video".
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+
 # Suppress "Google API keys are missing" infobar.  The API key is set to
 # a dummy value so the infobar doesn't appear.  The OAuth client ID and
 # secret are intentionally left unset (defaulting to "dummytoken") so

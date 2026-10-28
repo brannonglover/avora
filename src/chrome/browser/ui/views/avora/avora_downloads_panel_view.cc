@@ -10,19 +10,27 @@
 
 #include "base/base_paths.h"
 #include "base/byte_size.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/i18n/time_formatting.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "cc/paint/paint_flags.h"
+#include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -60,6 +68,7 @@ constexpr SkColor kSeparatorColor = SkColorSetARGB(0x22, 0xFF, 0xFF, 0xFF);
 constexpr SkColor kFailedText = SkColorSetRGB(0xE8, 0x7A, 0x7A);
 
 constexpr int kRowHeight = 48;
+constexpr int kFileRowHeight = 40;
 constexpr int kRowCornerRadius = 8;
 constexpr int kRowHPad = 10;
 constexpr int kRowGap = 8;
@@ -67,9 +76,11 @@ constexpr int kStatusGlyphSize = 18;
 constexpr int kActionButtonSize = 24;
 constexpr int kActionGlyphSize = 15;
 constexpr int kHeaderHeight = 34;
+constexpr int kSectionHeaderHeight = 24;
 constexpr int kSeparatorHeight = 1;
 
 constexpr int kNameFontSize = 13;
+constexpr int kFileNameFontSize = 12;
 constexpr int kStatusFontSize = 11;
 
 // Lucide paths for the panel's own chrome.  These are browser icons rather
@@ -87,6 +98,9 @@ constexpr char kFolderOpenIconPath[] =
     "-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 "
     "2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2";
 constexpr char kCloseIconPath[] = "M18 6 6 18 M6 6l12 12";
+constexpr char kFolderIconPath[] =
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 "
+    "0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z";
 
 gfx::FontList PanelFont(int size, gfx::Font::Weight weight) {
   return gfx::FontList({std::string("system-ui")}, gfx::Font::NORMAL, size,
@@ -163,6 +177,32 @@ std::u16string StatusLine(download::DownloadItem* item) {
       break;
   }
   return std::u16string();
+}
+
+// When a file in the folder was last written, as briefly as still tells
+// today's files apart: a time for today and yesterday, a date before that.
+std::u16string FormatModified(base::Time modified) {
+  if (modified.is_null()) {
+    return std::u16string();
+  }
+  const base::Time today = base::Time::Now().LocalMidnight();
+  if (modified >= today) {
+    return base::StrCat({u"Today ", base::TimeFormatTimeOfDay(modified)});
+  }
+  // Half a day back from midnight is safely inside yesterday, whatever a
+  // daylight-saving change did to its length.
+  const base::Time yesterday = (today - base::Hours(12)).LocalMidnight();
+  if (modified >= yesterday) {
+    return base::StrCat({u"Yesterday ", base::TimeFormatTimeOfDay(modified)});
+  }
+  return base::TimeFormatShortDate(modified);
+}
+
+std::u16string FileDetailLine(const DownloadsFolderEntry& entry) {
+  const std::u16string when = FormatModified(entry.modified);
+  const std::u16string what =
+      entry.is_directory ? u"Folder" : FormatSize(entry.size);
+  return when.empty() ? what : base::StrCat({what, u" · ", when});
 }
 
 void FillRoundRect(gfx::Canvas* canvas,
@@ -247,6 +287,131 @@ class DownloadStatusGlyph : public views::View {
 BEGIN_METADATA(DownloadStatusGlyph)
 END_METADATA
 
+// A fixed Lucide glyph: the file or folder at the head of a folder row.
+class PanelGlyph : public views::View {
+  METADATA_HEADER(PanelGlyph, views::View)
+
+ public:
+  explicit PanelGlyph(std::string_view path_data) : path_data_(path_data) {
+    SetPreferredSize(gfx::Size(kStatusGlyphSize, kStatusGlyphSize));
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    PaintLucidePathData(canvas, GetLocalBounds(), path_data_, kIconColor);
+  }
+
+ private:
+  std::string path_data_;
+};
+
+BEGIN_METADATA(PanelGlyph)
+END_METADATA
+
+// A small label introducing one part of the panel's list.
+std::unique_ptr<views::Label> MakeSectionHeader(const std::u16string& text) {
+  auto label = std::make_unique<views::Label>(
+      text, views::Label::CustomFont{
+                PanelFont(kStatusFontSize, gfx::Font::Weight::MEDIUM)});
+  label->SetEnabledColor(kSecondaryText);
+  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  label->SetElideBehavior(gfx::ELIDE_MIDDLE);
+  label->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, kRowHPad)));
+  label->SetPreferredSize(
+      gfx::Size(DownloadsPanelView::kPanelWidth, kSectionHeaderHeight));
+  return label;
+}
+
+// One file or folder in the download folder.  Clicking it opens it the way
+// Finder would; the trailing button shows it in Finder instead.
+class FileRowView : public views::Button {
+  METADATA_HEADER(FileRowView, views::Button)
+
+ public:
+  FileRowView(Profile* profile, const DownloadsFolderEntry& entry)
+      : views::Button(base::BindRepeating(&FileRowView::OnPressed,
+                                          base::Unretained(this))),
+        profile_(profile),
+        path_(entry.path),
+        is_directory_(entry.is_directory) {
+    SetPreferredSize(
+        gfx::Size(DownloadsPanelView::kPanelWidth, kFileRowHeight));
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::VH(0, kRowHPad), kRowGap));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+
+    AddChildView(std::make_unique<PanelGlyph>(
+        entry.is_directory ? kFolderIconPath : kFileIconPath));
+
+    auto text_column = std::make_unique<views::View>();
+    auto* text_layout =
+        text_column->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kVertical, gfx::Insets(), 1));
+    text_layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kStart);
+
+    const std::u16string name = entry.path.BaseName().LossyDisplayName();
+    const std::u16string detail = FileDetailLine(entry);
+
+    auto name_label = std::make_unique<views::Label>(
+        name, views::Label::CustomFont{
+                  PanelFont(kFileNameFontSize, gfx::Font::Weight::NORMAL)});
+    name_label->SetEnabledColor(kPrimaryText);
+    name_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    name_label->SetElideBehavior(gfx::ELIDE_MIDDLE);
+    text_column->AddChildView(std::move(name_label));
+
+    auto detail_label = std::make_unique<views::Label>(
+        detail, views::Label::CustomFont{
+                    PanelFont(kStatusFontSize, gfx::Font::Weight::NORMAL)});
+    detail_label->SetEnabledColor(kSecondaryText);
+    detail_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    detail_label->SetElideBehavior(gfx::ELIDE_TAIL);
+    text_column->AddChildView(std::move(detail_label));
+
+    views::View* text_column_raw = AddChildView(std::move(text_column));
+    layout->SetFlexForView(text_column_raw, 1);
+
+    AddChildView(std::make_unique<PanelIconButton>(
+        base::BindRepeating(&FileRowView::OnReveal, base::Unretained(this)),
+        kFolderOpenIconPath, u"Show in Finder"));
+
+    SetTooltipText(base::StrCat({name, u"\n", detail}));
+    GetViewAccessibility().SetName(base::StrCat({name, u", ", detail}));
+  }
+
+  FileRowView(const FileRowView&) = delete;
+  FileRowView& operator=(const FileRowView&) = delete;
+  ~FileRowView() override = default;
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (GetState() == views::Button::STATE_HOVERED ||
+        GetState() == views::Button::STATE_PRESSED) {
+      FillRoundRect(canvas, GetLocalBounds(), kRowHoverBg, kRowCornerRadius);
+    }
+  }
+
+ private:
+  void OnPressed() {
+    platform_util::OpenItem(
+        profile_, path_,
+        is_directory_ ? platform_util::OPEN_FOLDER : platform_util::OPEN_FILE,
+        base::DoNothing());
+  }
+
+  void OnReveal() { platform_util::ShowItemInFolder(profile_, path_); }
+
+  raw_ptr<Profile> profile_;
+  const base::FilePath path_;
+  const bool is_directory_;
+};
+
+BEGIN_METADATA(FileRowView)
+END_METADATA
+
 std::unique_ptr<views::View> MakeSeparator() {
   auto separator = std::make_unique<views::View>();
   separator->SetPreferredSize(
@@ -256,6 +421,48 @@ std::unique_ptr<views::View> MakeSeparator() {
 }
 
 }  // namespace
+
+DownloadsFolderListing::DownloadsFolderListing() = default;
+DownloadsFolderListing::DownloadsFolderListing(DownloadsFolderListing&&) =
+    default;
+DownloadsFolderListing& DownloadsFolderListing::operator=(
+    DownloadsFolderListing&&) = default;
+DownloadsFolderListing::~DownloadsFolderListing() = default;
+
+DownloadsFolderListing ListDownloadsFolder(const base::FilePath& dir) {
+  DownloadsFolderListing listing;
+  if (dir.empty() || !base::DirectoryExists(dir)) {
+    return listing;
+  }
+  listing.readable = true;
+
+  base::FileEnumerator enumerator(
+      dir, /*recursive=*/false,
+      base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES);
+  for (base::FilePath path = enumerator.Next(); !path.empty();
+       path = enumerator.Next()) {
+    const base::FilePath::StringType name = path.BaseName().value();
+    if (name.empty() || name[0] == FILE_PATH_LITERAL('.') ||
+        path.MatchesExtension(FILE_PATH_LITERAL(".crdownload"))) {
+      continue;
+    }
+    const base::FileEnumerator::FileInfo info = enumerator.GetInfo();
+    listing.entries.push_back({.path = path,
+                               .is_directory = info.IsDirectory(),
+                               .size = info.GetSize(),
+                               .modified = info.GetLastModifiedTime()});
+  }
+
+  listing.total = listing.entries.size();
+  std::sort(listing.entries.begin(), listing.entries.end(),
+            [](const DownloadsFolderEntry& a, const DownloadsFolderEntry& b) {
+              return a.modified > b.modified;
+            });
+  if (listing.entries.size() > DownloadsPanelView::kMaxFileRows) {
+    listing.entries.resize(DownloadsPanelView::kMaxFileRows);
+  }
+  return listing;
+}
 
 // One download in the panel.  The row keeps no copy of the download's state:
 // every refresh re-reads the DownloadItem, so a progress tick is a call to
@@ -435,7 +642,15 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kStretch);
 
-  // ── Header: the title, and the one action that applies to the whole list ──
+  if (profile_) {
+    folder_ = profile_->GetPrefs()->GetFilePath(
+        prefs::kDownloadDefaultDirectory);
+  }
+  if (folder_.empty()) {
+    base::PathService::Get(chrome::DIR_DEFAULT_DOWNLOADS, &folder_);
+  }
+
+  // ── Header: the title, and a way into the folder itself ──
   auto header = std::make_unique<views::View>();
   header->SetPreferredSize(gfx::Size(kPanelWidth, kHeaderHeight));
   auto* header_layout =
@@ -453,63 +668,68 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   views::View* title_raw = header->AddChildView(std::move(title));
   header_layout->SetFlexForView(title_raw, 1);
 
-  clear_button_ = header->AddChildView(std::make_unique<PanelIconButton>(
-      base::BindRepeating(&DownloadsPanelView::ClearFinished,
+  header->AddChildView(std::make_unique<PanelIconButton>(
+      base::BindRepeating(&DownloadsPanelView::OpenFolder,
                           weak_factory_.GetWeakPtr()),
-      kCloseIconPath, u"Clear finished downloads"));
+      kFolderOpenIconPath,
+      base::StrCat({u"Open ", PrettyDirectory(folder_), u" in Finder"})));
 
   AddChildView(std::move(header));
 
-  // ── The list itself ──
+  // ── The list: downloads in flight, then the folder ──
   auto scroll = std::make_unique<views::ScrollView>();
   scroll->SetBackgroundColor(std::nullopt);
   scroll->ClipHeightTo(0, kListMaxHeight);
   scroll->SetDrawOverflowIndicator(false);
 
+  auto contents = std::make_unique<views::View>();
+  auto* contents_layout =
+      contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 4), 0));
+  contents_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kStretch);
+
+  active_header_ = contents->AddChildView(MakeSectionHeader(u"In progress"));
+
   auto list = std::make_unique<views::View>();
   auto* list_layout = list->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 4), 0));
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
   list_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kStretch);
-  list_ = scroll->SetContents(std::move(list));
+  list_ = contents->AddChildView(std::move(list));
+
+  files_header_ =
+      contents->AddChildView(MakeSectionHeader(PrettyDirectory(folder_)));
+  files_header_->SetTooltipText(folder_.LossyDisplayName());
+
+  auto files = std::make_unique<views::View>();
+  auto* files_layout =
+      files->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
+  files_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kStretch);
+  files_list_ = contents->AddChildView(std::move(files));
+
+  auto status = std::make_unique<views::Label>(
+      u"Loading…", views::Label::CustomFont{PanelFont(
+                        kStatusFontSize, gfx::Font::Weight::NORMAL)});
+  status->SetEnabledColor(kSecondaryText);
+  status->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  status->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(10, kRowHPad)));
+  files_status_ = contents->AddChildView(std::move(status));
+
+  scroll->SetContents(std::move(contents));
   AddChildView(std::move(scroll));
 
-  auto empty = std::make_unique<views::Label>(
-      u"Nothing downloaded yet",
-      views::Label::CustomFont{PanelFont(kStatusFontSize,
-                                         gfx::Font::Weight::NORMAL)});
-  empty->SetEnabledColor(kSecondaryText);
-  empty->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  empty->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(12, kRowHPad)));
-  empty_label_ = AddChildView(std::move(empty));
-
-  // ── Footer: where the files land.  The panel answers "where did it go?"
-  //    even when the list is empty. ──
-  AddChildView(MakeSeparator());
-
-  const base::FilePath dir =
-      profile_ ? profile_->GetPrefs()->GetFilePath(
-                     prefs::kDownloadDefaultDirectory)
-               : base::FilePath();
-  auto footer = std::make_unique<views::Label>(
-      base::StrCat({u"Saving to ", PrettyDirectory(dir)}),
-      views::Label::CustomFont{PanelFont(kStatusFontSize,
-                                         gfx::Font::Weight::NORMAL)});
-  footer->SetEnabledColor(kSecondaryText);
-  footer->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  footer->SetElideBehavior(gfx::ELIDE_MIDDLE);
-  footer->SetTooltipText(dir.LossyDisplayName());
-  footer->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(6, kRowHPad, 2,
-                                                               kRowHPad)));
-  footer_label_ = AddChildView(std::move(footer));
-
-  // The list above is the recent end of the history; chrome://downloads holds
-  // all of it.  Without a window to navigate, the row is simply absent.
+  // The panel covers what is in flight and what is on disk; chrome://downloads
+  // holds the history, including files saved somewhere other than this
+  // folder.  Without a window to navigate, the row is simply absent.
   if (browser_) {
+    AddChildView(MakeSeparator());
     auto all = std::make_unique<views::LabelButton>(
         base::BindRepeating(&DownloadsPanelView::ShowAllDownloads,
                             weak_factory_.GetWeakPtr()),
-        u"Show all downloads");
+        u"Show download history");
     all->SetTextColor(views::Button::STATE_NORMAL, kSecondaryText);
     all->SetTextColor(views::Button::STATE_HOVERED, kPrimaryText);
     all->SetTextColor(views::Button::STATE_PRESSED, kPrimaryText);
@@ -527,6 +747,7 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   }
 
   RebuildList();
+  ScanFolder();
 }
 
 DownloadsPanelView::~DownloadsPanelView() {
@@ -558,6 +779,17 @@ void DownloadsPanelView::OnDownloadUpdated(download::DownloadItem* item) {
   if (it != rows_.end() && it->second) {
     it->second->Refresh();
   }
+
+  // A download that finished has become a file in the folder; one that was
+  // cancelled has nothing left to show.  Either way it leaves the list.
+  const auto state = item->GetState();
+  if (state == download::DownloadItem::COMPLETE ||
+      state == download::DownloadItem::CANCELLED) {
+    ScheduleRebuild();
+    if (state == download::DownloadItem::COMPLETE) {
+      ScanFolder();
+    }
+  }
 }
 
 void DownloadsPanelView::OnDownloadRemoved(download::DownloadItem* item) {
@@ -588,8 +820,14 @@ std::vector<download::DownloadItem*> DownloadsPanelView::GetVisibleDownloads() {
   manager_->GetAllDownloads(&all);
   for (download::DownloadItem* item : all) {
     // Transient downloads are the browser fetching something for itself; they
-    // are not what the user means by "my downloads".
+    // are not what the user means by "my downloads".  Finished ones show up
+    // as files in the folder list instead.
     if (!item || item->IsTransient()) {
+      continue;
+    }
+    const auto state = item->GetState();
+    if (state != download::DownloadItem::IN_PROGRESS &&
+        state != download::DownloadItem::INTERRUPTED) {
       continue;
     }
     visible.push_back(item);
@@ -633,40 +871,84 @@ void DownloadsPanelView::RebuildList() {
         list_->AddChildView(std::make_unique<DownloadRowView>(item));
   }
 
-  if (empty_label_) {
-    empty_label_->SetVisible(visible.empty());
-  }
-  if (clear_button_) {
-    clear_button_->SetVisible(!visible.empty());
+  if (active_header_) {
+    active_header_->SetVisible(!visible.empty());
   }
 
+  ResizeBubble();
+}
+
+void DownloadsPanelView::ScanFolder() {
+  if (scan_running_) {
+    rescan_wanted_ = true;
+    return;
+  }
+  scan_running_ = true;
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+      base::BindOnce(&ListDownloadsFolder, folder_),
+      base::BindOnce(&DownloadsPanelView::OnFolderScanned,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void DownloadsPanelView::OnFolderScanned(DownloadsFolderListing listing) {
+  scan_running_ = false;
+  if (rescan_wanted_) {
+    // Something landed while the scan ran; this listing may already be
+    // missing it, but showing it now beats a blank list until the next one.
+    rescan_wanted_ = false;
+    ScanFolder();
+  }
+
+  files_list_->RemoveAllChildViews();
+  for (const DownloadsFolderEntry& entry : listing.entries) {
+    files_list_->AddChildView(std::make_unique<FileRowView>(profile_, entry));
+  }
+
+  const std::u16string folder_name = PrettyDirectory(folder_);
+  if (!listing.readable) {
+    files_status_->SetText(base::StrCat({u"Can't read ", folder_name}));
+  } else if (listing.total == 0) {
+    files_status_->SetText(base::StrCat({folder_name, u" is empty"}));
+  } else if (listing.total > listing.entries.size()) {
+    files_status_->SetText(base::StrCat(
+        {base::NumberToString16(listing.total - listing.entries.size()),
+         u" older items — open the folder to see them"}));
+  }
+  files_status_->SetVisible(!listing.readable || listing.total == 0 ||
+                            listing.total > listing.entries.size());
+
+  files_header_->SetText(
+      listing.total > 0
+          ? base::StrCat({folder_name, u" · ",
+                          base::NumberToString16(listing.total),
+                          listing.total == 1 ? u" item" : u" items"})
+          : folder_name);
+
+  ResizeBubble();
+}
+
+void DownloadsPanelView::OpenFolder() {
+  if (folder_.empty()) {
+    return;
+  }
+  platform_util::OpenItem(profile_, folder_, platform_util::OPEN_FOLDER,
+                          base::DoNothing());
+  if (GetWidget()) {
+    GetWidget()->Close();
+  }
+}
+
+void DownloadsPanelView::ResizeBubble() {
   InvalidateLayout();
-
-  // The bubble is sized to its contents at creation, so a list that grew or
-  // shrank has to push a new size out to the widget.
   if (views::Widget* widget = GetWidget()) {
     if (views::BubbleDialogDelegate* bubble =
             widget->widget_delegate()->AsBubbleDialogDelegate()) {
       bubble->SizeToContents();
     }
   }
-}
-
-void DownloadsPanelView::ClearFinished() {
-  // Collected first: removing an item destroys it, which invalidates the
-  // manager's vector mid-walk.
-  std::vector<download::DownloadItem*> finished;
-  for (download::DownloadItem* item : GetVisibleDownloads()) {
-    if (item->GetState() != download::DownloadItem::IN_PROGRESS) {
-      finished.push_back(item);
-    }
-  }
-  StopObservingItems();
-  rows_.clear();
-  for (download::DownloadItem* item : finished) {
-    item->Remove();
-  }
-  ScheduleRebuild();
 }
 
 void DownloadsPanelView::ShowAllDownloads() {

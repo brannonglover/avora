@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted_memory.h"
@@ -21,13 +22,22 @@ namespace {
 
 constexpr char kHost[] = "avora-settings";
 
+// The request path arrives with the URL's query and fragment still on it
+// (URLDataSource::URLToRequestPath), so chrome://avora-settings/#account asks
+// for "#account".  Neither names a file: the fragment is for the page's own
+// scrolling, and the page takes no query.
+std::string_view FilePath(std::string_view path) {
+  return path.substr(0, path.find_first_of("?#"));
+}
+
 bool ShouldServePage(const std::string& path) {
-  return path.empty() || path == "index.html" || path == "avora_settings.js";
+  const std::string_view file = FilePath(path);
+  return file.empty() || file == "index.html" || file == "avora_settings.js";
 }
 
 void ServePage(const std::string& path,
                content::WebUIDataSource::GotDataCallback callback) {
-  std::string body = path == "avora_settings.js"
+  std::string body = FilePath(path) == "avora_settings.js"
                          ? std::string(avora_settings::kSettingsJs)
                          : std::string(avora_settings::kIndexHtml);
   std::move(callback).Run(
