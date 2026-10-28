@@ -1,4 +1,4 @@
-import { CircleUser, Pin, Plus, X } from 'lucide-react-native';
+import { CircleUser, Pin, Plus, Star, X } from 'lucide-react-native';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -14,6 +14,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import type { SpaceRow } from '../sync/rows';
+
 import { Favicon } from './Favicon';
 import type { Tab } from './tabs';
 import { colors, radius } from './theme';
@@ -23,6 +25,12 @@ type Props = {
   visible: boolean;
   tabs: Tab[];
   activeId: string;
+  spaces: SpaceRow[];
+  activeSpaceId: string;
+  onSwitchSpace: (id: string) => void;
+  // Missing where the platform can't ask for a name.
+  onNewSpace?: () => void;
+  onRenameSpace?: (id: string) => void;
   onSelect: (id: string) => void;
   onCloseTab: (id: string) => void;
   onTabActions: (tab: Tab) => void;
@@ -30,8 +38,6 @@ type Props = {
   onClearToday: () => void;
   onAccount: () => void;
   onDone: () => void;
-  // Rendered below the phone's own tabs; tabs from other devices go here.
-  children?: React.ReactNode;
 };
 
 const PINNED_COLUMNS = 4;
@@ -69,8 +75,10 @@ export function TabSwitcher(props: Props) {
     return () => cancelAnimationFrame(frame);
   }, [visible]);
 
-  const pinned = tabs.filter((t) => t.pinned);
-  const today = tabs.filter((t) => !t.pinned);
+  const favorites = tabs.filter((t) => t.kind === 'favorite');
+  const pinned = tabs.filter((t) => t.kind === 'pinned');
+  const today = tabs.filter((t) => t.kind === 'today');
+  const activeSpace = props.spaces.find((s) => s.id === props.activeSpaceId);
   const tileSize = (Math.min(width, 600) - 32 - (PINNED_COLUMNS - 1) * 10) / PINNED_COLUMNS;
 
   if (!mounted) return null;
@@ -93,50 +101,47 @@ export function TabSwitcher(props: Props) {
       pointerEvents={visible ? 'auto' : 'none'}
     >
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Tabs</Text>
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {activeSpace?.name || 'Tabs'}
+        </Text>
         <Text style={styles.headerCount}>{tabs.length}</Text>
         <Pressable hitSlop={10} onPress={props.onAccount} style={styles.account} accessibilityLabel="Account">
           <CircleUser size={24} color={colors.textSecondary} />
         </Pressable>
       </View>
 
+      <SpaceBar
+        spaces={props.spaces}
+        activeId={props.activeSpaceId}
+        onSelect={props.onSwitchSpace}
+        onNew={props.onNewSpace}
+        onLongPress={props.onRenameSpace}
+      />
+
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
       >
+        {favorites.length ? (
+          <TileGrid
+            label="Favorites"
+            tabs={favorites}
+            activeId={activeId}
+            tileSize={tileSize}
+            onSelect={props.onSelect}
+            onLongPress={props.onTabActions}
+          />
+        ) : null}
         {pinned.length ? (
-          <View style={styles.section}>
-            <SectionLabel text="Pinned" />
-            <View style={styles.grid}>
-              {pinned.map((tab) => (
-                <Pressable
-                  key={tab.id}
-                  onPress={() => props.onSelect(tab.id)}
-                  onLongPress={() => props.onTabActions(tab)}
-                  style={({ pressed }) => [
-                    styles.tile,
-                    { width: tileSize },
-                    pressed && styles.pressed,
-                  ]}
-                  accessibilityLabel={`Pinned tab, ${tab.title || hostOf(tab.url)}`}
-                >
-                  <View
-                    style={[
-                      styles.tileIcon,
-                      { height: tileSize * 0.72 },
-                      tab.id === activeId && styles.tileIconActive,
-                    ]}
-                  >
-                    <Favicon url={tab.url} size={26} />
-                  </View>
-                  <Text style={styles.tileLabel} numberOfLines={1}>
-                    {tab.title || hostOf(tab.url) || 'Start'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
+          <TileGrid
+            label="Pinned"
+            tabs={pinned}
+            activeId={activeId}
+            tileSize={tileSize}
+            onSelect={props.onSelect}
+            onLongPress={props.onTabActions}
+          />
         ) : null}
 
         <View style={styles.section} onLayout={(e) => (todayY.current = e.nativeEvent.layout.y)}>
@@ -169,8 +174,6 @@ export function TabSwitcher(props: Props) {
             <Text style={styles.empty}>No tabs today. Pinned tabs stay put; everything else lands here.</Text>
           )}
         </View>
-
-        {props.children}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 8 }]}>
@@ -193,10 +196,113 @@ export function TabSwitcher(props: Props) {
   );
 }
 
+// One chip per Space, like the desktop's Spaces bar.
+function SpaceBar({
+  spaces,
+  activeId,
+  onSelect,
+  onNew,
+  onLongPress,
+}: {
+  spaces: SpaceRow[];
+  activeId: string;
+  onSelect: (id: string) => void;
+  onNew?: () => void;
+  onLongPress?: (id: string) => void;
+}) {
+  if (spaces.length < 2 && !onNew) return null;
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.spaceBar}
+      contentContainerStyle={styles.spaceBarContent}
+    >
+      {spaces.map((space) => {
+        const active = space.id === activeId;
+        const tint = space.color || colors.accent;
+        return (
+          <Pressable
+            key={space.id}
+            onPress={() => onSelect(space.id)}
+            onLongPress={onLongPress && (() => onLongPress(space.id))}
+            style={({ pressed }) => [
+              styles.spaceChip,
+              active && { backgroundColor: colors.raised, borderColor: tint },
+              pressed && styles.pressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={`${space.name || 'Untitled'} Space`}
+          >
+            <View style={[styles.spaceDot, { backgroundColor: tint }]} />
+            <Text style={[styles.spaceName, active && styles.spaceNameActive]} numberOfLines={1}>
+              {space.name || 'Untitled'}
+            </Text>
+          </Pressable>
+        );
+      })}
+      {onNew ? (
+        <Pressable
+          onPress={onNew}
+          hitSlop={6}
+          style={({ pressed }) => [styles.spaceChip, styles.spaceAdd, pressed && styles.pressed]}
+          accessibilityLabel="New Space"
+        >
+          <Plus size={14} color={colors.textSecondary} />
+        </Pressable>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+function TileGrid({
+  label,
+  tabs,
+  activeId,
+  tileSize,
+  onSelect,
+  onLongPress,
+}: {
+  label: string;
+  tabs: Tab[];
+  activeId: string;
+  tileSize: number;
+  onSelect: (id: string) => void;
+  onLongPress: (tab: Tab) => void;
+}) {
+  return (
+    <View style={styles.section}>
+      <SectionLabel text={label} />
+      <View style={styles.grid}>
+        {tabs.map((tab) => (
+          <Pressable
+            key={tab.id}
+            onPress={() => onSelect(tab.id)}
+            onLongPress={() => onLongPress(tab)}
+            style={({ pressed }) => [styles.tile, { width: tileSize }, pressed && styles.pressed]}
+            accessibilityLabel={`${label === 'Favorites' ? 'Favorite' : 'Pinned tab'}, ${tab.title || hostOf(tab.url)}`}
+          >
+            <View
+              style={[styles.tileIcon, { height: tileSize * 0.72 }, tab.id === activeId && styles.tileIconActive]}
+            >
+              <Favicon url={tab.url} size={26} />
+            </View>
+            <Text style={styles.tileLabel} numberOfLines={1}>
+              {tab.title || hostOf(tab.url) || 'Start'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function SectionLabel({ text }: { text: string }) {
   return (
     <View style={styles.sectionLabel}>
       {text === 'Pinned' ? <Pin size={12} color={colors.textTertiary} /> : null}
+      {text === 'Favorites' ? <Star size={12} color={colors.textTertiary} /> : null}
       <Text style={styles.sectionLabelText}>{text}</Text>
     </View>
   );
@@ -306,9 +412,27 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 8,
   },
-  headerTitle: { color: colors.text, fontSize: 28, fontWeight: '700' },
+  headerTitle: { color: colors.text, fontSize: 28, fontWeight: '700', flexShrink: 1 },
   headerCount: { color: colors.textTertiary, fontSize: 20, fontWeight: '600' },
   account: { marginLeft: 'auto', alignSelf: 'center' },
+  spaceBar: { flexGrow: 0 },
+  spaceBarContent: { paddingHorizontal: 16, paddingVertical: 4, gap: 8 },
+  spaceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    maxWidth: 180,
+  },
+  spaceAdd: { paddingHorizontal: 10 },
+  spaceDot: { width: 8, height: 8, borderRadius: 4 },
+  spaceName: { color: colors.textSecondary, fontSize: 14, fontWeight: '500', flexShrink: 1 },
+  spaceNameActive: { color: colors.text, fontWeight: '600' },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 16, paddingBottom: 24, maxWidth: 600, width: '100%', alignSelf: 'center' },
   section: { marginTop: 14 },

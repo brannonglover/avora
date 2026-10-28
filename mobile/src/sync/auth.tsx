@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js';
 import * as Linking from 'expo-linking';
 import { createContext, use, useEffect, useMemo, useState } from 'react';
 
+import { unregisterDevice } from './devices';
 import { supabase } from './supabase';
 
 type Auth = {
@@ -70,6 +71,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       // Local scope: signing out the phone shouldn't sign out the desktop.
       signOut: async () => {
+        // While the session still works; a failure here mustn't keep you signed in.
+        await unregisterDevice().catch(() => {});
         const { error } = await requireClient().auth.signOut({ scope: 'local' });
         if (error) throw error;
       },

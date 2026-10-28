@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
-import { Laptop, Mail, X } from 'lucide-react-native';
-import { useState } from 'react';
+import { Laptop, Mail, Smartphone, X } from 'lucide-react-native';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,15 +9,17 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { setPreviewsEnabled, usePreviewsEnabled } from '../browser/previews';
 import { colors, radius } from '../browser/theme';
 import { useAuth } from './auth';
-import { updatedAgo, useSyncedDevices } from './devices';
+import { getDeviceId, updatedAgo, useDevices } from './devices';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Supabase's OTP length is configurable from 6 to 10 digits.
@@ -88,7 +90,8 @@ function SignIn() {
       <>
         <Text style={styles.title}>Sign in to Avora</Text>
         <Text style={styles.lede}>
-          See the tabs you have open on your Mac and pick up right where you left off.
+          Your Spaces and tabs, the same on this phone and every Mac you sign in on. Tabs open here are added to
+          your account.
         </Text>
         <TextInput
           style={styles.input}
@@ -168,10 +171,15 @@ function SignIn() {
 
 function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => void }) {
   const { signOut } = useAuth();
-  const devices = useSyncedDevices();
+  const devices = useDevices();
+  const previewsOn = usePreviewsEnabled();
+  const [thisDevice, setThisDevice] = useState<string | null>(null);
+  useEffect(() => {
+    getDeviceId().then(setThisDevice);
+  }, []);
 
   const confirmSignOut = () =>
-    Alert.alert('Sign out?', 'Tabs from your other devices will no longer appear on this phone.', [
+    Alert.alert('Sign out?', 'Your tabs stay on this phone but stop syncing with your other devices.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Sign Out',
@@ -194,24 +202,42 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
       <Text style={styles.sectionLabel}>Your devices</Text>
       <View style={styles.card}>
         {devices.length ? (
-          devices.map((device, i) => (
-            <View key={device.id} style={[styles.deviceRow, i > 0 && styles.divider]}>
-              <Laptop size={20} color={colors.textSecondary} />
-              <View style={styles.deviceText}>
-                <Text style={styles.deviceName} numberOfLines={1}>
-                  {device.name}
-                </Text>
-                <Text style={styles.deviceDetail}>
-                  {device.tabs.length} tab{device.tabs.length === 1 ? '' : 's'} · updated {updatedAgo(device.updatedAt)}
-                </Text>
+          devices.map((device, i) => {
+            const Icon = device.platform === 'ios' || device.platform === 'android' ? Smartphone : Laptop;
+            const self = device.id === thisDevice;
+            return (
+              <View key={device.id} style={[styles.deviceRow, i > 0 && styles.divider]}>
+                <Icon size={20} color={colors.textSecondary} />
+                <View style={styles.deviceText}>
+                  <Text style={styles.deviceName} numberOfLines={1}>
+                    {self ? `This ${device.name}` : device.name}
+                  </Text>
+                  <Text style={styles.deviceDetail}>
+                    {self ? 'Signed in' : `Last seen ${updatedAgo(device.lastSeenAt)}`}
+                  </Text>
+                </View>
               </View>
-            </View>
-          ))
+            );
+          })
         ) : (
           <Text style={styles.empty}>
-            Sign in to Avora on your Mac with this email and its tabs will show up in the tab switcher.
+            Sign in to Avora on your Mac with this email and you’ll have the same tabs on both.
           </Text>
         )}
+      </View>
+
+      <Text style={[styles.sectionLabel, styles.sectionGap]}>Tab previews</Text>
+      <View style={styles.card}>
+        <View style={styles.deviceRow}>
+          <View style={styles.deviceText}>
+            <Text style={styles.deviceName}>Share page previews</Text>
+            <Text style={styles.deviceDetail}>
+              A small picture of each tab, shown on your devices while it loads. Never taken of pages with a password
+              field.
+            </Text>
+          </View>
+          <Switch value={previewsOn} onValueChange={setPreviewsEnabled} accessibilityLabel="Share page previews" />
+        </View>
       </View>
 
       <Pressable onPress={confirmSignOut} style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
@@ -328,6 +354,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingHorizontal: 4,
   },
+  sectionGap: { marginTop: 28 },
   card: { backgroundColor: colors.surface, borderRadius: radius.card, overflow: 'hidden' },
   deviceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
   divider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },

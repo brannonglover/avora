@@ -1,37 +1,72 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import { useEffect, useState } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 import { useAuth } from './auth';
 import { supabase } from './supabase';
 
-// The shape of public.devices; docs/SYNC.md is the contract the desktop writes to.
-export type SyncedTab = {
-  url: string;
-  title: string;
-  pinned: boolean;
-  space?: string;
-  lastActiveAt?: number;
-};
-
+// public.devices only lists the signed-in devices now; tabs live in
+// public.items. See docs/SYNC.md.
 export type Device = {
   id: string;
   name: string;
   platform: string;
-  tabs: SyncedTab[];
-  updatedAt: string;
+  lastSeenAt: string;
 };
 
-type Row = { id: string; name: string; platform: string; tabs: unknown; updated_at: string };
+type Row = { id: string; name: string; platform: string; last_seen_at: string };
 
-type Loaded = { userId: string; devices: Device[] };
+const DEVICE_ID_KEY = 'avora.deviceId';
+
+let deviceId: Promise<string> | null = null;
+
+// Generated once per install and kept for good; written to |updated_by| on
+// every row this phone changes.
+export function getDeviceId(): Promise<string> {
+  deviceId ??= AsyncStorage.getItem(DEVICE_ID_KEY)
+    .then(async (stored) => {
+      if (stored) return stored;
+      const id = Crypto.randomUUID();
+      await AsyncStorage.setItem(DEVICE_ID_KEY, id);
+      return id;
+    })
+    .catch(() => Crypto.randomUUID());
+  return deviceId;
+}
+
+function deviceName(): string {
+  if (Platform.OS === 'ios') {
+    return (Platform.constants as { interfaceIdiom?: string }).interfaceIdiom === 'pad' ? 'iPad' : 'iPhone';
+  }
+  const model = (Platform.constants as { Model?: string }).Model;
+  return model || 'Android phone';
+}
+
+export async function registerDevice(): Promise<void> {
+  if (!supabase) return;
+  await supabase.from('devices').upsert({
+    id: await getDeviceId(),
+    name: deviceName(),
+    platform: Platform.OS === 'ios' ? 'ios' : 'android',
+    last_seen_at: new Date().toISOString(),
+  });
+}
+
+// Called while the session is still valid, just before signing out.
+export async function unregisterDevice(): Promise<void> {
+  if (!supabase) return;
+  await supabase.from('devices').delete().eq('id', await getDeviceId());
+}
 
 // supabase-js hands back the existing channel for a repeated topic, so each
 // subscriber needs its own or one unmount would tear down the other's.
 let channelSeq = 0;
 
-// Other devices' tabs for the signed-in account, kept current over Realtime
-// and refreshed whenever the app comes back to the foreground.
-export function useSyncedDevices(): Device[] {
+type Loaded = { userId: string; devices: Device[] };
+
+// The account's devices, this one included, most recently seen first.
+export function useDevices(): Device[] {
   const { session } = useAuth();
   const userId = session?.user.id ?? null;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -47,6 +82,8 @@ export function useSyncedDevices(): Device[] {
       });
     load();
 
+    // Realtime doesn't deliver DELETE through a column filter, so a device
+    // signing out shows up on the next foreground load instead.
     const channel = client
       .channel(`devices:${userId}:${++channelSeq}`)
       .on(
@@ -74,9 +111,16 @@ async function fetchDevices(): Promise<Device[] | null> {
   if (!supabase) return null;
   const { data, error } = await supabase
     .from('devices')
-    .select('id, name, platform, tabs, updated_at')
-    .order('updated_at', { ascending: false });
-  return error ? null : (data as Row[]).map(toDevice);
+    .select('id, name, platform, last_seen_at')
+    .order('last_seen_at', { ascending: false });
+  return error
+    ? null
+    : (data as Row[]).map((row) => ({
+        id: row.id,
+        name: row.name,
+        platform: row.platform,
+        lastSeenAt: row.last_seen_at,
+      }));
 }
 
 export function updatedAgo(iso: string, now = Date.now()): string {
@@ -89,31 +133,4 @@ export function updatedAgo(iso: string, now = Date.now()): string {
   if (days === 1) return 'yesterday';
   if (days < 7) return `${days} days ago`;
   return new Date(iso).toLocaleDateString();
-}
-
-function toDevice(row: Row): Device {
-  return {
-    id: row.id,
-    name: row.name,
-    platform: row.platform,
-    tabs: Array.isArray(row.tabs) ? row.tabs.flatMap(toTab) : [],
-    updatedAt: row.updated_at,
-  };
-}
-
-// Rows are written by other clients, so nothing is taken on trust: only
-// http(s) pages make it into the browser.
-function toTab(value: unknown): SyncedTab[] {
-  if (!value || typeof value !== 'object') return [];
-  const t = value as Record<string, unknown>;
-  if (typeof t.url !== 'string' || !/^https?:\/\//i.test(t.url)) return [];
-  return [
-    {
-      url: t.url,
-      title: typeof t.title === 'string' ? t.title : '',
-      pinned: t.pinned === true,
-      space: typeof t.space === 'string' ? t.space : undefined,
-      lastActiveAt: typeof t.lastActiveAt === 'number' ? t.lastActiveAt : undefined,
-    },
-  ];
 }
