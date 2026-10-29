@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
+#include "chrome/browser/ui/views/avora/avora_live_folder_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "components/prefs/pref_service.h"
@@ -120,6 +121,9 @@ AvoraSpaceTabFilter::AvoraSpaceTabFilter(BrowserWindowInterface* browser,
   // would otherwise see in the right order.
   link_preview_subscription_ = AddLinkPreviewStateChangedCallback(
       base::BindRepeating(&AvoraSpaceTabFilter::OnLinkPreviewStateChanged,
+                          base::Unretained(this)));
+  live_folder_tab_subscription_ = AddLiveFolderTabMarkChangedCallback(
+      base::BindRepeating(&AvoraSpaceTabFilter::OnLiveFolderTabMarkChanged,
                           base::Unretained(this)));
 
   // Order matters: recover last session's GUID assignments before URL fallback,
@@ -780,6 +784,7 @@ void AvoraSpaceTabFilter::OnTabDiscarded(
     if (IsPinnedItemTab(old_contents)) {
       MarkPinnedItemTab(new_contents, GetPinnedItemIdForTab(old_contents));
     }
+    TransferLiveFolderTabMark(old_contents, new_contents);
   }
 }
 
@@ -1465,6 +1470,22 @@ void AvoraSpaceTabFilter::RefreshTabVisibility() {
   ApplyVisibility();
 }
 
+void AvoraSpaceTabFilter::OnLiveFolderTabMarkChanged(
+    content::WebContents* contents) {
+  // Profile-wide, like the link preview callback: only a tab in this strip
+  // changes what this window draws.
+  TabStripModel* model = GetModel();
+  if (applying_ || !model || !contents ||
+      model->GetIndexOfWebContents(contents) == TabStripModel::kNoTab) {
+    return;
+  }
+  ApplyVisibility();
+  // A daily tab the other windows were already told about has to leave their
+  // daily lists too, and one released back to the daily list has to reach
+  // them; the sync pass handles both from IsDailyTab().
+  ScheduleDailyTabSync();
+}
+
 void AvoraSpaceTabFilter::OnSidebarItemsChanged() {
   // Only the visibility rules are re-run: the store is the source of truth
   // for what is pinned, and nothing here writes back to it, so this cannot
@@ -1544,6 +1565,13 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
       // draws for it, never whether the native strip shows it.
       if (visible && !is_pinned_container && live_contents &&
           IsPinnedItemTab(live_contents)) {
+        visible = false;
+      }
+
+      // A pull request opened from a Live Folder is represented by its row
+      // in AvoraLiveFoldersView, the same way a pinned item's tab is.
+      if (visible && !is_pinned_container && live_contents &&
+          IsLiveFolderTab(live_contents)) {
         visible = false;
       }
 
@@ -1675,7 +1703,7 @@ bool AvoraSpaceTabFilter::IsDailyTab(tabs::TabInterface* tab) const {
     return false;
   }
   return !IsFavoriteTab(contents) && !IsPinnedItemTab(contents) &&
-         !IsLinkPreviewTab(contents);
+         !IsLinkPreviewTab(contents) && !IsLiveFolderTab(contents);
 }
 
 bool AvoraSpaceTabFilter::CanCopyDailyTab(tabs::TabInterface* tab) const {

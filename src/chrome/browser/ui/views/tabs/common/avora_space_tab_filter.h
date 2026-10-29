@@ -102,6 +102,11 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // untagged; promoting it reverses both.
   void OnLinkPreviewStateChanged(content::WebContents* host_tab);
 
+  // Re-runs the visibility rules when a tab in this window becomes, or stops
+  // being, the tab behind a Live Folder row.  The row represents the tab, so
+  // the daily list must not show it too.
+  void OnLiveFolderTabMarkChanged(content::WebContents* contents);
+
   // SidebarItemStore::Observer:
   //
   // Removing a kPinned record (UnpinAndRemovePinnedItem) unmarks the tab, and
@@ -473,6 +478,9 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // preview's own tab is hidden from the daily list, so both edges change
   // what this filter should be drawing.
   base::CallbackListSubscription link_preview_subscription_;
+
+  // Fires when any tab in the profile gains or loses a Live Folder mark.
+  base::CallbackListSubscription live_folder_tab_subscription_;
 
   // The daily tabs the other windows have been told about, with the GUID and
   // Space they were told.  A tab missing from here, or listed under another

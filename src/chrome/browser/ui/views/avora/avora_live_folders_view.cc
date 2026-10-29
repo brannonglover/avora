@@ -12,13 +12,21 @@
 #include "base/task/sequenced_task_runner.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
@@ -28,6 +36,8 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/button/button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
@@ -52,6 +62,7 @@ constexpr int kMenuOpenItemId = 20;
 
 // Matches the pinned section so the two read as one list.
 constexpr SkColor kRowHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
+constexpr SkColor kRowActiveBg = SkColorSetARGB(0x2E, 0xFF, 0xFF, 0xFF);
 constexpr SkColor kLabelColor = SkColorSetARGB(0xE0, 0xED, 0xF2, 0xF5);
 constexpr SkColor kSubtleColor = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
 constexpr SkColor kChevronColor = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
@@ -65,6 +76,33 @@ constexpr SkColor kBadgeColor = SkColorSetRGB(0x31, 0x8C, 0xF5);
 
 constexpr int kStatusDotSize = 8;
 constexpr int kChevronSize = 8;
+
+// Lucide "minus", as on a pinned row: closing takes away the tab, not the pull
+// request, which stays in the folder.
+constexpr char kCloseTabIconPath[] = "M5 12h14";
+constexpr int kCloseGlyphSize = 14;
+constexpr int kCloseButtonSize = 24;
+
+// What a tab is remembered by when matching it to a row.  A fragment is the
+// page scrolling to a comment, not a different page.
+GURL UrlForMatching(content::WebContents* contents) {
+  GURL url = contents->GetLastCommittedURL();
+  if (url.is_empty()) {
+    url = contents->GetVisibleURL();
+  }
+  GURL::Replacements strip_ref;
+  strip_ref.ClearRef();
+  return url.ReplaceComponents(strip_ref);
+}
+
+// Whether |tab| is free to become a row's tab.  Everything excluded here is
+// already represented by some other part of the sidebar.
+bool IsAdoptableTab(tabs::TabInterface* tab) {
+  content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+  return contents && !tab->IsPinned() && !IsFavoriteTab(contents) &&
+         !IsPinnedItemTab(contents) && !IsLinkPreviewTab(contents) &&
+         !IsLiveFolderTab(contents);
+}
 
 SkColor ColorForStatus(LiveFolderItemStatus status) {
   switch (status) {
@@ -230,6 +268,37 @@ class CallbackMenuDelegate : public ui::SimpleMenuModel::Delegate {
   CheckedCallback is_checked_;
 };
 
+// The minus on a row whose pull request has a tab open.
+class LiveFolderRowCloseButton : public views::Button {
+  METADATA_HEADER(LiveFolderRowCloseButton, views::Button)
+
+ public:
+  explicit LiveFolderRowCloseButton(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    SetPreferredSize(gfx::Size(kCloseButtonSize, kCloseButtonSize));
+    SetTooltipText(u"Close Tab");
+    GetViewAccessibility().SetName(u"Close Tab");
+    SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    if (GetState() == views::Button::STATE_HOVERED ||
+        GetState() == views::Button::STATE_PRESSED) {
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      flags.setColor(kRowHoverBg);
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+      canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
+    }
+    gfx::Rect glyph(GetLocalBounds());
+    glyph.ClampToCenteredSize(gfx::Size(kCloseGlyphSize, kCloseGlyphSize));
+    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, kLabelColor);
+  }
+};
+
+BEGIN_METADATA(LiveFolderRowCloseButton)
+END_METADATA
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -339,8 +408,9 @@ END_METADATA
 LiveFolderItemRow::LiveFolderItemRow(
     const std::string& folder_id,
     const LiveFolderItem& item,
-    base::RepeatingCallback<void(const std::string&, const std::string&)>
-        on_click,
+    bool tab_active,
+    ItemCallback on_click,
+    ItemCallback on_close,
     base::RepeatingCallback<void(const std::string&, const std::string&,
                                  const gfx::Point&)> on_context)
     : folder_id_(folder_id),
@@ -348,18 +418,29 @@ LiveFolderItemRow::LiveFolderItemRow(
       url_(item.url),
       status_(item.status),
       unseen_(!item.seen),
+      tab_active_(tab_active),
       on_click_(std::move(on_click)),
+      on_close_(std::move(on_close)),
       on_context_(std::move(on_context)) {
   SetPreferredSize(gfx::Size(0, AvoraLiveFoldersView::kItemRowHeight));
 
   const int left_inset = AvoraLiveFoldersView::kHPadding +
                          AvoraLiveFoldersView::kIndent + kStatusDotSize + 8;
-  SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical,
-      gfx::Insets::TLBR(5, left_inset, 5, AvoraLiveFoldersView::kHPadding),
-      1));
+  // The close button, when shown, sits in the right padding's place.
+  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kHorizontal,
+      gfx::Insets::TLBR(5, left_inset, 5, AvoraLiveFoldersView::kHPadding / 2),
+      4));
+  layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kCenter);
 
-  auto* title = AddChildView(
+  auto* text = AddChildView(std::make_unique<views::View>());
+  text->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 1));
+  text->SetCanProcessEventsWithinSubtree(false);
+  layout->SetFlexForView(text, 1);
+
+  auto* title = text->AddChildView(
       std::make_unique<views::Label>(base::UTF8ToUTF16(item.title)));
   title->SetEnabledColor(kLabelColor);
   title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
@@ -371,23 +452,51 @@ LiveFolderItemRow::LiveFolderItemRow(
 
   const std::u16string subtitle = FormatSubtitle(item);
   if (!subtitle.empty()) {
-    auto* repo = AddChildView(std::make_unique<views::Label>(subtitle));
+    auto* repo = text->AddChildView(std::make_unique<views::Label>(subtitle));
     repo->SetEnabledColor(kSubtleColor);
     repo->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     repo->SetElideBehavior(gfx::ELIDE_HEAD);
     repo->SetFontList(repo->font_list().DeriveWithSizeDelta(-1));
   }
 
+  // Hidden until hovered, as on a pinned row.  A press on it is the button's
+  // own, so it never reaches OnMousePressed() as a click on the row.
+  if (on_close_) {
+    close_button_ = AddChildView(
+        std::make_unique<LiveFolderRowCloseButton>(base::BindRepeating(
+            &LiveFolderItemRow::CloseTab, base::Unretained(this))));
+    close_button_->SetVisible(false);
+  }
+
   SetTooltipText(base::UTF8ToUTF16(item.title));
+  SetNotifyEnterExitOnChild(true);
 }
 
 LiveFolderItemRow::~LiveFolderItemRow() = default;
 
+void LiveFolderItemRow::CloseTab() {
+  if (on_close_) {
+    // The tab's removal rebuilds the folder, and with it this row.
+    auto on_close = on_close_;
+    on_close.Run(folder_id_, external_id_);
+  }
+}
+
+void LiveFolderItemRow::UpdateCloseButtonVisibility() {
+  if (!close_button_) {
+    return;
+  }
+  if (close_button_->GetVisible() != hovered_) {
+    close_button_->SetVisible(hovered_);
+    InvalidateLayout();
+  }
+}
+
 void LiveFolderItemRow::OnPaintBackground(gfx::Canvas* canvas) {
-  if (hovered_) {
+  if (tab_active_ || hovered_) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(kRowHoverBg);
+    flags.setColor(tab_active_ ? kRowActiveBg : kRowHoverBg);
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6.0f, flags);
   }
 
@@ -415,11 +524,13 @@ bool LiveFolderItemRow::OnMousePressed(const ui::MouseEvent& event) {
 
 void LiveFolderItemRow::OnMouseEntered(const ui::MouseEvent& event) {
   hovered_ = true;
+  UpdateCloseButtonVisibility();
   SchedulePaint();
 }
 
 void LiveFolderItemRow::OnMouseExited(const ui::MouseEvent& event) {
   hovered_ = false;
+  UpdateCloseButtonVisibility();
   SchedulePaint();
 }
 
@@ -456,6 +567,7 @@ AvoraLiveFoldersView::AvoraLiveFoldersView(BrowserWindowInterface* browser,
 
   UpdateWatchedSpace();
   Rebuild();
+  ScheduleAdoptTabs();
 }
 
 AvoraLiveFoldersView::~AvoraLiveFoldersView() {
@@ -475,11 +587,146 @@ void AvoraLiveFoldersView::OnTabStripModelChanged(
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
   ReportActiveHost();
+
+  if (change.type() == TabStripModelChange::kRemoved) {
+    for (const auto& removed : change.GetRemove()->contents) {
+      evaluated_tabs_.erase(removed.tab->GetHandle());
+    }
+  }
+  if (change.type() == TabStripModelChange::kInserted) {
+    // Deferred: the Space filter tags a new tab from its own observer, which
+    // may run after this one, and adoption needs the tag.
+    ScheduleAdoptTabs();
+  }
+
+  // Which rows have a tab, and which of them is selected.
+  if (change.type() == TabStripModelChange::kInserted ||
+      change.type() == TabStripModelChange::kRemoved ||
+      selection.active_tab_changed()) {
+    ScheduleRebuild();
+  }
 }
 
 void AvoraLiveFoldersView::OnTabChangedAt(tabs::TabInterface* tab,
                                           TabChangeType change_type) {
   ReportActiveHost();
+
+  // A restored tab may only learn its URL here, after it was inserted.
+  if (change_type == TabChangeType::kAll && tab &&
+      !evaluated_tabs_.contains(tab->GetHandle())) {
+    ScheduleAdoptTabs();
+  }
+}
+
+// ── Row tabs ────────────────────────────────────────────────────────────────
+
+std::optional<LiveFolderTabKey> AvoraLiveFoldersView::FindItemForUrl(
+    const std::string& space_id,
+    const GURL& url) const {
+  if (!store_ || space_id.empty() || !url.is_valid()) {
+    return std::nullopt;
+  }
+  for (const LiveFolder& folder : store_->GetFolders(space_id)) {
+    for (const LiveFolderItem& item : folder.ActiveItems()) {
+      if (GURL(item.url) == url) {
+        return LiveFolderTabKey{space_id, folder.id, item.external_id};
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+int AvoraLiveFoldersView::FindItemTab(const LiveFolderTabKey& key) const {
+  if (!tab_strip_model_) {
+    return TabStripModel::kNoTab;
+  }
+  for (int i = 0; i < tab_strip_model_->count(); ++i) {
+    if (GetLiveFolderTabKey(tab_strip_model_->GetWebContentsAt(i)) == key) {
+      return i;
+    }
+  }
+  return TabStripModel::kNoTab;
+}
+
+void AvoraLiveFoldersView::ScheduleAdoptTabs() {
+  if (adopt_pending_) {
+    return;
+  }
+  adopt_pending_ = true;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<AvoraLiveFoldersView> view) {
+                       if (!view) {
+                         return;
+                       }
+                       view->adopt_pending_ = false;
+                       view->AdoptTabs();
+                     },
+                     weak_factory_.GetWeakPtr()));
+}
+
+void AvoraLiveFoldersView::AdoptTabs() {
+  if (!tab_strip_model_ || !store_) {
+    return;
+  }
+
+  bool adopted = false;
+  for (int i = 0; i < tab_strip_model_->count(); ++i) {
+    tabs::TabInterface* tab = tab_strip_model_->GetTabAtIndex(i);
+    content::WebContents* contents = tab ? tab->GetContents() : nullptr;
+    if (!contents || evaluated_tabs_.contains(tab->GetHandle())) {
+      continue;
+    }
+
+    // Not decided yet: without a Space there is no folder to look in, and
+    // without a URL nothing to match.  A later event brings this back.
+    const std::string space_id = GetTabSpaceId(contents);
+    const GURL url = UrlForMatching(contents);
+    if (space_id.empty() || !url.is_valid() || url.IsAboutBlank()) {
+      continue;
+    }
+    evaluated_tabs_.insert(tab->GetHandle());
+
+    if (!IsAdoptableTab(tab)) {
+      continue;
+    }
+    const std::optional<LiveFolderTabKey> key = FindItemForUrl(space_id, url);
+    if (!key || FindItemTab(*key) != TabStripModel::kNoTab) {
+      continue;
+    }
+    MarkLiveFolderTab(contents, *key);
+    adopted = true;
+  }
+
+  if (adopted) {
+    ScheduleRebuild();
+  }
+}
+
+void AvoraLiveFoldersView::ReleaseOrphanedTabs() {
+  if (!tab_strip_model_ || !store_) {
+    return;
+  }
+  for (int i = 0; i < tab_strip_model_->count(); ++i) {
+    content::WebContents* contents = tab_strip_model_->GetWebContentsAt(i);
+    const std::optional<LiveFolderTabKey> key = GetLiveFolderTabKey(contents);
+    if (!key) {
+      continue;
+    }
+    bool has_row = false;
+    if (const std::optional<LiveFolder> folder =
+            store_->GetFolderById(key->space_id, key->folder_id)) {
+      for (const LiveFolderItem& item : folder->ActiveItems()) {
+        if (item.external_id == key->external_id) {
+          has_row = true;
+          break;
+        }
+      }
+    }
+    if (!has_row) {
+      UnmarkLiveFolderTab(contents);
+    }
+  }
 }
 
 void AvoraLiveFoldersView::ReportActiveHost() {
@@ -576,6 +823,7 @@ gfx::Size AvoraLiveFoldersView::CalculatePreferredSize(
 
 void AvoraLiveFoldersView::Rebuild() {
   RemoveAllChildViews();
+  ReleaseOrphanedTabs();
 
   // Each window shows its own Space's folders, never the global default's.
   const std::string space_id = SpaceId();
@@ -600,18 +848,33 @@ void AvoraLiveFoldersView::Rebuild() {
         base::BindRepeating(&AvoraLiveFoldersView::OnFolderContextMenu,
                             weak_factory_.GetWeakPtr())));
 
-    if (!folder.expanded) {
-      continue;
-    }
-
+    const int active_index = tab_strip_model_ ? tab_strip_model_->active_index()
+                                              : TabStripModel::kNoTab;
     const std::vector<LiveFolderItem> items = folder.ActiveItems();
     for (const LiveFolderItem& item : items) {
+      const int tab_index =
+          FindItemTab(LiveFolderTabKey{space_id, folder.id, item.external_id});
+      const bool tab_open = tab_index != TabStripModel::kNoTab;
+      const bool tab_active = tab_open && tab_index == active_index;
+
+      // A collapsed folder still shows the pull request being looked at, as
+      // a pinned folder does, so the selected tab never has no row.
+      if (!folder.expanded && !tab_active) {
+        continue;
+      }
       AddChildView(std::make_unique<LiveFolderItemRow>(
-          folder.id, item,
+          folder.id, item, tab_active,
           base::BindRepeating(&AvoraLiveFoldersView::OnItemClicked,
                               weak_factory_.GetWeakPtr()),
+          tab_open ? base::BindRepeating(&AvoraLiveFoldersView::CloseItemTab,
+                                         weak_factory_.GetWeakPtr())
+                   : LiveFolderItemRow::ItemCallback(),
           base::BindRepeating(&AvoraLiveFoldersView::OnItemContextMenu,
                               weak_factory_.GetWeakPtr())));
+    }
+
+    if (!folder.expanded) {
+      continue;
     }
 
     // Organisations that enforce single sign-on keep their pull requests out
@@ -705,10 +968,85 @@ void AvoraLiveFoldersView::OnItemClicked(const std::string& folder_id,
   for (const LiveFolderItem& item : folder->items) {
     if (item.external_id == external_id) {
       store_->MarkItemSeen(SpaceId(), folder_id, external_id);
-      OpenUrl(item.url);
+      OpenItem(folder_id, external_id);
       return;
     }
   }
+}
+
+void AvoraLiveFoldersView::OpenItem(const std::string& folder_id,
+                                    const std::string& external_id) {
+  if (!browser_ || !tab_strip_model_ || !store_) {
+    return;
+  }
+  const std::string space_id = SpaceId();
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(space_id, folder_id);
+  if (!folder) {
+    return;
+  }
+  GURL url;
+  for (const LiveFolderItem& item : folder->items) {
+    if (item.external_id == external_id) {
+      url = GURL(item.url);
+      break;
+    }
+  }
+  if (!url.is_valid()) {
+    return;
+  }
+  const LiveFolderTabKey key{space_id, folder_id, external_id};
+
+  // The row's own tab.  Clicking the selected row after browsing away from
+  // the pull request takes the tab back to it, as a pinned row's return
+  // control does; Back still has the page that was left.
+  if (const int index = FindItemTab(key); index != TabStripModel::kNoTab) {
+    content::WebContents* contents = tab_strip_model_->GetWebContentsAt(index);
+    if (index == tab_strip_model_->active_index() &&
+        UrlForMatching(contents) != url) {
+      contents->GetController().LoadURL(url, content::Referrer(),
+                                        ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                                        std::string());
+      return;
+    }
+    tab_strip_model_->ActivateTabAt(index);
+    return;
+  }
+
+  // A daily tab of this Space already showing the pull request becomes the
+  // row's tab, rather than leaving two tabs open on one page.
+  for (int i = 0; i < tab_strip_model_->count(); ++i) {
+    tabs::TabInterface* tab = tab_strip_model_->GetTabAtIndex(i);
+    if (IsAdoptableTab(tab) && GetTabSpaceId(tab->GetContents()) == space_id &&
+        UrlForMatching(tab->GetContents()) == url) {
+      MarkLiveFolderTab(tab->GetContents(), key);
+      tab_strip_model_->ActivateTabAt(i);
+      return;
+    }
+  }
+
+  NavigateParams params(browser_, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  Navigate(&params);
+  if (content::WebContents* contents = params.navigated_or_inserted_contents) {
+    SetTabSpaceId(contents, space_id);
+    MarkLiveFolderTab(contents, key);
+  }
+}
+
+void AvoraLiveFoldersView::CloseItemTab(const std::string& folder_id,
+                                        const std::string& external_id) {
+  if (!tab_strip_model_) {
+    return;
+  }
+  const int index =
+      FindItemTab(LiveFolderTabKey{SpaceId(), folder_id, external_id});
+  if (index == TabStripModel::kNoTab) {
+    return;
+  }
+  tab_strip_model_->CloseWebContentsAt(
+      index, TabCloseTypes::CLOSE_USER_GESTURE |
+                 TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
 }
 
 void AvoraLiveFoldersView::OpenUrl(const std::string& url) {
@@ -926,16 +1264,17 @@ void AvoraLiveFoldersView::OnItemContextMenu(const std::string& folder_id,
 
   context_menu_delegate_ = std::make_unique<CallbackMenuDelegate>(
       base::BindRepeating(
-          [](base::WeakPtr<AvoraLiveFoldersView> view, const std::string& url,
+          [](base::WeakPtr<AvoraLiveFoldersView> view,
+             const std::string& folder_id, const std::string& external_id,
              int command_id) {
             if (!view) {
               return;
             }
             if (command_id == kMenuOpenItemId) {
-              view->OpenUrl(url);
+              view->OpenItem(folder_id, external_id);
             }
           },
-          weak_factory_.GetWeakPtr(), url),
+          weak_factory_.GetWeakPtr(), folder_id, external_id),
       base::RepeatingCallback<bool(int)>());
 
   context_menu_model_ =

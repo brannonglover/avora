@@ -4,6 +4,8 @@
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_LIVE_FOLDERS_VIEW_H_
 
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -15,10 +17,13 @@
 #include "chrome/browser/avora/avora_window_space.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "chrome/browser/ui/views/avora/avora_live_folder_tab_marker.h"
+#include "components/tabs/public/tab_interface.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/view.h"
+#include "url/gurl.h"
 
 class BrowserWindowInterface;
 
@@ -27,6 +32,7 @@ class Canvas;
 }  // namespace gfx
 
 namespace views {
+class Button;
 class Label;
 }  // namespace views
 
@@ -69,15 +75,23 @@ class LiveFolderHeaderRow : public views::View {
 };
 
 // A single pull request row: status dot, title, and "repo #number" subtitle.
+//
+// The row is the pull request's tab, the way a pinned row is its pinned
+// tab: |tab_active| draws it selected, and while a tab is open behind it
+// (|on_close| non-null) hovering offers to close that tab.
 class LiveFolderItemRow : public views::View {
   METADATA_HEADER(LiveFolderItemRow, views::View)
 
  public:
+  using ItemCallback =
+      base::RepeatingCallback<void(const std::string&, const std::string&)>;
+
   LiveFolderItemRow(
       const std::string& folder_id,
       const LiveFolderItem& item,
-      base::RepeatingCallback<void(const std::string&, const std::string&)>
-          on_click,
+      bool tab_active,
+      ItemCallback on_click,
+      ItemCallback on_close,
       base::RepeatingCallback<void(const std::string&, const std::string&,
                                    const gfx::Point&)> on_context);
   ~LiveFolderItemRow() override;
@@ -89,6 +103,9 @@ class LiveFolderItemRow : public views::View {
   void OnMouseExited(const ui::MouseEvent& event) override;
 
  private:
+  void CloseTab();
+  void UpdateCloseButtonVisibility();
+
   std::string folder_id_;
   std::string external_id_;
   std::string url_;
@@ -97,10 +114,13 @@ class LiveFolderItemRow : public views::View {
   // Unseen rows get a subtle emphasis so a newly-arrived pull request is
   // findable after the user expands the folder the badge pointed them at.
   bool unseen_ = false;
+  bool tab_active_ = false;
   bool hovered_ = false;
 
-  base::RepeatingCallback<void(const std::string&, const std::string&)>
-      on_click_;
+  raw_ptr<views::Button> close_button_ = nullptr;
+
+  ItemCallback on_click_;
+  ItemCallback on_close_;
   base::RepeatingCallback<void(const std::string&, const std::string&,
                                const gfx::Point&)>
       on_context_;
@@ -150,8 +170,9 @@ class AvoraLiveFoldersView : public views::View,
   // avora::WindowSpaceState::Observer:
   void OnWindowActiveSpaceChanged(const std::string& space_id) override;
 
-  // TabStripModelObserver: watched purely to notice the user visiting a
-  // provider's site, which is what makes the folder appear in the first place.
+  // TabStripModelObserver: watched to notice the user visiting a provider's
+  // site, which is what makes the folder appear in the first place, and to
+  // keep each row in step with the tab behind it.
   void OnTabStripModelChanged(
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
@@ -183,8 +204,37 @@ class AvoraLiveFoldersView : public views::View,
                          const std::string& external_id,
                          const gfx::Point& screen_point);
 
-  // Opens |url| in the tab that already shows it, or a new one.
+  // Opens |url| in the tab that already shows it, or a new one.  For pages
+  // that are not rows of their own, such as sign-in.
   void OpenUrl(const std::string& url);
+
+  // Activates the tab behind a row, opening one if there is none.
+  void OpenItem(const std::string& folder_id, const std::string& external_id);
+
+  // Closes the tab behind a row.  The row stays; it is the pull request, not
+  // the tab.
+  void CloseItemTab(const std::string& folder_id,
+                    const std::string& external_id);
+
+  // The index in this window's strip of the tab behind |key|, or
+  // TabStripModel::kNoTab.
+  int FindItemTab(const LiveFolderTabKey& key) const;
+
+  // Gives tabs that arrived showing a row's pull request -- restored from the
+  // last session, or opened from a link -- to that row.  Each tab is looked
+  // at once, when it first has a Space and a URL, so a daily tab that later
+  // browses to a pull request stays where the user has it.
+  void ScheduleAdoptTabs();
+  void AdoptTabs();
+
+  // Returns tabs whose row has gone -- the pull request merged or closed, the
+  // folder was removed, or the Space signed out -- to the daily list, where
+  // they would otherwise be hidden with nothing to show them.
+  void ReleaseOrphanedTabs();
+
+  // The row |url| is the pull request of, in |space_id|.
+  std::optional<LiveFolderTabKey> FindItemForUrl(const std::string& space_id,
+                                                 const GURL& url) const;
 
   // Opens github.com's sign-in page in a new tab of this window's Space.
   void OpenSignIn(const std::string& folder_id);
@@ -231,6 +281,12 @@ class AvoraLiveFoldersView : public views::View,
   // Set between a scheduled rebuild and its execution, so a burst of store
   // notifications collapses into one.
   bool rebuild_pending_ = false;
+
+  // The same, for the adoption pass.
+  bool adopt_pending_ = false;
+
+  // Tabs AdoptTabs() has already decided about.
+  std::set<tabs::TabHandle> evaluated_tabs_;
 
   base::WeakPtrFactory<AvoraLiveFoldersView> weak_factory_{this};
 };

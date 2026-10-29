@@ -40,6 +40,8 @@ source_set("avora") {
     "avora_mini_toolbar_view.h",
     "avora_mini_window.cc",
     "avora_mini_window.h",
+    "avora_live_folder_tab_marker.cc",
+    "avora_live_folder_tab_marker.h",
     "avora_live_folders_view.cc",
     "avora_live_folders_view.h",
     "avora_parked_pin_view.cc",
