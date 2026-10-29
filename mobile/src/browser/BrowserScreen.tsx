@@ -83,7 +83,7 @@ const IDLE_NAV: NavState = { canGoBack: false, canGoForward: false, loading: fal
 type Sheet = { title?: string; subtitle?: string; actions: SheetAction[] };
 
 export function BrowserScreen() {
-  const { state, spaces, activeSpace, tabs, activeTab, attached, dispatch } = useTabs();
+  const { state, spaces, activeSpace, tabs, folders, activeTab, attached, dispatch } = useTabs();
   const insets = useSafeAreaInsets();
   const keyboardHeight = useKeyboardHeight();
   const { session } = useAuth();
@@ -629,6 +629,7 @@ export function BrowserScreen() {
       <TabSwitcher
         visible={switcherOpen}
         tabs={tabs}
+        folders={folders}
         activeId={activeTab.id}
         spaces={spaces}
         activeSpaceId={state.activeSpaceId}

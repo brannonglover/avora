@@ -62,6 +62,12 @@ export type Tab = {
   previewUpdatedAt: string | null;
 };
 
+// A pinned folder; its tabs carry its id as |parentId|.
+export type Folder = {
+  id: string;
+  title: string;
+};
+
 export type ClosedTab = {
   tab: Tab;
   closedAt: number;
@@ -346,6 +352,12 @@ export function tabsIn(state: TabsState, spaceId: string): Tab[] {
   );
   const ids = [...favorites, ...pinned, ...todaySlots(state, spaceId)].map((r) => r.id);
   return ids.map((id) => toTab(state, id, id === activeId)).filter((t): t is Tab => !!t);
+}
+
+export function foldersIn(state: TabsState, spaceId: string): Folder[] {
+  return liveItemsIn(state, spaceId)
+    .filter((i) => i.kind === 'folder')
+    .map((i) => ({ id: i.id, title: i.title }));
 }
 
 function tabById(state: TabsState, id: string): Tab | null {
@@ -1200,11 +1212,12 @@ export function useTabs() {
 
   const spaces = useMemo(() => liveSpaces(state), [state]);
   const tabs = useMemo(() => tabsIn(state, state.activeSpaceId), [state]);
+  const folders = useMemo(() => foldersIn(state, state.activeSpaceId), [state]);
   const activeId = state.activeBySpace[state.activeSpaceId];
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const activeSpace = state.spaces[state.activeSpaceId];
 
-  return { state, spaces, activeSpace, tabs, activeTab, attached, dispatch };
+  return { state, spaces, activeSpace, tabs, folders, activeTab, attached, dispatch };
 }
 
 export type TabsDispatch = ReturnType<typeof useTabs>['dispatch'];

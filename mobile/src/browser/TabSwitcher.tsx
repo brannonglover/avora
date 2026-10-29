@@ -1,4 +1,4 @@
-import { CircleUser, Pin, Plus, Star, X } from 'lucide-react-native';
+import { CircleUser, Folder as FolderIcon, Pin, Plus, Star, X } from 'lucide-react-native';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -17,13 +17,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SpaceRow } from '../sync/rows';
 
 import { Favicon } from './Favicon';
-import type { Tab } from './tabs';
+import type { Folder, Tab } from './tabs';
 import { colors, radius } from './theme';
 import { hostOf } from './url';
 
 type Props = {
   visible: boolean;
   tabs: Tab[];
+  folders: Folder[];
   activeId: string;
   spaces: SpaceRow[];
   activeSpaceId: string;
@@ -53,6 +54,8 @@ export function TabSwitcher(props: Props) {
   const scrollRef = useRef<ScrollViewInstance>(null);
   const activeRowY = useRef(0);
   const todayY = useRef(0);
+  const [openFolder, setOpenFolder] = useState<{ id: string; spaceId: string } | null>(null);
+  if (!visible && openFolder) setOpenFolder(null);
 
   useEffect(() => {
     Animated.spring(slide, {
@@ -76,10 +79,17 @@ export function TabSwitcher(props: Props) {
   }, [visible]);
 
   const favorites = tabs.filter((t) => t.kind === 'favorite');
-  const pinned = tabs.filter((t) => t.kind === 'pinned');
+  const pinned = useMemo(
+    () => groupPinned(tabs.filter((t) => t.kind === 'pinned'), props.folders),
+    [tabs, props.folders],
+  );
   const today = tabs.filter((t) => t.kind === 'today');
   const activeSpace = props.spaces.find((s) => s.id === props.activeSpaceId);
   const tileSize = (Math.min(width, 600) - 32 - (PINNED_COLUMNS - 1) * 10) / PINNED_COLUMNS;
+  const shownFolder =
+    openFolder?.spaceId === props.activeSpaceId
+      ? pinned.find((e) => e.kind === 'folder' && e.folder.id === openFolder.id)
+      : undefined;
 
   if (!mounted) return null;
 
@@ -124,24 +134,61 @@ export function TabSwitcher(props: Props) {
         contentContainerStyle={styles.scrollContent}
       >
         {favorites.length ? (
-          <TileGrid
-            label="Favorites"
-            tabs={favorites}
-            activeId={activeId}
-            tileSize={tileSize}
-            onSelect={props.onSelect}
-            onLongPress={props.onTabActions}
-          />
+          <View style={styles.section}>
+            <SectionLabel text="Favorites" />
+            <View style={styles.grid}>
+              {favorites.map((tab) => (
+                <Tile
+                  key={tab.id}
+                  size={tileSize}
+                  active={tab.id === activeId}
+                  onPress={() => props.onSelect(tab.id)}
+                  onLongPress={() => props.onTabActions(tab)}
+                  accessibilityLabel={`Favorite, ${titleOf(tab)}`}
+                >
+                  <Favicon url={tab.url} size={26} />
+                </Tile>
+              ))}
+            </View>
+          </View>
         ) : null}
         {pinned.length ? (
-          <TileGrid
-            label="Pinned"
-            tabs={pinned}
-            activeId={activeId}
-            tileSize={tileSize}
-            onSelect={props.onSelect}
-            onLongPress={props.onTabActions}
-          />
+          <View style={styles.section}>
+            <SectionLabel text="Pinned" />
+            <View style={styles.grid}>
+              {pinned.map((entry) =>
+                entry.kind === 'tab' ? (
+                  <Tile
+                    key={entry.tab.id}
+                    size={tileSize}
+                    label={titleOf(entry.tab)}
+                    active={entry.tab.id === activeId}
+                    onPress={() => props.onSelect(entry.tab.id)}
+                    onLongPress={() => props.onTabActions(entry.tab)}
+                    accessibilityLabel={`Pinned tab, ${titleOf(entry.tab)}`}
+                  >
+                    <Favicon url={entry.tab.url} size={26} />
+                  </Tile>
+                ) : (
+                  <Tile
+                    key={entry.folder.id}
+                    size={tileSize}
+                    label={entry.folder.title || 'Folder'}
+                    folder
+                    active={entry.tabs.some((t) => t.id === activeId)}
+                    onPress={() => setOpenFolder({ id: entry.folder.id, spaceId: props.activeSpaceId })}
+                    accessibilityLabel={`Folder, ${entry.folder.title || 'Untitled'}, ${entry.tabs.length} tabs`}
+                  >
+                    <View style={styles.mosaic}>
+                      {entry.tabs.slice(0, 4).map((t) => (
+                        <Favicon key={t.id} url={t.url} size={15} />
+                      ))}
+                    </View>
+                  </Tile>
+                ),
+              )}
+            </View>
+          </View>
         ) : null}
 
         <View style={styles.section} onLayout={(e) => (todayY.current = e.nativeEvent.layout.y)}>
@@ -192,6 +239,163 @@ export function TabSwitcher(props: Props) {
           </Pressable>
         </View>
       </View>
+
+      {shownFolder?.kind === 'folder' ? (
+        <FolderSheet
+          folder={shownFolder.folder}
+          tabs={shownFolder.tabs}
+          activeId={activeId}
+          onSelect={props.onSelect}
+          onLongPress={props.onTabActions}
+          onClose={() => setOpenFolder(null)}
+        />
+      ) : null}
+    </Animated.View>
+  );
+}
+
+type PinnedEntry = { kind: 'tab'; tab: Tab } | { kind: 'folder'; folder: Folder; tabs: Tab[] };
+
+// Loose pinned tabs and folders in sidebar order. Pinned tabs arrive with a
+// folder's contents in its place, so a folder takes its first tab's spot.
+function groupPinned(pinned: Tab[], folders: Folder[]): PinnedEntry[] {
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const groups = new Map<string, Tab[]>();
+  const entries: PinnedEntry[] = [];
+  for (const tab of pinned) {
+    const folder = tab.parentId ? byId.get(tab.parentId) : undefined;
+    if (!folder) {
+      entries.push({ kind: 'tab', tab });
+      continue;
+    }
+    let group = groups.get(folder.id);
+    if (!group) {
+      group = [];
+      groups.set(folder.id, group);
+      entries.push({ kind: 'folder', folder, tabs: group });
+    }
+    group.push(tab);
+  }
+  return entries;
+}
+
+function titleOf(tab: Tab) {
+  return tab.title || hostOf(tab.url) || 'Start';
+}
+
+// One square in the Favorites or Pinned grid. Favorites go without a label:
+// there are only a few and they're known by their icons.
+function Tile({
+  size,
+  label,
+  folder,
+  active,
+  onPress,
+  onLongPress,
+  accessibilityLabel,
+  children,
+}: {
+  size: number;
+  label?: string;
+  folder?: boolean;
+  active: boolean;
+  onPress: () => void;
+  onLongPress?: () => void;
+  accessibilityLabel: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      style={({ pressed }) => [styles.tile, { width: size }, pressed && styles.pressed]}
+      accessibilityLabel={accessibilityLabel}
+    >
+      <View
+        style={[
+          styles.tileIcon,
+          { height: size * 0.72 },
+          folder && styles.tileFolder,
+          active && styles.tileIconActive,
+        ]}
+      >
+        {children}
+      </View>
+      {label ? (
+        <Text style={styles.tileLabel} numberOfLines={1}>
+          {label}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+const FOLDER_COLUMNS = 4;
+
+// A folder opened over the switcher, like a folder on the home screen.
+function FolderSheet({
+  folder,
+  tabs,
+  activeId,
+  onSelect,
+  onLongPress,
+  onClose,
+}: {
+  folder: Folder;
+  tabs: Tab[];
+  activeId: string;
+  onSelect: (id: string) => void;
+  onLongPress: (tab: Tab) => void;
+  onClose: () => void;
+}) {
+  const { width, height } = useWindowDimensions();
+  const [fade] = useState(() => new Animated.Value(0));
+  useEffect(() => {
+    Animated.timing(fade, { toValue: 1, duration: 160, useNativeDriver: true }).start();
+  }, [fade]);
+
+  const cardWidth = Math.min(width, 600) - 32;
+  const tileSize = (cardWidth - 32 - (FOLDER_COLUMNS - 1) * 10) / FOLDER_COLUMNS;
+
+  return (
+    <Animated.View style={[StyleSheet.absoluteFill, styles.folderBackdrop, { opacity: fade }]}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close folder" />
+      <Animated.View
+        style={[
+          styles.folderCard,
+          { width: cardWidth },
+          { transform: [{ scale: fade.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) }] },
+        ]}
+      >
+        <View style={styles.folderHeader}>
+          <FolderIcon size={18} color={colors.textSecondary} />
+          <Text style={styles.folderTitle} numberOfLines={1}>
+            {folder.title || 'Folder'}
+          </Text>
+          <Text style={styles.folderCount}>{tabs.length}</Text>
+          <Pressable hitSlop={10} onPress={onClose} style={styles.folderClose} accessibilityLabel="Close folder">
+            <X size={18} color={colors.textSecondary} />
+          </Pressable>
+        </View>
+        <ScrollView style={{ maxHeight: height * 0.55 }} contentContainerStyle={styles.grid}>
+          {tabs.map((tab) => (
+            <Tile
+              key={tab.id}
+              size={tileSize}
+              label={titleOf(tab)}
+              active={tab.id === activeId}
+              onPress={() => {
+                onClose();
+                onSelect(tab.id);
+              }}
+              onLongPress={() => onLongPress(tab)}
+              accessibilityLabel={`Pinned tab, ${titleOf(tab)}`}
+            >
+              <Favicon url={tab.url} size={26} />
+            </Tile>
+          ))}
+        </ScrollView>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -253,48 +457,6 @@ function SpaceBar({
         </Pressable>
       ) : null}
     </ScrollView>
-  );
-}
-
-function TileGrid({
-  label,
-  tabs,
-  activeId,
-  tileSize,
-  onSelect,
-  onLongPress,
-}: {
-  label: string;
-  tabs: Tab[];
-  activeId: string;
-  tileSize: number;
-  onSelect: (id: string) => void;
-  onLongPress: (tab: Tab) => void;
-}) {
-  return (
-    <View style={styles.section}>
-      <SectionLabel text={label} />
-      <View style={styles.grid}>
-        {tabs.map((tab) => (
-          <Pressable
-            key={tab.id}
-            onPress={() => onSelect(tab.id)}
-            onLongPress={() => onLongPress(tab)}
-            style={({ pressed }) => [styles.tile, { width: tileSize }, pressed && styles.pressed]}
-            accessibilityLabel={`${label === 'Favorites' ? 'Favorite' : 'Pinned tab'}, ${tab.title || hostOf(tab.url)}`}
-          >
-            <View
-              style={[styles.tileIcon, { height: tileSize * 0.72 }, tab.id === activeId && styles.tileIconActive]}
-            >
-              <Favicon url={tab.url} size={26} />
-            </View>
-            <Text style={styles.tileLabel} numberOfLines={1}>
-              {tab.title || hostOf(tab.url) || 'Start'}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-    </View>
   );
 }
 
@@ -463,7 +625,9 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'transparent',
   },
+  tileFolder: { backgroundColor: colors.raised },
   tileIconActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  mosaic: { width: 34, flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   tileLabel: { color: colors.textSecondary, fontSize: 11, maxWidth: '100%' },
   list: { backgroundColor: colors.surface, borderRadius: radius.card, overflow: 'hidden' },
   rowOuter: { backgroundColor: colors.danger },
@@ -500,6 +664,12 @@ const styles = StyleSheet.create({
   rowHost: { color: colors.textTertiary, fontSize: 12, marginTop: 1 },
   rowClose: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 16 },
   pressed: { opacity: 0.7 },
+  folderBackdrop: { backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  folderCard: { backgroundColor: colors.raised, borderRadius: 22, padding: 16, gap: 14 },
+  folderHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
+  folderTitle: { color: colors.text, fontSize: 20, fontWeight: '700', flexShrink: 1 },
+  folderCount: { color: colors.textTertiary, fontSize: 16, fontWeight: '600' },
+  folderClose: { marginLeft: 'auto' },
   empty: { color: colors.textTertiary, fontSize: 14, paddingHorizontal: 4, lineHeight: 20 },
   footer: {
     flexDirection: 'row',
