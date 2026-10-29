@@ -11,11 +11,13 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "cc/paint/paint_flags.h"
+#include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
@@ -452,10 +454,14 @@ AvoraLiveFoldersView::AvoraLiveFoldersView(BrowserWindowInterface* browser,
     tab_strip_model_->AddObserver(this);
   }
 
+  UpdateWatchedSpace();
   Rebuild();
 }
 
 AvoraLiveFoldersView::~AvoraLiveFoldersView() {
+  if (service_ && !watched_space_id_.empty()) {
+    service_->UnwatchSpace(watched_space_id_);
+  }
   if (window_space_state_) {
     window_space_state_->RemoveObserver(this);
   }
@@ -484,7 +490,39 @@ void AvoraLiveFoldersView::ReportActiveHost() {
   if (!contents) {
     return;
   }
-  service_->OnHostVisited(std::string(contents->GetLastCommittedURL().host()));
+  service_->OnHostVisited(SpaceId(),
+                          std::string(contents->GetLastCommittedURL().host()));
+}
+
+std::string AvoraLiveFoldersView::SpaceId() const {
+  if (window_space_state_) {
+    return window_space_state_->active_space_id();
+  }
+  // A window with no Space of its own shows the global default, as its new
+  // tabs do.
+  if (PrefService* prefs = browser_->GetProfile()->GetPrefs()) {
+    if (const Space* space = SpaceManager(prefs).GetActiveSpace()) {
+      return space->id;
+    }
+  }
+  return std::string();
+}
+
+void AvoraLiveFoldersView::UpdateWatchedSpace() {
+  if (!service_) {
+    return;
+  }
+  const std::string space_id = SpaceId();
+  if (space_id == watched_space_id_) {
+    return;
+  }
+  // Watch the new Space before releasing the old one, so a Space this window
+  // merely re-enters never drops to zero watchers in between.
+  service_->WatchSpace(space_id);
+  if (!watched_space_id_.empty()) {
+    service_->UnwatchSpace(watched_space_id_);
+  }
+  watched_space_id_ = space_id;
 }
 
 void AvoraLiveFoldersView::OnLiveFoldersChanged() {
@@ -493,12 +531,16 @@ void AvoraLiveFoldersView::OnLiveFoldersChanged() {
 
 void AvoraLiveFoldersView::OnWindowActiveSpaceChanged(
     const std::string& space_id) {
+  UpdateWatchedSpace();
   ScheduleRebuild();
 }
 
 void AvoraLiveFoldersView::OnLiveFolderSyncStateChanged(
+    const std::string& space_id,
     const std::string& folder_id) {
-  ScheduleRebuild();
+  if (space_id == SpaceId()) {
+    ScheduleRebuild();
+  }
 }
 
 void AvoraLiveFoldersView::ScheduleRebuild() {
@@ -535,12 +577,10 @@ gfx::Size AvoraLiveFoldersView::CalculatePreferredSize(
 void AvoraLiveFoldersView::Rebuild() {
   RemoveAllChildViews();
 
-  // Use the window-local active Space to query the right set of folders.
+  // Each window shows its own Space's folders, never the global default's.
+  const std::string space_id = SpaceId();
   const std::vector<LiveFolder> folders =
-      (window_space_state_ && store_)
-          ? store_->GetFoldersForSpace(window_space_state_->active_space_id())
-          : (store_ ? store_->GetFolders()
-                    : std::vector<LiveFolder>());
+      store_ ? store_->GetFolders(space_id) : std::vector<LiveFolder>();
 
   if (folders.empty()) {
     InvalidateLayout();
@@ -549,7 +589,7 @@ void AvoraLiveFoldersView::Rebuild() {
 
   for (const LiveFolder& folder : folders) {
     const LiveFolderService::SyncState state =
-        service_ ? service_->GetSyncState(folder.id)
+        service_ ? service_->GetSyncState(space_id, folder.id)
                  : LiveFolderService::SyncState();
 
     AddChildView(std::make_unique<LiveFolderHeaderRow>(
@@ -565,24 +605,38 @@ void AvoraLiveFoldersView::Rebuild() {
     }
 
     const std::vector<LiveFolderItem> items = folder.ActiveItems();
+    for (const LiveFolderItem& item : items) {
+      AddChildView(std::make_unique<LiveFolderItemRow>(
+          folder.id, item,
+          base::BindRepeating(&AvoraLiveFoldersView::OnItemClicked,
+                              weak_factory_.GetWeakPtr()),
+          base::BindRepeating(&AvoraLiveFoldersView::OnItemContextMenu,
+                              weak_factory_.GetWeakPtr())));
+    }
+
+    // Organisations that enforce single sign-on keep their pull requests out
+    // of the results until this Space has been through their identity
+    // provider.  Without saying so, the folder would just look incomplete.
+    for (const LiveFolderProtectedSource& source : state.protected_sources) {
+      AddChildView(std::make_unique<MessageRow>(
+          base::UTF8ToUTF16(
+              base::StrCat({"Sign in to ", source.name, " (SSO)"})),
+          kBadgeColor,
+          base::BindRepeating(&AvoraLiveFoldersView::OpenUrl,
+                              weak_factory_.GetWeakPtr(),
+                              source.sign_in_url.spec())));
+    }
+
     if (!items.empty()) {
-      for (const LiveFolderItem& item : items) {
-        AddChildView(std::make_unique<LiveFolderItemRow>(
-            folder.id, item,
-            base::BindRepeating(&AvoraLiveFoldersView::OnItemClicked,
-                                weak_factory_.GetWeakPtr()),
-            base::BindRepeating(&AvoraLiveFoldersView::OnItemContextMenu,
-                                weak_factory_.GetWeakPtr())));
-      }
       continue;
     }
 
     // No rows.  Failures get a message, because a broken folder and an empty
     // one would otherwise look identical.  Signing out clears the rows, so a
-    // signed-out folder always lands here and offers the sign-in.  A successful sync that simply
-    // matched nothing gets no row at all: "you have no pull requests" is the
-    // expected resting state, and a line of text restating it is noise the
-    // user cannot act on.
+    // signed-out folder always lands here and offers the sign-in.  A
+    // successful sync that simply matched nothing gets no row at all: "you
+    // have no pull requests" is the expected resting state, and a line of text
+    // restating it is noise the user cannot act on.
     switch (state.last_status) {
       case LiveFolderFetchStatus::kAuthFailed:
       case LiveFolderFetchStatus::kNetworkError:
@@ -624,16 +678,17 @@ void AvoraLiveFoldersView::OnFolderToggle(const std::string& folder_id) {
   if (!store_) {
     return;
   }
-  const std::optional<LiveFolder> folder = store_->GetFolderById(folder_id);
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(SpaceId(), folder_id);
   if (!folder) {
     return;
   }
-  store_->SetExpanded(folder_id, !folder->expanded);
+  store_->SetExpanded(SpaceId(), folder_id, !folder->expanded);
 
   // Opening a folder is the moment its contents matter, so take the chance to
   // refresh -- subject to the service's minimum spacing.
   if (!folder->expanded && service_) {
-    service_->RefreshFolder(folder_id);
+    service_->RefreshFolder(SpaceId(), folder_id);
   }
 }
 
@@ -642,13 +697,14 @@ void AvoraLiveFoldersView::OnItemClicked(const std::string& folder_id,
   if (!store_) {
     return;
   }
-  const std::optional<LiveFolder> folder = store_->GetFolderById(folder_id);
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(SpaceId(), folder_id);
   if (!folder) {
     return;
   }
   for (const LiveFolderItem& item : folder->items) {
     if (item.external_id == external_id) {
-      store_->MarkItemSeen(folder_id, external_id);
+      store_->MarkItemSeen(SpaceId(), folder_id, external_id);
       OpenUrl(item.url);
       return;
     }
@@ -682,12 +738,13 @@ void AvoraLiveFoldersView::StartGitHubSignInFlow() {
   if (!store_) {
     return;
   }
-  const std::string folder_id = store_->EnsureGitHubPullRequestsFolder();
+  const std::string folder_id =
+      store_->EnsureGitHubPullRequestsFolder(SpaceId());
   if (folder_id.empty()) {
     return;
   }
-  if (service_ && service_->GetSyncState(folder_id).connected) {
-    service_->ForceRefreshFolder(folder_id);
+  if (service_ && service_->GetSyncState(SpaceId(), folder_id).connected) {
+    service_->ForceRefreshFolder(SpaceId(), folder_id);
     return;
   }
   OpenSignIn(folder_id);
@@ -700,7 +757,8 @@ void AvoraLiveFoldersView::OpenSignIn(const std::string& folder_id) {
   // There is nothing to connect: signing in on github.com, in this Space, is
   // the whole flow.  The service notices the new session when the tab lands
   // back on github.com and fills the folder.
-  const GURL url = service_->GetSignInUrl(LiveFolderProviderId::kGitHub);
+  const GURL url =
+      service_->GetSignInUrl(SpaceId(), LiveFolderProviderId::kGitHub);
   if (url.is_valid()) {
     OpenUrl(url.spec());
   }
@@ -711,7 +769,8 @@ void AvoraLiveFoldersView::ToggleQueryFilter(const std::string& folder_id,
   if (!store_) {
     return;
   }
-  const std::optional<LiveFolder> folder = store_->GetFolderById(folder_id);
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(SpaceId(), folder_id);
   if (!folder) {
     return;
   }
@@ -740,9 +799,9 @@ void AvoraLiveFoldersView::ToggleQueryFilter(const std::string& folder_id,
       return;
   }
 
-  store_->SetQuery(folder_id, query);
+  store_->SetQuery(SpaceId(), folder_id, query);
   if (service_) {
-    service_->ForceRefreshFolder(folder_id);
+    service_->ForceRefreshFolder(SpaceId(), folder_id);
   }
 }
 
@@ -754,13 +813,14 @@ void AvoraLiveFoldersView::OnFolderContextMenu(
   if (!store_) {
     return;
   }
-  const std::optional<LiveFolder> folder = store_->GetFolderById(folder_id);
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(SpaceId(), folder_id);
   if (!folder) {
     return;
   }
 
   const bool connected =
-      service_ && service_->GetSyncState(folder_id).connected;
+      service_ && service_->GetSyncState(SpaceId(), folder_id).connected;
 
   context_menu_delegate_ = std::make_unique<CallbackMenuDelegate>(
       base::BindRepeating(
@@ -772,7 +832,8 @@ void AvoraLiveFoldersView::OnFolderContextMenu(
             switch (command_id) {
               case kMenuRefreshId:
                 if (view->service_) {
-                  view->service_->ForceRefreshFolder(folder_id);
+                  view->service_->ForceRefreshFolder(view->SpaceId(),
+                                                     folder_id);
                 }
                 break;
               case kMenuSignInId:
@@ -780,7 +841,7 @@ void AvoraLiveFoldersView::OnFolderContextMenu(
                 break;
               case kMenuRemoveFolderId:
                 if (view->store_) {
-                  view->store_->RemoveFolder(folder_id);
+                  view->store_->RemoveFolder(view->SpaceId(), folder_id);
                 }
                 break;
               default:
@@ -846,7 +907,8 @@ void AvoraLiveFoldersView::OnItemContextMenu(const std::string& folder_id,
   if (!store_) {
     return;
   }
-  const std::optional<LiveFolder> folder = store_->GetFolderById(folder_id);
+  const std::optional<LiveFolder> folder =
+      store_->GetFolderById(SpaceId(), folder_id);
   if (!folder) {
     return;
   }

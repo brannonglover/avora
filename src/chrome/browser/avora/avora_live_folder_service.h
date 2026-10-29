@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -34,22 +35,25 @@ namespace avora {
 // writes provider results into LiveFolderStore.  Views observe it for status
 // and observe the store for contents; they never talk to a provider directly.
 //
-// Only the active Space syncs.  Background Spaces would multiply API calls
-// against the same rate limit for folders nobody is looking at, so a Space
-// refreshes when it becomes active and then on the timer.
+// Only Spaces some window is showing sync.  Each window has its own Space,
+// independent of the global default, so views tell the service which Spaces
+// are on screen (WatchSpace) and every call names its Space explicitly.
+// Background Spaces would multiply requests for folders nobody is looking at,
+// so a Space refreshes when a window starts showing it and then on the timer.
 //
 // Attached to the Profile as user data rather than registered as a
 // BrowserContextKeyedService: the latter would mean carrying a copy of
 // Chromium's service registration file in the Avora overlay purely to add one
 // line, and rebasing that file on every Chromium roll.
-class LiveFolderService : public SpaceManagerObserver,
-                          public base::SupportsUserData::Data {
+class LiveFolderService : public base::SupportsUserData::Data {
  public:
   class Observer : public base::CheckedObserver {
    public:
-    // A sync started or finished for |folder_id|; call GetSyncState() for the
-    // detail.  Contents changes arrive separately via LiveFolderStore.
-    virtual void OnLiveFolderSyncStateChanged(const std::string& folder_id) {}
+    // A sync started or finished for |folder_id| in |space_id|; call
+    // GetSyncState() for the detail.  Contents changes arrive separately via
+    // LiveFolderStore.
+    virtual void OnLiveFolderSyncStateChanged(const std::string& space_id,
+                                              const std::string& folder_id) {}
   };
 
   // What the UI needs to render beyond the rows themselves.
@@ -63,9 +67,13 @@ class LiveFolderService : public SpaceManagerObserver,
 
     // Login of the signed-in account, for the folder subtitle.
     std::string account;
+
+    // Organisations whose items the last successful sync could not see until
+    // the user signs in to them separately.
+    std::vector<LiveFolderProtectedSource> protected_sources;
   };
 
-  // How often an active Space's folders refresh.  Each sync is up to two
+  // How often a watched Space's folders refresh.  Each sync is up to two
   // github.com searches, made with the same session the user browses with,
   // so this stays far below anything GitHub would throttle.
   static constexpr base::TimeDelta kRefreshInterval = base::Minutes(5);
@@ -94,31 +102,37 @@ class LiveFolderService : public SpaceManagerObserver,
 
   LiveFolderStore* store() { return store_.get(); }
 
-  SyncState GetSyncState(const std::string& folder_id) const;
+  SyncState GetSyncState(const std::string& space_id,
+                         const std::string& folder_id) const;
 
-  // Where to sign in so |provider|'s folders can fill.  Signing in happens on
-  // the provider's own site, in an ordinary tab of the Space.
-  GURL GetSignInUrl(LiveFolderProviderId provider);
+  // Where to sign in so |provider|'s folders in |space_id| can fill.  Signing
+  // in happens on the provider's own site, in an ordinary tab of the Space.
+  GURL GetSignInUrl(const std::string& space_id, LiveFolderProviderId provider);
+
+  // A window started or stopped showing |space_id|.  Counted, so two windows
+  // on the same Space keep it watched until both move away.  Starting to watch
+  // refreshes the Space's folders that are due.
+  void WatchSpace(const std::string& space_id);
+  void UnwatchSpace(const std::string& space_id);
 
   // Syncs |folder_id| now unless it synced within kMinSyncSpacing.
-  void RefreshFolder(const std::string& folder_id);
+  void RefreshFolder(const std::string& space_id, const std::string& folder_id);
 
   // Syncs |folder_id| now regardless of spacing, for an explicit user action.
-  void ForceRefreshFolder(const std::string& folder_id);
+  void ForceRefreshFolder(const std::string& space_id,
+                          const std::string& folder_id);
 
-  // Syncs every folder in the active Space that is due.
-  void RefreshActiveSpace();
+  // Syncs every folder in |space_id| that is due.
+  void RefreshSpace(const std::string& space_id);
 
-  // Called when a tab in the active Space navigates to |host|.  A visit to a
+  // Called when a tab showing |space_id| navigates to |host|.  A visit to a
   // provider's site is how a Live Folder gets discovered: seeing github.com
   // creates the Pull Requests folder.  It is also how signing in is noticed:
-  // a signed-out folder re-checks the session whenever the user is on the
-  // provider's site, so it fills as soon as the sign-in completes.  Does
-  // nothing when the user removed the folder.
-  void OnHostVisited(const std::string& host);
-
-  // SpaceManagerObserver:
-  void OnActiveSpaceChanged(const std::string& space_id) override;
+  // a signed-out folder, or one missing an organisation's single sign-on,
+  // re-checks whenever the user is on the provider's site, so it fills soon
+  // after the sign-in completes.  Does nothing when the user removed the
+  // folder.
+  void OnHostVisited(const std::string& space_id, const std::string& host);
 
  private:
   // Second-phase setup, run after the instance is reachable via GetForProfile()
@@ -141,9 +155,15 @@ class LiveFolderService : public SpaceManagerObserver,
                        LiveFolderProviderId provider_id,
                        LiveFolderFetchResult result);
 
-  void SyncFolder(const LiveFolder& folder, bool force);
+  // Syncs every watched Space; the refresh timer's task.
+  void RefreshWatchedSpaces();
 
-  void NotifySyncStateChanged(const std::string& folder_id);
+  void SyncFolder(const std::string& space_id,
+                  const LiveFolder& folder,
+                  bool force);
+
+  void NotifySyncStateChanged(const std::string& space_id,
+                              const std::string& folder_id);
 
   raw_ptr<Profile> profile_;
 
@@ -151,8 +171,14 @@ class LiveFolderService : public SpaceManagerObserver,
   std::unique_ptr<SpaceManager> space_manager_;
 
   std::map<std::string, std::unique_ptr<LiveFolderProvider>> providers_;
+
+  // Keyed by "space_id/folder_id": folder ids repeat across Spaces (every
+  // Space's GitHub folder is "github-pull-requests").
   std::map<std::string, SyncState> sync_states_;
   std::map<std::string, base::TimeTicks> last_sync_started_;
+
+  // Spaces some window is showing, with how many windows show each.
+  std::map<std::string, int> watched_spaces_;
 
   base::RepeatingTimer refresh_timer_;
 

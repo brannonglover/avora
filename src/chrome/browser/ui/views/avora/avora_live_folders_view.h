@@ -144,7 +144,8 @@ class AvoraLiveFoldersView : public views::View,
   void OnLiveFoldersChanged() override;
 
   // LiveFolderService::Observer:
-  void OnLiveFolderSyncStateChanged(const std::string& folder_id) override;
+  void OnLiveFolderSyncStateChanged(const std::string& space_id,
+                                    const std::string& folder_id) override;
 
   // avora::WindowSpaceState::Observer:
   void OnWindowActiveSpaceChanged(const std::string& space_id) override;
@@ -200,6 +201,13 @@ class AvoraLiveFoldersView : public views::View,
   // Reports the active tab's host to the service for provider detection.
   void ReportActiveHost();
 
+  // The Space this window is showing, which is the only Space whose folders
+  // this view reads, writes, or asks the service to sync.
+  std::string SpaceId() const;
+
+  // Keeps the service watching exactly the Space this window shows.
+  void UpdateWatchedSpace();
+
   raw_ptr<BrowserWindowInterface> browser_;
   raw_ptr<avora::WindowSpaceState> window_space_state_ = nullptr;
   raw_ptr<TabStripModel> tab_strip_model_ = nullptr;
@@ -215,6 +223,10 @@ class AvoraLiveFoldersView : public views::View,
       store_observation_{this};
   base::ScopedObservation<LiveFolderService, LiveFolderService::Observer>
       service_observation_{this};
+
+  // The Space this view has asked the service to watch, so it can be released
+  // when the window moves to another Space or closes.
+  std::string watched_space_id_;
 
   // Set between a scheduled rebuild and its execution, so a burst of store
   // notifications collapses into one.

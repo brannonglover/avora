@@ -268,6 +268,14 @@ GitHubLiveFolderProvider::ParseSearchResponseForTesting(
   SearchResponse response;
   response.logged_in = route->FindBool("logged_in").value_or(false);
 
+  if (const base::ListValue* orgs = route->FindList("protected_org_logins")) {
+    for (const base::Value& org : *orgs) {
+      if (org.is_string() && !org.GetString().empty()) {
+        response.protected_orgs.push_back(org.GetString());
+      }
+    }
+  }
+
   const base::ListValue* entries = route->FindList("results");
   if (!entries) {
     return response;
@@ -300,9 +308,8 @@ GitHubLiveFolderProvider::ParseSearchResponseForTesting(
     item.external_id = *id;
     item.metadata.repo = base::StrCat({*owner, "/", *name});
     item.metadata.number = *number;
-    item.url =
-        base::StrCat({kGitHubOrigin, "/", item.metadata.repo, "/pull/",
-                      base::NumberToString(*number)});
+    item.url = base::StrCat({kGitHubOrigin, "/", item.metadata.repo, "/pull/",
+                             base::NumberToString(*number)});
     if (const std::string* title = dict.FindString("hl_title")) {
       item.title = HtmlToPlainText(*title);
     }
@@ -405,6 +412,7 @@ void GitHubLiveFolderProvider::OnCookiesRead(
 void GitHubLiveFolderProvider::StartSearches(
     const std::vector<std::string>& queries) {
   merged_items_.clear();
+  protected_orgs_.clear();
   searches_.clear();
   searches_.resize(queries.size());
   outstanding_ = queries.size();
@@ -416,8 +424,8 @@ void GitHubLiveFolderProvider::StartSearches(
     // Results arrive ten to a page, newest activity first; the first page is
     // what fits in a sidebar anyway.
     const GURL url(base::StrCat(
-        {kSearchEndpoint, "?q=",
-         base::EscapeQueryParamValue(queries[i], /*use_plus=*/false),
+        {kSearchEndpoint,
+         "?q=", base::EscapeQueryParamValue(queries[i], /*use_plus=*/false),
          "&type=pullrequests&s=updated&o=desc"}));
 
     searches_[i].loader =
@@ -452,8 +460,7 @@ void GitHubLiveFolderProvider::OnSearchResponse(
     return;
   }
   if (!response_body || response_code != net::HTTP_OK) {
-    FailFetch(LiveFolderFetchStatus::kNetworkError,
-              "Couldn't reach GitHub.");
+    FailFetch(LiveFolderFetchStatus::kNetworkError, "Couldn't reach GitHub.");
     return;
   }
 
@@ -481,6 +488,8 @@ void GitHubLiveFolderProvider::OnSearchResponse(
     // first one wins.
     merged_items_.emplace(item.external_id, std::move(item));
   }
+  protected_orgs_.insert(response->protected_orgs.begin(),
+                         response->protected_orgs.end());
 
   searches_[index].loader.reset();
   --outstanding_;
@@ -500,8 +509,18 @@ void GitHubLiveFolderProvider::MaybeFinishFetch() {
   merged_items_.clear();
   searches_.clear();
 
-  std::move(fetch_callback_)
-      .Run(LiveFolderFetchResult::Success(std::move(items)));
+  LiveFolderFetchResult result =
+      LiveFolderFetchResult::Success(std::move(items));
+  for (const std::string& org : protected_orgs_) {
+    // GitHub's own entry point for an organisation's single sign-on; it sends
+    // the user through the identity provider and back to github.com.
+    result.protected_sources.push_back(
+        {org, GURL(base::StrCat(
+                  {kGitHubOrigin, "/orgs/", base::EscapePath(org), "/sso"}))});
+  }
+  protected_orgs_.clear();
+
+  std::move(fetch_callback_).Run(std::move(result));
 }
 
 void GitHubLiveFolderProvider::ReportSignedOut() {
@@ -515,8 +534,10 @@ void GitHubLiveFolderProvider::FailFetch(LiveFolderFetchStatus status,
   searches_.clear();
   outstanding_ = 0;
   merged_items_.clear();
+  protected_orgs_.clear();
   if (fetch_callback_) {
-    std::move(fetch_callback_).Run(LiveFolderFetchResult::Error(status, message));
+    std::move(fetch_callback_)
+        .Run(LiveFolderFetchResult::Error(status, message));
   }
 }
 
@@ -527,6 +548,7 @@ void GitHubLiveFolderProvider::CancelFetch() {
   searches_.clear();
   outstanding_ = 0;
   merged_items_.clear();
+  protected_orgs_.clear();
   fetch_callback_.Reset();
 }
 

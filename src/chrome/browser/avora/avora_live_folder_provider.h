@@ -33,6 +33,15 @@ enum class LiveFolderFetchStatus {
   kRateLimited = 4,
 };
 
+// An organisation whose items the service withheld until the user signs in to
+// it separately -- a GitHub organisation that enforces SAML single sign-on,
+// for instance, hides its pull requests from a session that has not been
+// through the organisation's identity provider recently.
+struct LiveFolderProtectedSource {
+  std::string name;
+  GURL sign_in_url;
+};
+
 struct LiveFolderFetchResult {
   LiveFolderFetchStatus status = LiveFolderFetchStatus::kSuccess;
 
@@ -40,6 +49,10 @@ struct LiveFolderFetchResult {
   // query matched, not a delta: the store replaces the folder's contents with
   // it, which is what makes removals happen automatically.
   std::vector<LiveFolderItem> items;
+
+  // Populated only when |status| is kSuccess.  Sources whose items |items|
+  // could not include, each with where to sign in to it.
+  std::vector<LiveFolderProtectedSource> protected_sources;
 
   // Set when kRateLimited; zero otherwise.
   base::TimeDelta retry_after;

@@ -30,6 +30,11 @@ std::string ProviderKey(const std::string& space_id,
   return base::StrCat({space_id, "/", LiveFolderProviderIdToString(provider)});
 }
 
+std::string FolderKey(const std::string& space_id,
+                      const std::string& folder_id) {
+  return base::StrCat({space_id, "/", folder_id});
+}
+
 }  // namespace
 
 // static
@@ -43,8 +48,8 @@ LiveFolderService* LiveFolderService::GetForProfile(Profile* profile) {
     return nullptr;
   }
 
-  if (auto* existing = static_cast<LiveFolderService*>(
-          profile->GetUserData(kUserDataKey))) {
+  if (auto* existing =
+          static_cast<LiveFolderService*>(profile->GetUserData(kUserDataKey))) {
     return existing;
   }
 
@@ -52,8 +57,8 @@ LiveFolderService* LiveFolderService::GetForProfile(Profile* profile) {
   LiveFolderService* raw = service.get();
   profile->SetUserData(kUserDataKey, std::move(service));
 
-  // Only now is the service reachable, so the first sync cannot recurse back
-  // into GetForProfile() and build a second instance.
+  // Only now is the service reachable, so anything the first refresh calls
+  // back into cannot recurse into GetForProfile() and build a second instance.
   raw->Initialize();
   return raw;
 }
@@ -68,10 +73,8 @@ LiveFolderService::LiveFolderService(Profile* profile) : profile_(profile) {
     prefs->ClearPref(kObsoleteCredentialsPref);
   }
 
-  store_ = std::make_unique<LiveFolderStore>(profile_->GetPrefs());
-
-  space_manager_ = std::make_unique<SpaceManager>(profile_->GetPrefs());
-  space_manager_->AddObserver(this);
+  store_ = std::make_unique<LiveFolderStore>(prefs);
+  space_manager_ = std::make_unique<SpaceManager>(prefs);
 }
 
 void LiveFolderService::Initialize() {
@@ -79,19 +82,15 @@ void LiveFolderService::Initialize() {
     return;
   }
 
+  // Nothing syncs until a view watches a Space; the timer only keeps the
+  // watched ones current.
   refresh_timer_.Start(
       FROM_HERE, kRefreshInterval,
-      base::BindRepeating(&LiveFolderService::RefreshActiveSpace,
+      base::BindRepeating(&LiveFolderService::RefreshWatchedSpaces,
                           base::Unretained(this)));
-
-  RefreshActiveSpace();
 }
 
-LiveFolderService::~LiveFolderService() {
-  if (space_manager_) {
-    space_manager_->RemoveObserver(this);
-  }
-}
+LiveFolderService::~LiveFolderService() = default;
 
 void LiveFolderService::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
@@ -153,66 +152,105 @@ LiveFolderProvider* LiveFolderService::GetOrCreateProvider(
 // ── Sync state ──────────────────────────────────────────────────────────────
 
 LiveFolderService::SyncState LiveFolderService::GetSyncState(
+    const std::string& space_id,
     const std::string& folder_id) const {
-  const auto it = sync_states_.find(folder_id);
+  const auto it = sync_states_.find(FolderKey(space_id, folder_id));
   if (it != sync_states_.end()) {
     return it->second;
   }
   return SyncState();
 }
 
-void LiveFolderService::NotifySyncStateChanged(const std::string& folder_id) {
+void LiveFolderService::NotifySyncStateChanged(const std::string& space_id,
+                                               const std::string& folder_id) {
   for (Observer& observer : observers_) {
-    observer.OnLiveFolderSyncStateChanged(folder_id);
+    observer.OnLiveFolderSyncStateChanged(space_id, folder_id);
   }
 }
 
 // ── Sign-in ─────────────────────────────────────────────────────────────────
 
-GURL LiveFolderService::GetSignInUrl(LiveFolderProviderId provider_id) {
-  if (!store_) {
-    return GURL();
-  }
-  LiveFolderProvider* provider =
-      GetOrCreateProvider(store_->active_space_id(), provider_id);
+GURL LiveFolderService::GetSignInUrl(const std::string& space_id,
+                                     LiveFolderProviderId provider_id) {
+  LiveFolderProvider* provider = GetOrCreateProvider(space_id, provider_id);
   return provider ? provider->sign_in_url() : GURL();
+}
+
+// ── Watched Spaces ──────────────────────────────────────────────────────────
+
+void LiveFolderService::WatchSpace(const std::string& space_id) {
+  if (space_id.empty()) {
+    return;
+  }
+  if (++watched_spaces_[space_id] == 1) {
+    RefreshSpace(space_id);
+  }
+}
+
+void LiveFolderService::UnwatchSpace(const std::string& space_id) {
+  auto it = watched_spaces_.find(space_id);
+  if (it == watched_spaces_.end()) {
+    return;
+  }
+  if (--it->second <= 0) {
+    watched_spaces_.erase(it);
+  }
+}
+
+void LiveFolderService::RefreshWatchedSpaces() {
+  // Copied first: a sync that completes synchronously could notify a view
+  // that changes what it watches.
+  std::vector<std::string> space_ids;
+  for (const auto& [space_id, count] : watched_spaces_) {
+    space_ids.push_back(space_id);
+  }
+  for (const std::string& space_id : space_ids) {
+    RefreshSpace(space_id);
+  }
 }
 
 // ── Refresh ─────────────────────────────────────────────────────────────────
 
-void LiveFolderService::RefreshActiveSpace() {
+void LiveFolderService::RefreshSpace(const std::string& space_id) {
   if (!store_) {
     return;
   }
-  for (const LiveFolder& folder : store_->GetFolders()) {
-    SyncFolder(folder, /*force=*/false);
+  for (const LiveFolder& folder : store_->GetFolders(space_id)) {
+    SyncFolder(space_id, folder, /*force=*/false);
   }
 }
 
-void LiveFolderService::RefreshFolder(const std::string& folder_id) {
+void LiveFolderService::RefreshFolder(const std::string& space_id,
+                                      const std::string& folder_id) {
   if (!store_) {
     return;
   }
-  if (std::optional<LiveFolder> folder = store_->GetFolderById(folder_id)) {
-    SyncFolder(*folder, /*force=*/false);
+  if (std::optional<LiveFolder> folder =
+          store_->GetFolderById(space_id, folder_id)) {
+    SyncFolder(space_id, *folder, /*force=*/false);
   }
 }
 
-void LiveFolderService::ForceRefreshFolder(const std::string& folder_id) {
+void LiveFolderService::ForceRefreshFolder(const std::string& space_id,
+                                           const std::string& folder_id) {
   if (!store_) {
     return;
   }
-  if (std::optional<LiveFolder> folder = store_->GetFolderById(folder_id)) {
-    SyncFolder(*folder, /*force=*/true);
+  if (std::optional<LiveFolder> folder =
+          store_->GetFolderById(space_id, folder_id)) {
+    SyncFolder(space_id, *folder, /*force=*/true);
   }
 }
 
-void LiveFolderService::SyncFolder(const LiveFolder& folder, bool force) {
-  if (!store_ || folder.id.empty()) {
+void LiveFolderService::SyncFolder(const std::string& space_id,
+                                   const LiveFolder& folder,
+                                   bool force) {
+  if (!store_ || space_id.empty() || folder.id.empty()) {
     return;
   }
 
-  SyncState& state = sync_states_[folder.id];
+  const std::string key = FolderKey(space_id, folder.id);
+  SyncState& state = sync_states_[key];
 
   // A second fetch would cancel the first and restart the clock, so an
   // in-flight sync always wins over a new request.
@@ -221,16 +259,14 @@ void LiveFolderService::SyncFolder(const LiveFolder& folder, bool force) {
   }
 
   if (!force) {
-    const auto it = last_sync_started_.find(folder.id);
+    const auto it = last_sync_started_.find(key);
     if (it != last_sync_started_.end() &&
         base::TimeTicks::Now() - it->second < kMinSyncSpacing) {
       return;
     }
   }
 
-  const std::string space_id = store_->active_space_id();
-  LiveFolderProvider* provider =
-      GetOrCreateProvider(space_id, folder.provider);
+  LiveFolderProvider* provider = GetOrCreateProvider(space_id, folder.provider);
   if (!provider) {
     return;
   }
@@ -238,38 +274,23 @@ void LiveFolderService::SyncFolder(const LiveFolder& folder, bool force) {
   // Always attempt the fetch: only the provider can tell whether the Space is
   // signed in, and it checks that before making any request.
   state.syncing = true;
-  last_sync_started_[folder.id] = base::TimeTicks::Now();
-  NotifySyncStateChanged(folder.id);
+  last_sync_started_[key] = base::TimeTicks::Now();
+  NotifySyncStateChanged(space_id, folder.id);
 
-  provider->FetchItems(
-      folder.query,
-      base::BindOnce(&LiveFolderService::OnFetchComplete,
-                     weak_factory_.GetWeakPtr(), space_id, folder.id,
-                     folder.provider));
+  provider->FetchItems(folder.query,
+                       base::BindOnce(&LiveFolderService::OnFetchComplete,
+                                      weak_factory_.GetWeakPtr(), space_id,
+                                      folder.id, folder.provider));
 }
 
 void LiveFolderService::OnFetchComplete(const std::string& space_id,
                                         const std::string& folder_id,
                                         LiveFolderProviderId provider_id,
                                         LiveFolderFetchResult result) {
-  SyncState& state = sync_states_[folder_id];
+  SyncState& state = sync_states_[FolderKey(space_id, folder_id)];
   state.syncing = false;
   state.last_status = result.status;
   state.last_error = result.error_message;
-
-  if (!store_) {
-    return;
-  }
-
-  // The user may have switched Spaces while this was in flight.  Writing now
-  // would put one Space's pull requests into another's folder, because the
-  // store always targets whichever Space is active.  The switch's own sync
-  // was turned away while this one ran, so run it now.
-  if (store_->active_space_id() != space_id) {
-    NotifySyncStateChanged(folder_id);
-    ForceRefreshFolder(folder_id);
-    return;
-  }
 
   if (LiveFolderProvider* provider =
           GetOrCreateProvider(space_id, provider_id)) {
@@ -277,21 +298,28 @@ void LiveFolderService::OnFetchComplete(const std::string& space_id,
     state.account = provider->connected_account();
   }
 
+  if (!store_) {
+    return;
+  }
+
   if (result.ok()) {
-    store_->ReplaceItems(folder_id, result.items);
+    state.protected_sources = std::move(result.protected_sources);
+    store_->ReplaceItems(space_id, folder_id, result.items);
   } else if (result.status == LiveFolderFetchStatus::kNotConnected) {
     // Signing out on github.com must take the account's pull requests with
     // it; leaving them up would imply they are still being kept current.
-    store_->ReplaceItems(folder_id, {});
+    state.protected_sources.clear();
+    store_->ReplaceItems(space_id, folder_id, {});
   }
 
-  NotifySyncStateChanged(folder_id);
+  NotifySyncStateChanged(space_id, folder_id);
 }
 
 // ── Provider discovery ──────────────────────────────────────────────────────
 
-void LiveFolderService::OnHostVisited(const std::string& host) {
-  if (!store_) {
+void LiveFolderService::OnHostVisited(const std::string& space_id,
+                                      const std::string& host) {
+  if (!store_ || space_id.empty()) {
     return;
   }
 
@@ -302,34 +330,31 @@ void LiveFolderService::OnHostVisited(const std::string& host) {
     return;
   }
 
-  if (store_->WasFolderDismissed(
-          LiveFolderStore::kGitHubPullRequestsFolderId)) {
+  const std::string folder_id = LiveFolderStore::kGitHubPullRequestsFolderId;
+  if (store_->WasFolderDismissed(space_id, folder_id)) {
     return;
   }
 
-  if (store_->HasFolder(LiveFolderStore::kGitHubPullRequestsFolderId)) {
-    // Being on github.com while the folder is signed out usually means the
-    // user is signing in.  Re-checking is a local cookie read until the
-    // session actually exists, so it is cheap to do on every visit.
-    const std::string folder_id = LiveFolderStore::kGitHubPullRequestsFolderId;
-    if (!GetSyncState(folder_id).connected) {
-      ForceRefreshFolder(folder_id);
+  if (store_->HasFolder(space_id, folder_id)) {
+    const SyncState state = GetSyncState(space_id, folder_id);
+    if (!state.connected) {
+      // Being on github.com while the folder is signed out usually means the
+      // user is signing in.  Re-checking is a local cookie read until the
+      // session actually exists, so it is cheap to do on every visit.
+      ForceRefreshFolder(space_id, folder_id);
+    } else if (!state.protected_sources.empty()) {
+      // Likely completing an organisation's single sign-on.  That re-check
+      // costs real searches, so it keeps to the usual spacing.
+      RefreshFolder(space_id, folder_id);
     }
     return;
   }
 
   // A Space already signed in to GitHub fills right away -- the "it just
   // works" case, with nothing to connect.
-  const std::string folder_id = store_->EnsureGitHubPullRequestsFolder();
-  if (!folder_id.empty()) {
-    RefreshFolder(folder_id);
+  if (!store_->EnsureGitHubPullRequestsFolder(space_id).empty()) {
+    RefreshFolder(space_id, folder_id);
   }
-}
-
-// ── Space changes ───────────────────────────────────────────────────────────
-
-void LiveFolderService::OnActiveSpaceChanged(const std::string& space_id) {
-  RefreshActiveSpace();
 }
 
 }  // namespace avora

@@ -20,6 +20,7 @@ using ::testing::SizeIs;
 constexpr char kSignedInResponse[] = R"({
   "payload": {"blackbirdSearchRoute": {
     "logged_in": true,
+    "protected_org_logins": ["acme-corp", ""],
     "results": [
       {
         "id": "5056423329",
@@ -57,6 +58,7 @@ TEST(GitHubLiveFolderProviderTest, ParsesSignedInResults) {
           kSignedInResponse);
   ASSERT_TRUE(response);
   EXPECT_TRUE(response->logged_in);
+  EXPECT_THAT(response->protected_orgs, ElementsAre("acme-corp"));
   ASSERT_THAT(response->items, SizeIs(2));
 
   const LiveFolderItem& first = response->items[0];
@@ -80,6 +82,7 @@ TEST(GitHubLiveFolderProviderTest, ReportsSignedOutSession) {
   ASSERT_TRUE(response);
   EXPECT_FALSE(response->logged_in);
   EXPECT_THAT(response->items, IsEmpty());
+  EXPECT_THAT(response->protected_orgs, IsEmpty());
 }
 
 TEST(GitHubLiveFolderProviderTest, RejectsNonSearchBodies) {

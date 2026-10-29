@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,10 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
     // how an expired session shows up.
     bool logged_in = false;
     std::vector<LiveFolderItem> items;
+
+    // Organisations that enforce SAML single sign-on and whose pull requests
+    // github.com left out because this session has not signed in to them.
+    std::vector<std::string> protected_orgs;
   };
 
   // |storage_partition| is the Space's partition and must outlive this
@@ -95,8 +100,7 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
 
   void StartSearches(const std::vector<std::string>& queries);
 
-  void OnSearchResponse(size_t index,
-                        std::optional<std::string> response_body);
+  void OnSearchResponse(size_t index, std::optional<std::string> response_body);
 
   // Reports the merged result once every fan-out request has finished.
   void MaybeFinishFetch();
@@ -121,6 +125,9 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
   // Accumulated across the fan-out, keyed by external id so a PR matched by
   // two sub-queries is stored once.
   std::map<std::string, LiveFolderItem> merged_items_;
+
+  // Likewise accumulated, since each sub-query reports the orgs it hid.
+  std::set<std::string> protected_orgs_;
 
   bool include_drafts_ = true;
 
