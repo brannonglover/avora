@@ -224,6 +224,11 @@ class TabStripView::TargetViewsTracker : public views::ViewObserver {
   void OnViewPreferredSizeChanged(views::View* observed_view) override {
     CheckTrackedViewsSize();
   }
+  void OnViewVisibilityChanged(views::View* observed_view,
+                               views::View* starting_view,
+                               bool visible) override {
+    CheckTrackedViewsSize();
+  }
 
   void SetViews(views::View* primary_view,
                 views::View* secondary_view = nullptr) {
@@ -281,7 +286,11 @@ class TabStripView::TargetViewsTracker : public views::ViewObserver {
   // orientation.
   bool AreViewsAtTargetSize() const {
     for (views::View* view : {primary_view_.get(), secondary_view_.get()}) {
-      if (!view) {
+      // A hidden view is laid out at zero size and never grows to its
+      // preferred one, so waiting on it would leave overflow visuals off --
+      // and the side nav unscrollable -- for good.  Avora hides tabs that
+      // the side nav represents some other way, such as a Live Folder row's.
+      if (!view || !view->GetVisible()) {
         continue;
       }
       if (orientation_ == TabStripOrientation::kVertical) {
@@ -549,8 +558,13 @@ void TabStripView::ScrollToFitTabs(const tabs::TabInterface* active_tab,
 }
 
 void TabStripView::ScrollToFitViews(views::View* view1, views::View* view2) {
-  views::View* primary_view = (view1 && Contains(view1)) ? view1 : nullptr;
-  views::View* secondary_view = (view2 && Contains(view2)) ? view2 : nullptr;
+  // Hidden tabs -- ones the side nav shows as a Live Folder row, say -- have
+  // no place in the list to scroll to.
+  auto is_target = [this](views::View* view) {
+    return view && view->GetVisible() && Contains(view);
+  };
+  views::View* primary_view = is_target(view1) ? view1 : nullptr;
+  views::View* secondary_view = is_target(view2) ? view2 : nullptr;
   if (!primary_view && !secondary_view) {
     return;
   }
@@ -964,7 +978,10 @@ void TabStripView::EnsureViewsVisibleInViewportPostLayout(
 
   for (views::View* view : {target_views_tracker_->primary_view(),
                             target_views_tracker_->secondary_view()}) {
-    if (view && Contains(view) && scroll_view->contents()->Contains(view)) {
+    // A target may have been hidden since it was requested, as a Live Folder
+    // tab is right after it opens.
+    if (view && view->GetVisible() && Contains(view) &&
+        scroll_view->contents()->Contains(view)) {
       gfx::Rect view_bounds = GetBoundsInScrollViewContents(view, scroll_view);
       if (!has_valid_views) {
         combined_bounds = view_bounds;
