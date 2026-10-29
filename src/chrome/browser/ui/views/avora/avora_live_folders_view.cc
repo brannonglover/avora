@@ -27,10 +27,8 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
 
 namespace avora {
@@ -38,9 +36,8 @@ namespace avora {
 namespace {
 
 constexpr int kMenuRefreshId = 1;
-constexpr int kMenuDisconnectId = 2;
 constexpr int kMenuRemoveFolderId = 3;
-constexpr int kMenuConnectId = 4;
+constexpr int kMenuSignInId = 4;
 
 constexpr int kMenuFilterCreatedId = 10;
 constexpr int kMenuFilterAssignedId = 11;
@@ -138,7 +135,7 @@ std::u16string FormatSubtitle(const LiveFolderItem& item) {
 }
 
 // A full-width row of text that behaves like the other sidebar rows.  Used for
-// the connect prompt and the empty/error states; |on_click| is null for the
+// the sign-in prompt and the empty/error states; |on_click| is null for the
 // purely informational ones, which then render as plain text.
 class MessageRow : public views::View {
   METADATA_HEADER(MessageRow, views::View)
@@ -230,52 +227,6 @@ class CallbackMenuDelegate : public ui::SimpleMenuModel::Delegate {
   CommandCallback on_command_;
   CheckedCallback is_checked_;
 };
-
-// Builds the modal that collects a GitHub personal access token.
-//
-// A plain token field rather than an OAuth redirect because Avora ships no
-// client secret; the provider contract lets an OAuth flow replace this later
-// without the folder, store, or view changing.
-std::unique_ptr<views::DialogDelegate> MakeGitHubConnectDialog(
-    base::OnceCallback<void(const std::string&)> on_connect) {
-  auto delegate = std::make_unique<views::DialogDelegate>();
-  delegate->SetModalType(ui::mojom::ModalType::kWindow);
-  delegate->SetTitle(u"Connect GitHub");
-  delegate->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Connect");
-  delegate->SetShowCloseButton(true);
-
-  auto contents = std::make_unique<views::View>();
-  contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets(16), 10));
-
-  auto* description = contents->AddChildView(std::make_unique<views::Label>(
-      u"Paste a personal access token with the \"repo\" scope. Avora uses it "
-      u"only to list the pull requests that involve you, and stores it "
-      u"encrypted for this Space."));
-  description->SetMultiLine(true);
-  description->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  description->SetMaximumWidth(360);
-
-  auto* token_field =
-      contents->AddChildView(std::make_unique<views::Textfield>());
-  token_field->SetTextInputType(ui::TEXT_INPUT_TYPE_PASSWORD);
-  token_field->SetPlaceholderText(u"ghp_...");
-  token_field->SetAccessibleName(u"GitHub personal access token");
-
-  delegate->SetContentsView(std::move(contents));
-  delegate->SetInitiallyFocusedView(token_field);
-
-  // The contents view outlives the accept callback, so the raw field pointer
-  // is safe to read here.
-  delegate->SetAcceptCallback(base::BindOnce(
-      [](views::Textfield* field,
-         base::OnceCallback<void(const std::string&)> on_connect) {
-        std::move(on_connect).Run(base::UTF16ToUTF8(field->GetText()));
-      },
-      token_field, std::move(on_connect)));
-
-  return delegate;
-}
 
 }  // namespace
 
@@ -613,11 +564,6 @@ void AvoraLiveFoldersView::Rebuild() {
       continue;
     }
 
-    if (!state.connected) {
-      AddConnectRow(folder.id);
-      continue;
-    }
-
     const std::vector<LiveFolderItem> items = folder.ActiveItems();
     if (!items.empty()) {
       for (const LiveFolderItem& item : items) {
@@ -632,7 +578,8 @@ void AvoraLiveFoldersView::Rebuild() {
     }
 
     // No rows.  Failures get a message, because a broken folder and an empty
-    // one would otherwise look identical.  A successful sync that simply
+    // one would otherwise look identical.  Signing out clears the rows, so a
+    // signed-out folder always lands here and offers the sign-in.  A successful sync that simply
     // matched nothing gets no row at all: "you have no pull requests" is the
     // expected resting state, and a line of text restating it is noise the
     // user cannot act on.
@@ -643,7 +590,7 @@ void AvoraLiveFoldersView::Rebuild() {
         AddMessageRow(base::UTF8ToUTF16(state.last_error));
         break;
       case LiveFolderFetchStatus::kNotConnected:
-        AddConnectRow(folder.id);
+        AddSignInRow(folder.id);
         break;
       case LiveFolderFetchStatus::kSuccess:
         if (folder.last_synced_at.is_null()) {
@@ -664,10 +611,10 @@ void AvoraLiveFoldersView::AddMessageRow(const std::u16string& text) {
                                             base::RepeatingClosure()));
 }
 
-void AvoraLiveFoldersView::AddConnectRow(const std::string& folder_id) {
+void AvoraLiveFoldersView::AddSignInRow(const std::string& folder_id) {
   AddChildView(std::make_unique<MessageRow>(
-      u"Connect GitHub…", kBadgeColor,
-      base::BindRepeating(&AvoraLiveFoldersView::ShowConnectDialog,
+      u"Sign in to GitHub", kBadgeColor,
+      base::BindRepeating(&AvoraLiveFoldersView::OpenSignIn,
                           weak_factory_.GetWeakPtr(), folder_id)));
 }
 
@@ -731,43 +678,32 @@ void AvoraLiveFoldersView::OpenUrl(const std::string& url) {
   Navigate(&params);
 }
 
-void AvoraLiveFoldersView::StartGitHubConnectFlow() {
+void AvoraLiveFoldersView::StartGitHubSignInFlow() {
   if (!store_) {
     return;
   }
   const std::string folder_id = store_->EnsureGitHubPullRequestsFolder();
-  if (!folder_id.empty()) {
-    ShowConnectDialog(folder_id);
-  }
-}
-
-void AvoraLiveFoldersView::ShowConnectDialog(const std::string& folder_id) {
-  if (!service_ || !GetWidget()) {
+  if (folder_id.empty()) {
     return;
   }
+  if (service_ && service_->GetSyncState(folder_id).connected) {
+    service_->ForceRefreshFolder(folder_id);
+    return;
+  }
+  OpenSignIn(folder_id);
+}
 
-  auto dialog = MakeGitHubConnectDialog(base::BindOnce(
-      [](base::WeakPtr<AvoraLiveFoldersView> view, const std::string& token) {
-        if (!view || !view->service_) {
-          return;
-        }
-        view->service_->ConnectProvider(
-            LiveFolderProviderId::kGitHub, token,
-            base::BindOnce(
-                [](base::WeakPtr<AvoraLiveFoldersView> view, bool success,
-                   const std::string& error) {
-                  if (view) {
-                    view->ScheduleRebuild();
-                  }
-                },
-                view));
-      },
-      weak_factory_.GetWeakPtr()));
-
-  views::DialogDelegate::CreateDialogWidget(std::move(dialog),
-                                            gfx::NativeWindow(),
-                                            GetWidget()->GetNativeView())
-      ->Show();
+void AvoraLiveFoldersView::OpenSignIn(const std::string& folder_id) {
+  if (!service_) {
+    return;
+  }
+  // There is nothing to connect: signing in on github.com, in this Space, is
+  // the whole flow.  The service notices the new session when the tab lands
+  // back on github.com and fills the folder.
+  const GURL url = service_->GetSignInUrl(LiveFolderProviderId::kGitHub);
+  if (url.is_valid()) {
+    OpenUrl(url.spec());
+  }
 }
 
 void AvoraLiveFoldersView::ToggleQueryFilter(const std::string& folder_id,
@@ -839,14 +775,8 @@ void AvoraLiveFoldersView::OnFolderContextMenu(
                   view->service_->ForceRefreshFolder(folder_id);
                 }
                 break;
-              case kMenuConnectId:
-                view->ShowConnectDialog(folder_id);
-                break;
-              case kMenuDisconnectId:
-                if (view->service_) {
-                  view->service_->DisconnectProvider(
-                      LiveFolderProviderId::kGitHub);
-                }
+              case kMenuSignInId:
+                view->OpenSignIn(folder_id);
                 break;
               case kMenuRemoveFolderId:
                 if (view->store_) {
@@ -896,10 +826,8 @@ void AvoraLiveFoldersView::OnFolderContextMenu(
   if (connected) {
     context_menu_model_->AddItem(kMenuRefreshId, u"Refresh Now");
     context_menu_model_->AddSubMenu(0, u"Filter", filter_menu_model_.get());
-    context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
-    context_menu_model_->AddItem(kMenuDisconnectId, u"Disconnect GitHub");
   } else {
-    context_menu_model_->AddItem(kMenuConnectId, u"Connect GitHub…");
+    context_menu_model_->AddItem(kMenuSignInId, u"Sign in to GitHub");
   }
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   context_menu_model_->AddItem(kMenuRemoveFolderId, u"Remove Folder");

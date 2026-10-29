@@ -2,6 +2,7 @@
 
 #include "chrome/browser/avora/avora_github_provider.h"
 
+#include <string_view>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -10,36 +11,40 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/avora/avora_live_folder_credentials.h"
+#include "base/strings/utf_string_conversion_utils.h"
+#include "content/public/browser/storage_partition.h"
+#include "net/base/isolation_info.h"
 #include "net/base/load_flags.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "net/cookies/site_for_cookies.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace avora {
 
 namespace {
 
-constexpr char kSearchEndpoint[] = "https://api.github.com/search/issues";
-constexpr char kUserEndpoint[] = "https://api.github.com/user";
+constexpr char kGitHubOrigin[] = "https://github.com";
+constexpr char kSearchEndpoint[] = "https://github.com/search";
+constexpr char kSignInUrl[] = "https://github.com/login";
 
-constexpr char kApiVersionHeader[] = "X-GitHub-Api-Version";
-constexpr char kApiVersion[] = "2022-11-28";
-constexpr char kAcceptValue[] = "application/vnd.github+json";
+// github.com's own signals for the session, readable without a request.
+// |logged_in| is "yes" or "no"; |dotcom_user| carries the login.
+constexpr char kLoggedInCookie[] = "logged_in";
+constexpr char kLoginCookie[] = "dotcom_user";
 
-// GitHub rejects requests without a User-Agent.
-constexpr char kUserAgent[] = "Avora-Browser";
-
-constexpr char kRepositoryUrlPrefix[] = "https://api.github.com/repos/";
-
-// Search caps out at 100; 50 is well past what fits in a sidebar and keeps the
-// response small enough to parse on the UI thread.
-constexpr int kResultsPerQuery = 50;
+// Without this the search route renders its HTML page instead of the JSON the
+// page is built from.
+constexpr char kAcceptValue[] = "application/json";
 
 constexpr int kMaxResponseBytes = 1024 * 1024;  // 1 MB
 
@@ -48,24 +53,27 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
         semantics {
           sender: "Avora GitHub Live Folder"
           description:
-            "Fetches the pull requests relevant to the GitHub account the "
-            "user connected to a Space, so the sidebar can show them as a "
-            "self-updating folder."
+            "Searches github.com for the open pull requests that involve the "
+            "account the Space is signed in to, so the sidebar can show them "
+            "as a self-updating folder."
           trigger:
-            "Periodically while a Space with a connected GitHub Live Folder "
-            "is active, and when the user manually refreshes the folder."
+            "Periodically while a Space with a GitHub Live Folder is active "
+            "and signed in to github.com, and when the user manually "
+            "refreshes the folder."
           data:
-            "The user's GitHub personal access token, sent as a bearer "
-            "credential, and the saved folder query."
+            "The Space's github.com session cookies and the saved folder "
+            "query."
           destination: OTHER
-          destination_other: "GitHub's REST API at api.github.com."
+          destination_other: "github.com's pull request search."
         }
         policy {
-          cookies_allowed: NO
+          cookies_allowed: YES
+          cookies_store: "The Space's storage partition."
           setting:
-            "Disabled by default.  Active only for Spaces where the user has "
-            "explicitly connected a GitHub account, and stops when the "
-            "account is disconnected."
+            "Active only for Spaces with a GitHub Live Folder, which appears "
+            "after visiting github.com and can be removed from its context "
+            "menu.  Nothing is requested while the Space is signed out of "
+            "github.com."
         })");
 
 // Qualifiers shared by every sub-query of a fan-out.
@@ -79,39 +87,75 @@ std::string BaseQualifiers(const LiveFolderQuery& query) {
   return base::JoinString(parts, " ");
 }
 
-std::string ExtractRepoFromApiUrl(const std::string& repository_url) {
-  if (!base::StartsWith(repository_url, kRepositoryUrlPrefix)) {
-    return std::string();
-  }
-  return repository_url.substr(std::size(kRepositoryUrlPrefix) - 1);
-}
+// Search titles are HTML: matched terms come wrapped in <em>, and characters
+// such as '/' arrive as entities.  Strips the tags and decodes the entities in
+// one pass, so "&amp;lt;" correctly becomes "&lt;" rather than "<".
+std::string HtmlToPlainText(std::string_view html) {
+  std::string out;
+  out.reserve(html.size());
+  for (size_t i = 0; i < html.size(); ++i) {
+    const char c = html[i];
+    if (c == '<') {
+      const size_t close = html.find('>', i);
+      if (close == std::string_view::npos) {
+        break;
+      }
+      i = close;
+      continue;
+    }
+    if (c != '&') {
+      out.push_back(c);
+      continue;
+    }
 
-// GitHub's numeric ids arrive as JSON numbers, which base::Value stores as
-// doubles once they exceed int range.  Prefer the string node_id and only fall
-// back to formatting the number.
-std::string ExtractExternalId(const base::DictValue& dict) {
-  if (const std::string* node_id = dict.FindString("node_id");
-      node_id && !node_id->empty()) {
-    return *node_id;
+    const size_t semi = html.find(';', i);
+    if (semi == std::string_view::npos || semi - i > 10) {
+      out.push_back(c);
+      continue;
+    }
+    const std::string_view entity = html.substr(i + 1, semi - i - 1);
+
+    uint32_t code_point = 0;
+    bool decoded = true;
+    if (entity == "amp") {
+      code_point = '&';
+    } else if (entity == "lt") {
+      code_point = '<';
+    } else if (entity == "gt") {
+      code_point = '>';
+    } else if (entity == "quot") {
+      code_point = '"';
+    } else if (entity == "apos") {
+      code_point = '\'';
+    } else if (entity.size() > 2 && entity[0] == '#' &&
+               (entity[1] == 'x' || entity[1] == 'X')) {
+      decoded = base::HexStringToUInt(entity.substr(2), &code_point);
+    } else if (entity.size() > 1 && entity[0] == '#') {
+      decoded = base::StringToUint(entity.substr(1), &code_point);
+    } else {
+      decoded = false;
+    }
+
+    if (!decoded || !base::IsValidCodepoint(code_point)) {
+      out.push_back(c);
+      continue;
+    }
+    base::WriteUnicodeCharacter(code_point, &out);
+    i = semi;
   }
-  if (std::optional<double> id = dict.FindDouble("id")) {
-    return base::NumberToString(static_cast<int64_t>(*id));
-  }
-  return std::string();
+  return out;
 }
 
 LiveFolderItemStatus StatusForSearchItem(const base::DictValue& dict) {
-  if (const base::DictValue* pr = dict.FindDict("pull_request")) {
-    if (const base::Value* merged = pr->Find("merged_at");
-        merged && merged->is_string()) {
-      return LiveFolderItemStatus::kMerged;
-    }
+  if (dict.FindBool("merged").value_or(false)) {
+    return LiveFolderItemStatus::kMerged;
   }
-  if (const std::string* state = dict.FindString("state");
-      state && *state == "closed") {
+  const std::string* state = dict.FindString("state");
+  if (state && *state == "closed") {
     return LiveFolderItemStatus::kClosed;
   }
-  if (dict.FindBool("draft").value_or(false)) {
+  const std::string* reviewable = dict.FindString("reviewable_state");
+  if ((state && *state == "draft") || (reviewable && *reviewable == "draft")) {
     return LiveFolderItemStatus::kDraft;
   }
   return LiveFolderItemStatus::kOpen;
@@ -124,49 +168,31 @@ int ResponseCodeOf(const network::SimpleURLLoader* loader) {
   return loader->ResponseInfo()->headers->response_code();
 }
 
-// 403 means both "rate limited" and "forbidden" on GitHub; the remaining-quota
-// header is what tells them apart.
-bool IsRateLimitResponse(const network::SimpleURLLoader* loader) {
-  if (!loader || !loader->ResponseInfo() || !loader->ResponseInfo()->headers) {
-    return false;
-  }
-  const net::HttpResponseHeaders* headers =
-      loader->ResponseInfo()->headers.get();
-  const std::optional<std::string> remaining =
-      headers->GetNormalizedHeader("x-ratelimit-remaining");
-  if (!remaining) {
-    return false;
-  }
-  int value = 0;
-  return base::StringToInt(*remaining, &value) && value <= 0;
-}
+std::unique_ptr<network::ResourceRequest> MakeRequest(const GURL& url) {
+  const url::Origin origin = url::Origin::Create(url);
 
-std::unique_ptr<network::ResourceRequest> MakeRequest(
-    const GURL& url,
-    const std::string& token) {
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = url;
   request->method = "GET";
-  // The bearer token is the only credential; sending cookies as well would
-  // attach the browser's github.com session to an API call that ignores it.
-  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  // The session cookies are the credential.  Treating the request as
+  // github.com's own lets the SameSite ones attach, as they would for a
+  // search typed into a github.com tab.
+  request->credentials_mode = network::mojom::CredentialsMode::kInclude;
+  request->site_for_cookies = net::SiteForCookies::FromOrigin(origin);
+  request->trusted_params = network::ResourceRequest::TrustedParams();
+  request->trusted_params->isolation_info =
+      net::IsolationInfo::CreateForInternalRequest(origin);
   request->load_flags = net::LOAD_DISABLE_CACHE;
   request->headers.SetHeader("Accept", kAcceptValue);
-  request->headers.SetHeader(kApiVersionHeader, kApiVersion);
-  request->headers.SetHeader("User-Agent", kUserAgent);
-  request->headers.SetHeader("Authorization", base::StrCat({"Bearer ", token}));
   return request;
 }
 
 }  // namespace
 
 GitHubLiveFolderProvider::GitHubLiveFolderProvider(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    LiveFolderCredentialStore* credential_store,
+    content::StoragePartition* storage_partition,
     const std::string& space_id)
-    : url_loader_factory_(std::move(url_loader_factory)),
-      credential_store_(credential_store),
-      space_id_(space_id) {}
+    : storage_partition_(storage_partition), space_id_(space_id) {}
 
 GitHubLiveFolderProvider::~GitHubLiveFolderProvider() = default;
 
@@ -225,19 +251,26 @@ std::vector<std::string> GitHubLiveFolderProvider::BuildSearchQueriesForTesting(
 // ── Response parsing ────────────────────────────────────────────────────────
 
 // static
-std::vector<LiveFolderItem>
+std::optional<GitHubLiveFolderProvider::SearchResponse>
 GitHubLiveFolderProvider::ParseSearchResponseForTesting(
     const std::string& body) {
-  std::vector<LiveFolderItem> items;
-
   std::optional<base::Value> parsed =
       base::JSONReader::Read(body, base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_dict()) {
-    return items;
+    return std::nullopt;
   }
-  const base::ListValue* entries = parsed->GetDict().FindList("items");
+  const base::DictValue* route =
+      parsed->GetDict().FindDictByDottedPath("payload.blackbirdSearchRoute");
+  if (!route) {
+    return std::nullopt;
+  }
+
+  SearchResponse response;
+  response.logged_in = route->FindBool("logged_in").value_or(false);
+
+  const base::ListValue* entries = route->FindList("results");
   if (!entries) {
-    return items;
+    return response;
   }
 
   for (const base::Value& entry : *entries) {
@@ -246,51 +279,51 @@ GitHubLiveFolderProvider::ParseSearchResponseForTesting(
     }
     const base::DictValue& dict = entry.GetDict();
 
-    // Search returns issues and PRs together; the pull_request member is what
-    // marks the PRs, and a Live Folder of issues is a different feature.
-    if (!dict.contains("pull_request")) {
+    // The id is the pull request's own, stable across renames.
+    const std::string* id = dict.FindString("id");
+    if (!id || id->empty()) {
+      continue;
+    }
+
+    const base::DictValue* repository =
+        dict.FindDictByDottedPath("repo.repository");
+    const std::string* owner =
+        repository ? repository->FindString("owner_login") : nullptr;
+    const std::string* name =
+        repository ? repository->FindString("name") : nullptr;
+    const std::optional<int> number = dict.FindInt("number");
+    if (!owner || !name || !number) {
       continue;
     }
 
     LiveFolderItem item;
-    item.external_id = ExtractExternalId(dict);
-    if (item.external_id.empty()) {
-      continue;
+    item.external_id = *id;
+    item.metadata.repo = base::StrCat({*owner, "/", *name});
+    item.metadata.number = *number;
+    item.url =
+        base::StrCat({kGitHubOrigin, "/", item.metadata.repo, "/pull/",
+                      base::NumberToString(*number)});
+    if (const std::string* title = dict.FindString("hl_title")) {
+      item.title = HtmlToPlainText(*title);
     }
-    if (const std::string* title = dict.FindString("title")) {
-      item.title = *title;
+    if (const std::string* author = dict.FindString("author_name")) {
+      item.metadata.author = *author;
     }
-    if (const std::string* url = dict.FindString("html_url")) {
-      item.url = *url;
-    }
-    if (item.url.empty()) {
-      continue;
-    }
-
     item.status = StatusForSearchItem(dict);
 
-    if (const base::DictValue* user = dict.FindDict("user")) {
-      if (const std::string* login = user->FindString("login")) {
-        item.metadata.author = *login;
-      }
-    }
-    if (const std::string* repo_url = dict.FindString("repository_url")) {
-      item.metadata.repo = ExtractRepoFromApiUrl(*repo_url);
-    }
-    if (std::optional<double> number = dict.FindDouble("number")) {
-      item.metadata.number = static_cast<int>(*number);
-    }
-    if (const std::string* updated = dict.FindString("updated_at")) {
+    // Search reports when a PR was opened but not when it last changed, so
+    // the folder orders by newest PR first.
+    if (const std::string* created = dict.FindString("created")) {
       base::Time time;
-      if (base::Time::FromUTCString(updated->c_str(), &time)) {
+      if (base::Time::FromUTCString(created->c_str(), &time)) {
         item.updated_at = time;
       }
     }
 
-    items.push_back(std::move(item));
+    response.items.push_back(std::move(item));
   }
 
-  return items;
+  return response;
 }
 
 // ── LiveFolderProvider ──────────────────────────────────────────────────────
@@ -303,102 +336,29 @@ std::string GitHubLiveFolderProvider::display_name() const {
   return "GitHub";
 }
 
-std::string GitHubLiveFolderProvider::CurrentToken() const {
-  if (!credential_store_) {
-    return std::string();
-  }
-  return credential_store_->GetToken(space_id_, LiveFolderProviderId::kGitHub);
-}
-
 bool GitHubLiveFolderProvider::IsConnected() const {
-  return !CurrentToken().empty();
+  return signed_in_;
 }
 
 std::string GitHubLiveFolderProvider::connected_account() const {
-  if (!credential_store_) {
-    return std::string();
-  }
-  return credential_store_->GetAccount(space_id_,
-                                       LiveFolderProviderId::kGitHub);
+  return signed_in_ ? account_ : std::string();
 }
 
-void GitHubLiveFolderProvider::Connect(const std::string& credential,
-                                       ConnectCallback callback) {
-  if (credential.empty()) {
-    std::move(callback).Run(false, "Enter a personal access token.");
-    return;
-  }
-
-  // Validate before storing so a mistyped or insufficiently scoped token is
-  // reported here rather than as a silently empty folder later.
-  validate_loader_ = network::SimpleURLLoader::Create(
-      MakeRequest(GURL(kUserEndpoint), credential), kTrafficAnnotation);
-  validate_loader_->DownloadToString(
-      url_loader_factory_.get(),
-      base::BindOnce(&GitHubLiveFolderProvider::OnValidateResponse,
-                     weak_factory_.GetWeakPtr(), std::move(callback),
-                     credential),
-      kMaxResponseBytes);
-}
-
-void GitHubLiveFolderProvider::OnValidateResponse(
-    ConnectCallback callback,
-    const std::string& credential,
-    std::optional<std::string> response_body) {
-  const int response_code = ResponseCodeOf(validate_loader_.get());
-  validate_loader_.reset();
-
-  if (response_code == net::HTTP_UNAUTHORIZED ||
-      response_code == net::HTTP_FORBIDDEN) {
-    std::move(callback).Run(
-        false, "GitHub rejected that token. Check that it hasn't expired.");
-    return;
-  }
-  if (!response_body || response_code != net::HTTP_OK) {
-    std::move(callback).Run(false, "Couldn't reach GitHub. Try again.");
-    return;
-  }
-
-  std::optional<base::Value> parsed =
-      base::JSONReader::Read(*response_body, base::JSON_PARSE_RFC);
-  if (!parsed || !parsed->is_dict()) {
-    std::move(callback).Run(false, "Couldn't read GitHub's response.");
-    return;
-  }
-  const std::string* login = parsed->GetDict().FindString("login");
-  if (!login || login->empty()) {
-    std::move(callback).Run(false, "That token has no account attached.");
-    return;
-  }
-
-  if (credential_store_) {
-    credential_store_->SetToken(space_id_, LiveFolderProviderId::kGitHub,
-                                credential, *login);
-  }
-  std::move(callback).Run(true, std::string());
-}
-
-void GitHubLiveFolderProvider::Disconnect() {
-  CancelFetch();
-  validate_loader_.reset();
-  if (credential_store_) {
-    credential_store_->ClearToken(space_id_, LiveFolderProviderId::kGitHub);
-  }
+GURL GitHubLiveFolderProvider::sign_in_url() const {
+  return GURL(kSignInUrl);
 }
 
 void GitHubLiveFolderProvider::FetchItems(const LiveFolderQuery& query,
                                           FetchCallback callback) {
   CancelFetch();
 
-  const std::string token = CurrentToken();
-  if (token.empty()) {
+  if (!storage_partition_) {
     std::move(callback).Run(LiveFolderFetchResult::Error(
-        LiveFolderFetchStatus::kNotConnected, std::string()));
+        LiveFolderFetchStatus::kNetworkError, "Couldn't reach GitHub."));
     return;
   }
 
-  const std::vector<std::string> queries =
-      BuildSearchQueriesForTesting(query);
+  std::vector<std::string> queries = BuildSearchQueriesForTesting(query);
   if (queries.empty()) {
     std::move(callback).Run(LiveFolderFetchResult::Success({}));
     return;
@@ -406,22 +366,64 @@ void GitHubLiveFolderProvider::FetchItems(const LiveFolderQuery& query,
 
   fetch_callback_ = std::move(callback);
   include_drafts_ = query.include_drafts;
+
+  storage_partition_->GetCookieManagerForBrowserProcess()->GetCookieList(
+      GURL(kGitHubOrigin), net::CookieOptions::MakeAllInclusive(),
+      net::CookiePartitionKeyCollection(),
+      base::BindOnce(&GitHubLiveFolderProvider::OnCookiesRead,
+                     weak_factory_.GetWeakPtr(), std::move(queries)));
+}
+
+void GitHubLiveFolderProvider::OnCookiesRead(
+    std::vector<std::string> queries,
+    const net::CookieAccessResultList& cookies,
+    const net::CookieAccessResultList& excluded_cookies) {
+  if (!fetch_callback_) {
+    return;
+  }
+
+  bool logged_in = false;
+  std::string account;
+  for (const net::CookieWithAccessResult& entry : cookies) {
+    if (entry.cookie.Name() == kLoggedInCookie) {
+      logged_in = entry.cookie.Value() == "yes";
+    } else if (entry.cookie.Name() == kLoginCookie) {
+      account = entry.cookie.Value();
+    }
+  }
+
+  if (!logged_in) {
+    ReportSignedOut();
+    return;
+  }
+
+  signed_in_ = true;
+  account_ = account;
+  StartSearches(queries);
+}
+
+void GitHubLiveFolderProvider::StartSearches(
+    const std::vector<std::string>& queries) {
   merged_items_.clear();
   searches_.clear();
   searches_.resize(queries.size());
   outstanding_ = queries.size();
 
+  network::SharedURLLoaderFactory* url_loader_factory =
+      storage_partition_->GetURLLoaderFactoryForBrowserProcess().get();
+
   for (size_t i = 0; i < queries.size(); ++i) {
+    // Results arrive ten to a page, newest activity first; the first page is
+    // what fits in a sidebar anyway.
     const GURL url(base::StrCat(
         {kSearchEndpoint, "?q=",
          base::EscapeQueryParamValue(queries[i], /*use_plus=*/false),
-         "&sort=updated&order=desc&per_page=",
-         base::NumberToString(kResultsPerQuery)}));
+         "&type=pullrequests&s=updated&o=desc"}));
 
-    searches_[i].loader = network::SimpleURLLoader::Create(
-        MakeRequest(url, token), kTrafficAnnotation);
+    searches_[i].loader =
+        network::SimpleURLLoader::Create(MakeRequest(url), kTrafficAnnotation);
     searches_[i].loader->DownloadToString(
-        url_loader_factory_.get(),
+        url_loader_factory,
         base::BindOnce(&GitHubLiveFolderProvider::OnSearchResponse,
                        weak_factory_.GetWeakPtr(), i),
         kMaxResponseBytes);
@@ -435,24 +437,18 @@ void GitHubLiveFolderProvider::OnSearchResponse(
     return;
   }
 
-  network::SimpleURLLoader* loader = searches_[index].loader.get();
-  const int response_code = ResponseCodeOf(loader);
+  const int response_code = ResponseCodeOf(searches_[index].loader.get());
 
-  if (response_code == net::HTTP_UNAUTHORIZED) {
-    FailFetch(LiveFolderFetchStatus::kAuthFailed,
-              "GitHub rejected the saved token. Reconnect the account.");
+  if (response_code == net::HTTP_TOO_MANY_REQUESTS) {
+    FailFetch(LiveFolderFetchStatus::kRateLimited,
+              "GitHub is limiting searches. Pull requests will refresh "
+              "shortly.");
     return;
   }
-  if (response_code == net::HTTP_FORBIDDEN ||
-      response_code == net::HTTP_TOO_MANY_REQUESTS) {
-    if (IsRateLimitResponse(loader)) {
-      FailFetch(LiveFolderFetchStatus::kRateLimited,
-                "GitHub rate limit reached. Pull requests will refresh "
-                "shortly.");
-    } else {
-      FailFetch(LiveFolderFetchStatus::kAuthFailed,
-                "The saved token isn't allowed to read these pull requests.");
-    }
+  if (response_code == net::HTTP_UNAUTHORIZED ||
+      response_code == net::HTTP_FORBIDDEN) {
+    FailFetch(LiveFolderFetchStatus::kAuthFailed,
+              "GitHub didn't allow this search.");
     return;
   }
   if (!response_body || response_code != net::HTTP_OK) {
@@ -461,7 +457,22 @@ void GitHubLiveFolderProvider::OnSearchResponse(
     return;
   }
 
-  for (LiveFolderItem& item : ParseSearchResponseForTesting(*response_body)) {
+  std::optional<SearchResponse> response =
+      ParseSearchResponseForTesting(*response_body);
+  if (!response) {
+    FailFetch(LiveFolderFetchStatus::kNetworkError,
+              "Couldn't read GitHub's response.");
+    return;
+  }
+
+  // The cookies said signed in but github.com disagreed: the session expired
+  // or was signed out elsewhere.  Every sub-query would say the same.
+  if (!response->logged_in) {
+    ReportSignedOut();
+    return;
+  }
+
+  for (LiveFolderItem& item : response->items) {
     if (!include_drafts_ && item.status == LiveFolderItemStatus::kDraft) {
       continue;
     }
@@ -493,6 +504,12 @@ void GitHubLiveFolderProvider::MaybeFinishFetch() {
       .Run(LiveFolderFetchResult::Success(std::move(items)));
 }
 
+void GitHubLiveFolderProvider::ReportSignedOut() {
+  signed_in_ = false;
+  account_.clear();
+  FailFetch(LiveFolderFetchStatus::kNotConnected, std::string());
+}
+
 void GitHubLiveFolderProvider::FailFetch(LiveFolderFetchStatus status,
                                          const std::string& message) {
   searches_.clear();
@@ -504,6 +521,9 @@ void GitHubLiveFolderProvider::FailFetch(LiveFolderFetchStatus status,
 }
 
 void GitHubLiveFolderProvider::CancelFetch() {
+  // Drops the callbacks of a cookie read or search still in flight, so a
+  // superseded fetch can never report into the new one.
+  weak_factory_.InvalidateWeakPtrs();
   searches_.clear();
   outstanding_ = 0;
   merged_items_.clear();

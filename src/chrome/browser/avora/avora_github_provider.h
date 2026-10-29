@@ -5,38 +5,58 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/avora/avora_live_folder_provider.h"
+#include "net/cookies/canonical_cookie.h"
+
+namespace content {
+class StoragePartition;
+}  // namespace content
 
 namespace network {
-class SharedURLLoaderFactory;
 class SimpleURLLoader;
 }  // namespace network
 
 namespace avora {
 
-class LiveFolderCredentialStore;
-
-// Live Folder provider backed by GitHub's issue search API.
+// Live Folder provider backed by github.com's own pull request search.
 //
-// One instance serves one Space, because the credential -- and therefore the
+// There is no token to connect.  Requests carry the cookies of the Space's
+// storage partition, so the folder lists pull requests for whichever account
+// the Space is signed in to on github.com -- the same session its tabs use.
+// Signing in on the site is what makes the folder fill; signing out empties
+// it.
+//
+// That rules out api.github.com, which ignores session cookies.  Instead this
+// asks github.com/search for JSON, which is what the site's own search page
+// renders from, and which reports whether the session was signed in.
+//
+// One instance serves one Space, because the session -- and therefore the
 // account whose PRs are listed -- is Space-scoped.
 //
-// A single LiveFolderQuery usually needs several search requests: GitHub ANDs
+// A single LiveFolderQuery usually needs several searches: GitHub ANDs
 // qualifiers within one query, so "authored by me OR awaiting my review" is
 // not expressible as one search.  FetchItems() fans out, then merges and
 // de-duplicates by PR id before reporting once.
 class GitHubLiveFolderProvider : public LiveFolderProvider {
  public:
-  GitHubLiveFolderProvider(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      LiveFolderCredentialStore* credential_store,
-      const std::string& space_id);
+  // The parsed body of one search response.
+  struct SearchResponse {
+    // False when github.com answered as though nobody were signed in, which is
+    // how an expired session shows up.
+    bool logged_in = false;
+    std::vector<LiveFolderItem> items;
+  };
+
+  // |storage_partition| is the Space's partition and must outlive this
+  // provider; partitions live as long as their BrowserContext.
+  GitHubLiveFolderProvider(content::StoragePartition* storage_partition,
+                           const std::string& space_id);
   GitHubLiveFolderProvider(const GitHubLiveFolderProvider&) = delete;
   GitHubLiveFolderProvider& operator=(const GitHubLiveFolderProvider&) = delete;
   ~GitHubLiveFolderProvider() override;
@@ -46,18 +66,17 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
   static std::vector<std::string> BuildSearchQueriesForTesting(
       const LiveFolderQuery& query);
 
-  // Parses one search API response body into items.  Exposed for testing.
-  static std::vector<LiveFolderItem> ParseSearchResponseForTesting(
+  // Parses one search response body.  Returns nullopt when the body is not
+  // the search JSON at all -- an HTML error page, say.  Exposed for testing.
+  static std::optional<SearchResponse> ParseSearchResponseForTesting(
       const std::string& body);
 
   // LiveFolderProvider:
   LiveFolderProviderId id() const override;
   std::string display_name() const override;
   bool IsConnected() const override;
-  void Connect(const std::string& credential,
-               ConnectCallback callback) override;
-  void Disconnect() override;
   std::string connected_account() const override;
+  GURL sign_in_url() const override;
   void FetchItems(const LiveFolderQuery& query,
                   FetchCallback callback) override;
   void CancelFetch() override;
@@ -68,11 +87,16 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
     std::unique_ptr<network::SimpleURLLoader> loader;
   };
 
+  // Checks the partition's github.com cookies before spending any requests:
+  // a Space that never signed in to GitHub should cost nothing every refresh.
+  void OnCookiesRead(std::vector<std::string> queries,
+                     const net::CookieAccessResultList& cookies,
+                     const net::CookieAccessResultList& excluded_cookies);
+
+  void StartSearches(const std::vector<std::string>& queries);
+
   void OnSearchResponse(size_t index,
                         std::optional<std::string> response_body);
-  void OnValidateResponse(ConnectCallback callback,
-                          const std::string& credential,
-                          std::optional<std::string> response_body);
 
   // Reports the merged result once every fan-out request has finished.
   void MaybeFinishFetch();
@@ -80,15 +104,16 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
   // Fails the whole fetch, cancelling any still-running requests.
   void FailFetch(LiveFolderFetchStatus status, const std::string& message);
 
-  std::string CurrentToken() const;
+  // Records that the session is signed out and reports kNotConnected.
+  void ReportSignedOut();
 
-  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-  raw_ptr<LiveFolderCredentialStore> credential_store_;
+  raw_ptr<content::StoragePartition> storage_partition_;
   std::string space_id_;
 
-  // Loader for Connect()'s validation call, independent of the fetch fan-out
-  // so connecting does not cancel a running sync.
-  std::unique_ptr<network::SimpleURLLoader> validate_loader_;
+  // What the most recent fetch observed.  Signed out until proven otherwise,
+  // so a Space that never visited GitHub shows the sign-in prompt.
+  bool signed_in_ = false;
+  std::string account_;
 
   std::vector<PendingSearch> searches_;
   size_t outstanding_ = 0;
@@ -101,6 +126,8 @@ class GitHubLiveFolderProvider : public LiveFolderProvider {
 
   FetchCallback fetch_callback_;
 
+  // Invalidated by CancelFetch() so a cookie read from a superseded fetch
+  // cannot start searches for it.
   base::WeakPtrFactory<GitHubLiveFolderProvider> weak_factory_{this};
 };
 

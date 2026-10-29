@@ -18,8 +18,6 @@ source_set("avora") {
     "avora_github_provider.h",
     "avora_live_folder.cc",
     "avora_live_folder.h",
-    "avora_live_folder_credentials.cc",
-    "avora_live_folder_credentials.h",
     "avora_live_folder_provider.cc",
     "avora_live_folder_provider.h",
     "avora_live_folder_service.cc",
@@ -155,6 +153,7 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
+    "avora_github_provider_unittest.cc",
     "avora_import_provenance_unittest.cc",
     "avora_local_user_unittest.cc",
     "avora_imported_link_store_unittest.cc",

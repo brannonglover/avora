@@ -8,21 +8,22 @@
 
 #include "base/functional/callback.h"
 #include "chrome/browser/avora/avora_live_folder.h"
+#include "url/gurl.h"
 
 namespace avora {
 
 // Why a sync produced no items.  Distinguishing these matters in the UI: a
-// folder with no matching PRs shows "You're all caught up", a disconnected one
-// shows a Connect button, and a failed one keeps the previous contents on
-// screen rather than blanking them.
+// folder with no matching PRs shows nothing, a signed-out one shows a sign-in
+// prompt, and a failed one keeps the previous contents on screen rather than
+// blanking them.
 enum class LiveFolderFetchStatus {
   kSuccess = 0,
 
-  // No credential stored for this Space, so nothing was requested.
+  // The Space is not signed in to the service, so there is nothing to list.
   kNotConnected = 1,
 
-  // Credential exists but the service rejected it; it likely expired or was
-  // revoked.
+  // The service refused the request outright -- typically an organisation
+  // that blocks the signed-in session from seeing its pull requests.
   kAuthFailed = 2,
 
   // Transport failure or an unparseable response.  Transient; retry later.
@@ -43,7 +44,7 @@ struct LiveFolderFetchResult {
   // Set when kRateLimited; zero otherwise.
   base::TimeDelta retry_after;
 
-  // Human-readable detail for the error row.  Never contains the credential.
+  // Human-readable detail for the error row.
   std::string error_message;
 
   bool ok() const { return status == LiveFolderFetchStatus::kSuccess; }
@@ -65,36 +66,28 @@ struct LiveFolderFetchResult {
 class LiveFolderProvider {
  public:
   using FetchCallback = base::OnceCallback<void(LiveFolderFetchResult)>;
-  using ConnectCallback =
-      base::OnceCallback<void(bool success, const std::string& error)>;
 
   virtual ~LiveFolderProvider() = default;
 
   virtual LiveFolderProviderId id() const = 0;
 
-  // Display name for the connect affordance, e.g. "GitHub".
+  // Display name for the sign-in affordance, e.g. "GitHub".
   virtual std::string display_name() const = 0;
 
-  // True when a usable credential is stored for the Space this provider was
-  // created for.  Cheap; safe to call during layout.
+  // Providers have no credentials of their own: they ride on the session the
+  // Space already has with the service's website, exactly as a tab would.
+  // Signing in or out on the site is therefore the whole connect story, and
+  // these report what the most recent fetch observed.
+
+  // True when the last fetch found a signed-in session.  Cheap; safe to call
+  // during layout.
   virtual bool IsConnected() const = 0;
 
-  // Validates |credential| against the service and stores it on success.  The
-  // credential is a provider-defined opaque string (for GitHub, a personal
-  // access token).
-  //
-  // Validation happens before storage so a typo surfaces immediately rather
-  // than as an empty folder later.
-  virtual void Connect(const std::string& credential,
-                       ConnectCallback callback) = 0;
-
-  // Discards the stored credential.  Does not clear cached items; the caller
-  // decides whether a disconnected folder keeps showing its last contents.
-  virtual void Disconnect() = 0;
-
-  // Login of the connected account, or empty when not connected.  Populated by
-  // Connect() and cached, so this does not hit the network.
+  // Login of the signed-in account, or empty when signed out or unknown.
   virtual std::string connected_account() const = 0;
+
+  // Where to send the user to sign in.
+  virtual GURL sign_in_url() const = 0;
 
   // Fetches the full current result set for |query|.  Any in-flight fetch is
   // cancelled first, so the latest call is the one that reports.

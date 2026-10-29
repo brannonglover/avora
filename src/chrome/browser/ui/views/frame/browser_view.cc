@@ -192,7 +192,6 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
-#include "chrome/browser/avora/avora_live_folder_service.h"
 #include "chrome/browser/avora/style_ai/avora_style_ai_settings.h"
 #include "chrome/browser/avora/sync/avora_tab_sync_service.h"
 #include "chrome/browser/avora/avora_nav_history.h"
@@ -1074,14 +1073,12 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   horizontal_tab_strip_region_insertion_index_ =
       GetIndexOf(horizontal_tab_strip_region_view_.get());
 
-  // Avora: hand the Live Folder subsystem the process-wide encryption service
-  // before any sidebar view can construct it.  //chrome/browser/avora is a
-  // dependency of //chrome/browser, so it cannot reach g_browser_process
-  // itself.
-  avora::LiveFolderService::SetOSCryptAsync(g_browser_process->os_crypt_async());
-  // Avora: the same for Style Studio AI's encrypted API key, plus the native
-  // dialog chrome://avora-settings opens to collect it (that WebUI target
-  // cannot depend on //chrome/browser/ui/views).
+  // Avora: hand Style Studio AI the process-wide encryption service for its
+  // encrypted API key before any view can construct it.  //chrome/browser/avora
+  // is a dependency of //chrome/browser, so it cannot reach g_browser_process
+  // itself.  Also register the native dialog chrome://avora-settings opens to
+  // collect the key (that WebUI target cannot depend on
+  // //chrome/browser/ui/views).
   avora::StyleAiSettings::SetOSCryptAsync(g_browser_process->os_crypt_async());
   AvoraStyleAiHandler::SetKeyDialogLauncher(
       base::BindRepeating(&avora::ShowStyleAiKeyDialog));

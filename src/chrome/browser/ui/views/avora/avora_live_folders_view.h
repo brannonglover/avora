@@ -115,7 +115,7 @@ class LiveFolderItemRow : public views::View {
 // items" true in the UI layer too.
 //
 // The view takes zero height when the active Space has no Live Folders, so
-// Spaces that never connect an account are unaffected.
+// Spaces that never visit GitHub are unaffected.
 class AvoraLiveFoldersView : public views::View,
                              public LiveFolderStore::Observer,
                              public LiveFolderService::Observer,
@@ -135,10 +135,10 @@ class AvoraLiveFoldersView : public views::View,
   AvoraLiveFoldersView& operator=(const AvoraLiveFoldersView&) = delete;
   ~AvoraLiveFoldersView() override;
 
-  // Creates the GitHub folder for the active Space and opens the connect
-  // dialog.  Entry point for the "Connect GitHub" affordance elsewhere in the
-  // UI.
-  void StartGitHubConnectFlow();
+  // Creates the GitHub folder for the active Space and, unless the Space is
+  // already signed in to github.com, opens the sign-in page.  Entry point for
+  // a "Connect GitHub" affordance elsewhere in the UI.
+  void StartGitHubSignInFlow();
 
   // LiveFolderStore::Observer:
   void OnLiveFoldersChanged() override;
@@ -185,7 +185,8 @@ class AvoraLiveFoldersView : public views::View,
   // Opens |url| in the tab that already shows it, or a new one.
   void OpenUrl(const std::string& url);
 
-  void ShowConnectDialog(const std::string& folder_id);
+  // Opens github.com's sign-in page in a new tab of this window's Space.
+  void OpenSignIn(const std::string& folder_id);
 
   // Toggles one involvement filter and re-syncs.
   void ToggleQueryFilter(const std::string& folder_id, int command_id);
@@ -193,8 +194,8 @@ class AvoraLiveFoldersView : public views::View,
   // Adds a non-interactive row explaining why a folder has no items.
   void AddMessageRow(const std::u16string& text);
 
-  // Adds the "Connect GitHub" call to action.
-  void AddConnectRow(const std::string& folder_id);
+  // Adds the "Sign in to GitHub" call to action.
+  void AddSignInRow(const std::string& folder_id);
 
   // Reports the active tab's host to the service for provider detection.
   void ReportActiveHost();

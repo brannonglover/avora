@@ -8,28 +8,23 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/avora/avora_live_folder_credentials.h"
 #include "chrome/browser/avora/avora_live_folder_provider.h"
 #include "chrome/browser/avora/avora_live_folder_store.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 
+class GURL;
+class PrefRegistrySimple;
 class Profile;
 
-namespace network {
-class SharedURLLoaderFactory;
-}  // namespace network
-
-namespace os_crypt_async {
-class Encryptor;
-class OSCryptAsync;
-}  // namespace os_crypt_async
+namespace content {
+class StoragePartition;
+}  // namespace content
 
 namespace avora {
 
@@ -66,28 +61,27 @@ class LiveFolderService : public SpaceManagerObserver,
     LiveFolderFetchStatus last_status = LiveFolderFetchStatus::kSuccess;
     std::string last_error;
 
-    // Login of the connected account, for the folder subtitle.
+    // Login of the signed-in account, for the folder subtitle.
     std::string account;
   };
 
-  // How often an active Space's folders refresh.  GitHub's authenticated
-  // search budget is 30 requests/minute; at up to two requests per sync this
-  // leaves the vast majority of the budget for everything else.
+  // How often an active Space's folders refresh.  Each sync is up to two
+  // github.com searches, made with the same session the user browses with,
+  // so this stays far below anything GitHub would throttle.
   static constexpr base::TimeDelta kRefreshInterval = base::Minutes(5);
 
   // Minimum spacing between syncs of the same folder, so rapid Space switching
   // or repeated manual refreshes cannot hammer the API.
   static constexpr base::TimeDelta kMinSyncSpacing = base::Seconds(30);
 
-  // Supplies the process-wide encryption service used to protect stored
-  // credentials.  Must be called from code inside //chrome/browser (which is
-  // the only place g_browser_process is reachable) before any credential is
-  // read or written; services created earlier pick it up when it arrives.
-  static void SetOSCryptAsync(os_crypt_async::OSCryptAsync* os_crypt_async);
+  // Live Folders once stored GitHub personal access tokens.  They now use the
+  // Space's github.com session instead, so the old pref is registered only to
+  // be cleared.
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   // The instance for |profile|, creating it on first call.  Returns nullptr for
-  // a null or off-the-record profile: Live Folders are a persistent, credential
-  // -backed feature and have no meaning in an incognito session.
+  // a null or off-the-record profile: Live Folders are a persistent feature and
+  // have no meaning in an incognito session.
   static LiveFolderService* GetForProfile(Profile* profile);
 
   explicit LiveFolderService(Profile* profile);
@@ -99,18 +93,12 @@ class LiveFolderService : public SpaceManagerObserver,
   void RemoveObserver(Observer* observer);
 
   LiveFolderStore* store() { return store_.get(); }
-  LiveFolderCredentialStore* credentials() { return credentials_.get(); }
 
   SyncState GetSyncState(const std::string& folder_id) const;
 
-  // Validates and stores a credential for the active Space, then syncs.
-  void ConnectProvider(LiveFolderProviderId provider,
-                       const std::string& credential,
-                       LiveFolderProvider::ConnectCallback callback);
-
-  // Clears the credential for the active Space and empties the folder, so a
-  // disconnected account does not leave its pull requests on screen.
-  void DisconnectProvider(LiveFolderProviderId provider);
+  // Where to sign in so |provider|'s folders can fill.  Signing in happens on
+  // the provider's own site, in an ordinary tab of the Space.
+  GURL GetSignInUrl(LiveFolderProviderId provider);
 
   // Syncs |folder_id| now unless it synced within kMinSyncSpacing.
   void RefreshFolder(const std::string& folder_id);
@@ -123,8 +111,10 @@ class LiveFolderService : public SpaceManagerObserver,
 
   // Called when a tab in the active Space navigates to |host|.  A visit to a
   // provider's site is how a Live Folder gets discovered: seeing github.com
-  // creates the Pull Requests folder, which then shows its Connect prompt.
-  // Does nothing when the folder already exists or the user removed it.
+  // creates the Pull Requests folder.  It is also how signing in is noticed:
+  // a signed-out folder re-checks the session whenever the user is on the
+  // provider's site, so it fills as soon as the sign-in completes.  Does
+  // nothing when the user removed the folder.
   void OnHostVisited(const std::string& host);
 
   // SpaceManagerObserver:
@@ -135,15 +125,20 @@ class LiveFolderService : public SpaceManagerObserver,
   // so the initial sync can safely call back into the service.
   void Initialize();
 
-  void OnEncryptorReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
+  // The partition holding |space_id|'s cookies -- the Space's browser identity
+  // -- falling back to the default partition when it cannot be resolved.
+  content::StoragePartition* GetStoragePartitionForSpace(
+      const std::string& space_id);
 
-  // Provider instances are per (Space, provider) because credentials are
-  // Space-scoped.  Keyed by "space_id/provider".
+  // Provider instances are per (Space, provider) because sign-in is
+  // Space-scoped: each Space has its own cookie jar.  Keyed by
+  // "space_id/provider".
   LiveFolderProvider* GetOrCreateProvider(const std::string& space_id,
                                           LiveFolderProviderId provider);
 
   void OnFetchComplete(const std::string& space_id,
                        const std::string& folder_id,
+                       LiveFolderProviderId provider_id,
                        LiveFolderFetchResult result);
 
   void SyncFolder(const LiveFolder& folder, bool force);
@@ -151,9 +146,7 @@ class LiveFolderService : public SpaceManagerObserver,
   void NotifySyncStateChanged(const std::string& folder_id);
 
   raw_ptr<Profile> profile_;
-  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
-  std::unique_ptr<LiveFolderCredentialStore> credentials_;
   std::unique_ptr<LiveFolderStore> store_;
   std::unique_ptr<SpaceManager> space_manager_;
 

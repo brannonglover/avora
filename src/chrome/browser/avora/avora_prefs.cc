@@ -5,7 +5,7 @@
 #include "chrome/browser/avora/avora_favorites.h"
 #include "chrome/browser/avora/avora_import_provenance.h"
 #include "chrome/browser/avora/avora_imported_link_store.h"
-#include "chrome/browser/avora/avora_live_folder_credentials.h"
+#include "chrome/browser/avora/avora_live_folder_service.h"
 #include "chrome/browser/avora/avora_live_folder_store.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
@@ -39,7 +39,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   sync::TabSyncService::RegisterProfilePrefs(registry);
 
   LiveFolderStore::RegisterProfilePrefs(registry);
-  LiveFolderCredentialStore::RegisterProfilePrefs(registry);
+  LiveFolderService::RegisterProfilePrefs(registry);
 
   registry->RegisterIntegerPref(kTodayTabExpiryHoursPref,
                                 kDefaultTodayTabExpiryHours);
