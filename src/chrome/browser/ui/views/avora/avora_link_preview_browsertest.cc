@@ -23,6 +23,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/views/view_utils.h"
 
@@ -40,6 +41,11 @@ constexpr char kHostPage[] =
 // A host page whose target="_blank" link goes to another origin, standing in
 // for a logged-out site whose "Sign in" opens an identity provider.
 constexpr char kSignInHostPage[] = "/avora_link_preview_signin_host.html";
+// The same, but the identity provider already has a session: its sign-in
+// link answers with nothing but a redirect straight back to the app.
+constexpr char kBounceSignInHostPage[] =
+    "/avora_link_preview_bounce_signin_host.html";
+constexpr char kBouncePath[] = "/signin_bounce";
 constexpr char kAppHost[] = "app.test";
 constexpr char kIdentityHost[] = "idp.test";
 
@@ -76,6 +82,16 @@ class AvoraLinkPreviewBrowserTest : public InProcessBrowserTest {
           "<!doctype html><title>host</title>"
           "<a id='go' href='/target.html' target='_blank'>open</a>"
           "<script>window.cookieAtLoad = document.cookie;</script>");
+    } else if (request.relative_url == kBounceSignInHostPage) {
+      response->set_content(
+          "<!doctype html><title>signed out</title><a id='go' href='" +
+          embedded_test_server()->GetURL(kIdentityHost, kBouncePath).spec() +
+          "' target='_blank'>sign in</a>");
+    } else if (request.relative_url == kBouncePath) {
+      response->set_code(net::HTTP_FOUND);
+      response->AddCustomHeader(
+          "Location",
+          embedded_test_server()->GetURL(kAppHost, "/inbox.html").spec());
     } else if (request.relative_url == kSignInHostPage) {
       response->set_content(
           "<!doctype html><title>signed out</title><a id='go' href='" +
@@ -444,6 +460,31 @@ IN_PROC_BROWSER_TEST_F(AvoraLinkPreviewBrowserTest, SameSitePreviewStaysInCard) 
 
   EXPECT_EQ(preview, GetLinkPreviewContents(host_tab()));
   EXPECT_EQ(preview, model()->GetActiveWebContents());
+}
+
+// An identity provider that already has a session never shows a page: the
+// sign-in link redirects straight back to the app, so the first page the
+// preview commits is already the host's site.  That still belongs to the host.
+IN_PROC_BROWSER_TEST_F(AvoraLinkPreviewBrowserTest,
+                       SignInRedirectingStraightBackLoadsInHost) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_test_server()->GetURL(kAppHost, kBounceSignInHostPage)));
+  content::WebContents* const host = model()->GetActiveWebContents();
+  const int tabs_before = model()->count();
+  // Not OpenOverlay(): the preview opens and is handed back within a single
+  // redirect, often before the tab count can be seen to rise at all.
+  ASSERT_TRUE(content::ExecJs(host, "document.getElementById('go').click();"));
+
+  const GURL landed = embedded_test_server()->GetURL(kAppHost, "/inbox.html");
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return host->GetLastCommittedURL() == landed &&
+           !GetLinkPreviewContents(host) &&
+           model()->GetActiveWebContents() == host &&
+           model()->count() == tabs_before;
+  }));
+  EXPECT_EQ(SecondaryContentsMode::kNone,
+            multi_contents_view()->secondary_contents_mode());
 }
 
 }  // namespace avora

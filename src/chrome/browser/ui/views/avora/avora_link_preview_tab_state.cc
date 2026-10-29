@@ -210,27 +210,18 @@ GURL GetLinkPreviewUrl(content::WebContents* tab) {
 
 bool IsLinkPreviewReturnToHost(content::WebContents* host,
                                content::WebContents* preview) {
-  if (!host || !preview || host == preview) {
+  if (!host || !preview || host == preview ||
+      GetLinkPreviewContents(host) != preview) {
     return false;
   }
-  content::NavigationController& controller = preview->GetController();
-  content::NavigationEntry* const landed = controller.GetLastCommittedEntry();
-  if (!landed || !landed->GetURL().SchemeIsHTTPOrHTTPS()) {
+  content::NavigationEntry* const landed =
+      preview->GetController().GetLastCommittedEntry();
+  if (!landed || landed->IsInitialEntry() ||
+      !landed->GetURL().SchemeIsHTTPOrHTTPS()) {
     return false;
   }
-
-  // Where the preview first opened.  A renderer-created window starts on an
-  // initial about:blank entry, so skip ahead to the first real page.
-  const int landed_index = controller.GetLastCommittedEntryIndex();
-  content::NavigationEntry* opened = nullptr;
-  for (int i = 0; i < landed_index; ++i) {
-    content::NavigationEntry* const entry = controller.GetEntryAtIndex(i);
-    if (entry && entry->GetURL().SchemeIsHTTPOrHTTPS()) {
-      opened = entry;
-      break;
-    }
-  }
-  if (!opened) {
+  const GURL opened = GetLinkPreviewUrl(host);
+  if (!opened.SchemeIsHTTPOrHTTPS()) {
     return false;
   }
 
@@ -259,8 +250,7 @@ bool IsLinkPreviewReturnToHost(content::WebContents* host,
       return origin.IsSameOriginWith(url);
     });
   };
-  return !belongs_to_host(opened->GetURL()) &&
-         belongs_to_host(landed->GetURL());
+  return !belongs_to_host(opened) && belongs_to_host(landed->GetURL());
 }
 
 std::unique_ptr<content::WebContents> CreateLinkPreviewContents(

@@ -1281,6 +1281,8 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
             base::BindRepeating(&BrowserView::PromoteAvoraLinkPreviewToTab,
                                 base::Unretained(this)),
             base::BindRepeating(&BrowserView::HideAvoraLinkPreview,
+                                base::Unretained(this)),
+            base::BindRepeating(&BrowserView::OnAvoraLinkPreviewReturnedToHost,
                                 base::Unretained(this))));
     // Keeps the secondary contents container glued to the card as the overlay
     // relays itself out (window resize, fullscreen, sidebar toggle).
@@ -3373,7 +3375,6 @@ void BrowserView::DidFinishNavigation(
   }
 
   UpdateAvoraSidebarURL();
-  MaybeReturnAvoraLinkPreviewToHost(navigation_handle);
 
   if (AppUsesUnframedMode() && !window_management_subscription_id_) {
     SetWindowManagementPermissionSubscriptionForUnframedMode(
@@ -7146,25 +7147,19 @@ void BrowserView::PromoteAvoraLinkPreviewIfActivated(
   PromoteAvoraLinkPreview(new_contents);
 }
 
-void BrowserView::MaybeReturnAvoraLinkPreviewToHost(
-    content::NavigationHandle* navigation_handle) {
-  // A sign-in comes back as a document load; a same-document commit is the
-  // page rearranging itself, not a return.
-  if (!avora_link_preview_ || navigation_handle->IsSameDocument() ||
-      navigation_handle->IsErrorPage()) {
-    return;
-  }
-  content::WebContents* const preview = navigation_handle->GetWebContents();
-  content::WebContents* const host_tab = avora_link_preview_->host_tab();
-  if (avora_link_preview_->attached_preview() != preview ||
-      !avora::IsLinkPreviewReturnToHost(host_tab, preview)) {
+void BrowserView::OnAvoraLinkPreviewReturnedToHost(const GURL& url) {
+  content::WebContents* const host_tab =
+      avora_link_preview_ ? avora_link_preview_->host_tab() : nullptr;
+  content::WebContents* const preview =
+      avora_link_preview_ ? avora_link_preview_->attached_preview() : nullptr;
+  if (!host_tab || !preview) {
     return;
   }
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&BrowserView::ReturnAvoraLinkPreviewToHost,
-                     weak_ptr_factory_.GetWeakPtr(), host_tab->GetWeakPtr(),
-                     preview->GetWeakPtr(), navigation_handle->GetURL()));
+      FROM_HERE, base::BindOnce(&BrowserView::ReturnAvoraLinkPreviewToHost,
+                                weak_ptr_factory_.GetWeakPtr(),
+                                host_tab->GetWeakPtr(), preview->GetWeakPtr(),
+                                url));
 }
 
 void BrowserView::ReturnAvoraLinkPreviewToHost(

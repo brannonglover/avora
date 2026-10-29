@@ -88,18 +88,22 @@ bool TabHasLinkPreview(content::WebContents* tab);
 content::WebContents* GetLinkPreviewContents(content::WebContents* tab);
 GURL GetLinkPreviewUrl(content::WebContents* tab);
 
-// True when |preview|, the preview parked on |host|, has just come back to
-// the site |host| belongs to after opening somewhere else -- the shape of a
-// sign-in that started in the card and finished there.  The session that
-// sign-in produced belongs to the host tab, which is still showing the page
-// from before the user logged in.
+// True when |preview|, the preview parked on |host|, was opened for a link
+// to another origin and is now showing a page on the site |host| belongs to
+// -- the shape of a sign-in that started in the card and finished there.  The
+// session that sign-in produced belongs to the host tab, which is still
+// showing the page from before the user logged in.
 //
 // "The site |host| belongs to" is any of: the origin it is showing, the
 // origin it originally asked for before redirects bounced it elsewhere (a
 // logged-out Gmail redirects to a marketing page), and the saved destination
-// of the Favorite or pinned item it backs.  The preview must have opened onto
-// a different origin first, so an ordinary same-site link is never mistaken
-// for a returning sign-in.
+// of the Favorite or pinned item it backs.
+//
+// The test is on the link the preview was opened for, not on the first page
+// it committed: an identity provider that already has a session answers the
+// sign-in link with nothing but redirects, so the very first page the
+// preview commits is the host's own.  A link to the host's own site is just
+// a link, however far the user browses inside the card afterwards.
 bool IsLinkPreviewReturnToHost(content::WebContents* host,
                                content::WebContents* preview);
 

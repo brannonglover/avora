@@ -1439,15 +1439,14 @@ class BrowserView : public BrowserWindow,
   void PromoteAvoraLinkPreviewIfActivated(content::WebContents* new_contents);
 
   // Hands a sign-in that finished inside the overlay back to the tab it was
-  // started from.  Called for every committed navigation of the active tab;
-  // acts only when that tab is the attached preview and it has just landed
-  // back on its host's site -- see avora::IsLinkPreviewReturnToHost().
-  void MaybeReturnAvoraLinkPreviewToHost(
-      content::NavigationHandle* navigation_handle);
+  // started from.  The overlay calls this when its preview lands on |url|,
+  // a page on its host's site -- see avora::IsLinkPreviewReturnToHost().
+  void OnAvoraLinkPreviewReturnedToHost(const GURL& url);
   // Dismisses the overlay and loads |url| in |host_tab|, so the tab the user
   // signed in from is the one showing the signed-in page.  Posted from
-  // MaybeReturnAvoraLinkPreviewToHost(): tearing the overlay down closes the
-  // preview, which must not happen inside its own navigation callback.
+  // OnAvoraLinkPreviewReturnedToHost(): tearing the overlay down closes the
+  // preview, which must not happen inside its own navigation callback, and
+  // the overlay can also report from inside a TabStripModel notification.
   void ReturnAvoraLinkPreviewToHost(
       base::WeakPtr<content::WebContents> host_tab,
       base::WeakPtr<content::WebContents> preview,

@@ -8,7 +8,9 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkRRect.h"
@@ -113,10 +115,12 @@ END_METADATA
 AvoraLinkPreviewView::AvoraLinkPreviewView(
     BrowserWindowInterface* browser,
     LinkPreviewPromoteCallback promote_cb,
-    LinkPreviewDismissCallback dismiss_cb)
+    LinkPreviewDismissCallback dismiss_cb,
+    LinkPreviewReturnCallback return_cb)
     : browser_(browser),
       promote_cb_(std::move(promote_cb)),
-      dismiss_cb_(std::move(dismiss_cb)) {
+      dismiss_cb_(std::move(dismiss_cb)),
+      return_cb_(std::move(return_cb)) {
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
 
@@ -180,6 +184,10 @@ void AvoraLinkPreviewView::AttachPreview(content::WebContents* host_tab,
   if (card_bounds_changed_) {
     card_bounds_changed_.Run();
   }
+
+  // The sign-in may already have landed: while the preview was parked behind
+  // another tab, or before the card was there to watch it commit.
+  MaybeReturnToHost();
 }
 
 gfx::Rect AvoraLinkPreviewView::card_bounds() const {
@@ -268,6 +276,26 @@ void AvoraLinkPreviewView::OnBoundsChanged(
 }
 
 // ── WebContentsObserver ─────────────────────────────────────────────────────
+
+void AvoraLinkPreviewView::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  // A sign-in comes back as a document load; a same-document commit is the
+  // page rearranging itself, not a return.
+  if (!navigation_handle->IsInPrimaryMainFrame() ||
+      !navigation_handle->HasCommitted() ||
+      navigation_handle->IsSameDocument() ||
+      navigation_handle->IsErrorPage()) {
+    return;
+  }
+  MaybeReturnToHost();
+}
+
+void AvoraLinkPreviewView::MaybeReturnToHost() {
+  if (return_cb_ && attached_preview_ &&
+      IsLinkPreviewReturnToHost(host_tab_.get(), attached_preview_)) {
+    return_cb_.Run(attached_preview_->GetLastCommittedURL());
+  }
+}
 
 void AvoraLinkPreviewView::WebContentsDestroyed() {
   // The preview tab was closed underneath us.  Drop the pointer first so the

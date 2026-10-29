@@ -20,6 +20,7 @@
 class BrowserWindowInterface;
 
 namespace content {
+class NavigationHandle;
 class WebContents;
 }
 
@@ -38,6 +39,12 @@ using LinkPreviewPromoteCallback = base::RepeatingClosure;
 
 // Callback invoked when the overlay should be dismissed.
 using LinkPreviewDismissCallback = base::RepeatingClosure;
+
+// Callback invoked when the attached preview has landed back on its host
+// tab's site -- a sign-in finishing in the card; see
+// IsLinkPreviewReturnToHost().  Carries the page it landed on, which the
+// host should load in its place.
+using LinkPreviewReturnCallback = base::RepeatingCallback<void(const GURL&)>;
 
 // Full-content overlay that intercepts target="_blank" link navigations.
 // Instead of opening a new tab, the destination is rendered inside a centered
@@ -71,7 +78,8 @@ class AvoraLinkPreviewView : public views::View,
 
   AvoraLinkPreviewView(BrowserWindowInterface* browser,
                        LinkPreviewPromoteCallback promote_cb,
-                       LinkPreviewDismissCallback dismiss_cb);
+                       LinkPreviewDismissCallback dismiss_cb,
+                       LinkPreviewReturnCallback return_cb);
   AvoraLinkPreviewView(const AvoraLinkPreviewView&) = delete;
   AvoraLinkPreviewView& operator=(const AvoraLinkPreviewView&) = delete;
   ~AvoraLinkPreviewView() override;
@@ -128,6 +136,8 @@ class AvoraLinkPreviewView : public views::View,
                          const gfx::Rect& rect) const override;
 
   // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void WebContentsDestroyed() override;
 
  private:
@@ -137,9 +147,14 @@ class AvoraLinkPreviewView : public views::View,
   void OnCloseClicked();
   void OnPromoteToTabClicked();
 
+  // Runs |return_cb_| when the attached preview is sitting on its host's
+  // site.  See LinkPreviewReturnCallback.
+  void MaybeReturnToHost();
+
   raw_ptr<BrowserWindowInterface> browser_;
   LinkPreviewPromoteCallback promote_cb_;
   LinkPreviewDismissCallback dismiss_cb_;
+  LinkPreviewReturnCallback return_cb_;
 
   // Dims everything except the card's rect; the page shows through the hole.
   raw_ptr<views::View> backdrop_ = nullptr;
