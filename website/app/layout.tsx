@@ -1,23 +1,28 @@
 import type { Metadata, Viewport } from "next";
 import { Sora } from "next/font/google";
+import { siteDescription as description, siteUrl } from "@/lib/site";
 import "./globals.css";
 
 const sora = Sora({ variable: "--font-display", subsets: ["latin"] });
 
-const description =
-  "Avora is a Chromium browser for the Mac with vertical tabs, Spaces that keep their own sign-ins, and Intelligence that explains why a page looks the way it does.";
+const title = "Avora: the Mac browser with vertical tabs and Spaces";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
-  ),
-  title: "Avora: a place for every tab",
+  metadataBase: new URL(siteUrl),
+  title,
   description,
+  alternates: { canonical: "/" },
   openGraph: {
-    title: "Avora",
+    title,
     description,
-    images: [{ url: "/shots/spaces.png", width: 1600, height: 1000 }],
+    url: "/",
+    siteName: "Avora",
     type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
   },
 };
 

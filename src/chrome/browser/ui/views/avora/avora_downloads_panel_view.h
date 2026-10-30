@@ -118,6 +118,11 @@ class DownloadsPanelView : public views::View,
   void ScanFolder();
   void OnFolderScanned(DownloadsFolderListing listing);
 
+  // Moves a file or folder from the folder list to the Trash, off the UI
+  // thread, then reads the folder again.
+  void TrashFile(const base::FilePath& path);
+  void OnFileTrashed(const base::FilePath& path, bool moved);
+
   // Opens the download folder in Finder.
   void OpenFolder();
 
@@ -139,6 +144,7 @@ class DownloadsPanelView : public views::View,
   // The folder the files list shows: where downloads are saved.
   base::FilePath folder_;
 
+  raw_ptr<views::Label> trash_error_ = nullptr;
   raw_ptr<views::View> active_header_ = nullptr;
   raw_ptr<views::View> list_ = nullptr;
   raw_ptr<views::Label> files_header_ = nullptr;

@@ -23,6 +23,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "build/build_config.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
@@ -52,6 +53,10 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/views/avora/avora_file_trash_mac.h"
+#endif
 
 namespace avora {
 
@@ -101,6 +106,9 @@ constexpr char kCloseIconPath[] = "M18 6 6 18 M6 6l12 12";
 constexpr char kFolderIconPath[] =
     "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 "
     "0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z";
+constexpr char kTrashIconPath[] =
+    "M10 11v6 M14 11v6 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M3 6h18 M8 6V4"
+    "a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2";
 
 gfx::FontList PanelFont(int size, gfx::Font::Weight weight) {
   return gfx::FontList({std::string("system-ui")}, gfx::Font::NORMAL, size,
@@ -322,17 +330,22 @@ std::unique_ptr<views::Label> MakeSectionHeader(const std::u16string& text) {
 }
 
 // One file or folder in the download folder.  Clicking it opens it the way
-// Finder would; the trailing button shows it in Finder instead.
+// Finder would; the trailing buttons show it in Finder or move it to the Trash.
 class FileRowView : public views::Button {
   METADATA_HEADER(FileRowView, views::Button)
 
  public:
-  FileRowView(Profile* profile, const DownloadsFolderEntry& entry)
+  using TrashCallback = base::RepeatingCallback<void(const base::FilePath&)>;
+
+  FileRowView(Profile* profile,
+              const DownloadsFolderEntry& entry,
+              TrashCallback on_trash)
       : views::Button(base::BindRepeating(&FileRowView::OnPressed,
                                           base::Unretained(this))),
         profile_(profile),
         path_(entry.path),
-        is_directory_(entry.is_directory) {
+        is_directory_(entry.is_directory),
+        on_trash_(std::move(on_trash)) {
     SetPreferredSize(
         gfx::Size(DownloadsPanelView::kPanelWidth, kFileRowHeight));
     SetFocusBehavior(FocusBehavior::ALWAYS);
@@ -379,6 +392,12 @@ class FileRowView : public views::Button {
         base::BindRepeating(&FileRowView::OnReveal, base::Unretained(this)),
         kFolderOpenIconPath, u"Show in Finder"));
 
+#if BUILDFLAG(IS_MAC)
+    AddChildView(std::make_unique<PanelIconButton>(
+        base::BindRepeating(&FileRowView::OnTrash, base::Unretained(this)),
+        kTrashIconPath, u"Move to Trash"));
+#endif
+
     SetTooltipText(base::StrCat({name, u"\n", detail}));
     GetViewAccessibility().SetName(base::StrCat({name, u", ", detail}));
   }
@@ -404,9 +423,18 @@ class FileRowView : public views::Button {
 
   void OnReveal() { platform_util::ShowItemInFolder(profile_, path_); }
 
+  // The row leaves at once rather than when the next scan comes back, so a
+  // second click can't try to trash a file that has already gone.  If the move
+  // fails, that scan brings the row back.
+  void OnTrash() {
+    SetVisible(false);
+    on_trash_.Run(path_);
+  }
+
   raw_ptr<Profile> profile_;
   const base::FilePath path_;
   const bool is_directory_;
+  TrashCallback on_trash_;
 };
 
 BEGIN_METADATA(FileRowView)
@@ -676,6 +704,18 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
 
   AddChildView(std::move(header));
 
+  // Sits above the list so a failure shows however far down the row was.
+  auto trash_error = std::make_unique<views::Label>(
+      std::u16string(), views::Label::CustomFont{PanelFont(
+                            kStatusFontSize, gfx::Font::Weight::NORMAL)});
+  trash_error->SetEnabledColor(kFailedText);
+  trash_error->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  trash_error->SetElideBehavior(gfx::ELIDE_MIDDLE);
+  trash_error->SetBorder(
+      views::CreateEmptyBorder(gfx::Insets::TLBR(0, kRowHPad, 6, kRowHPad)));
+  trash_error->SetVisible(false);
+  trash_error_ = AddChildView(std::move(trash_error));
+
   // ── The list: downloads in flight, then the folder ──
   auto scroll = std::make_unique<views::ScrollView>();
   scroll->SetBackgroundColor(std::nullopt);
@@ -904,7 +944,10 @@ void DownloadsPanelView::OnFolderScanned(DownloadsFolderListing listing) {
 
   files_list_->RemoveAllChildViews();
   for (const DownloadsFolderEntry& entry : listing.entries) {
-    files_list_->AddChildView(std::make_unique<FileRowView>(profile_, entry));
+    files_list_->AddChildView(std::make_unique<FileRowView>(
+        profile_, entry,
+        base::BindRepeating(&DownloadsPanelView::TrashFile,
+                            weak_factory_.GetWeakPtr())));
   }
 
   const std::u16string folder_name = PrettyDirectory(folder_);
@@ -928,6 +971,30 @@ void DownloadsPanelView::OnFolderScanned(DownloadsFolderListing listing) {
           : folder_name);
 
   ResizeBubble();
+}
+
+void DownloadsPanelView::TrashFile(const base::FilePath& path) {
+#if BUILDFLAG(IS_MAC)
+  // BLOCK_SHUTDOWN because the user asked for this: quitting straight after
+  // shouldn't leave the file behind.
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+       base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+      base::BindOnce(&MoveFileToTrash, path),
+      base::BindOnce(&DownloadsPanelView::OnFileTrashed,
+                     weak_factory_.GetWeakPtr(), path));
+#endif
+}
+
+void DownloadsPanelView::OnFileTrashed(const base::FilePath& path, bool moved) {
+  trash_error_->SetVisible(!moved);
+  if (!moved) {
+    trash_error_->SetText(base::StrCat({u"Couldn't move “",
+                                        path.BaseName().LossyDisplayName(),
+                                        u"” to the Trash"}));
+  }
+  ScanFolder();
 }
 
 void DownloadsPanelView::OpenFolder() {

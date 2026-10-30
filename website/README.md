@@ -14,8 +14,8 @@ From the repo root, `npm run site` does the same as `npm run dev`.
 
 ## The download
 
-The buttons serve `public/downloads/Avora-<version>-arm64.dmg`, which is too big
-for git and is ignored. Build it after building the browser:
+In development the buttons serve `public/downloads/Avora-<version>-arm64.dmg`,
+which is too big for git and is ignored. Build it after building the browser:
 
 ```sh
 npm run dmg     # from out/Default
@@ -28,13 +28,35 @@ Rebuild the site after packaging.
 
 ## Before this goes public
 
-- **Sign and notarize.** The DMG is ad-hoc signed, so macOS stops the first
-  launch. Run `CODESIGN_IDENTITY="Developer ID Application: …" npm run dmg`,
-  notarize and staple it, then set `notarized` to `true` in `release.json`. That
-  removes the Open Anyway note from the page.
-- **Host the DMG.** It's too big for Vercel's `public/`. Upload it somewhere
-  like GitHub Releases or Vercel Blob and set `NEXT_PUBLIC_DOWNLOAD_URL`.
-- **Set the domain.** Set `NEXT_PUBLIC_SITE_URL` so social previews resolve.
+- **Sign and notarize.** With no identity the DMG is ad-hoc signed, so macOS
+  stops the first launch. A release needs a Developer ID Application
+  certificate, a Developer ID provisioning profile for `com.avora.browser`, and
+  notary credentials saved once with `xcrun notarytool store-credentials`:
+
+  ```sh
+  CODESIGN_IDENTITY="Developer ID Application: …" \
+  PROVISIONING_PROFILE=<path to the profile> \
+  NOTARY_PROFILE=<saved credentials name> \
+  npm run dmg
+  ```
+
+  The script signs the app inside out, then notarizes and staples the DMG. It
+  sets `notarized` in `release.json` from what actually happened, which removes
+  the Open Anyway note from the page, and a build that isn't accepted publishes
+  nothing. The app's `application-identifier` entitlement is why the profile is
+  needed: without one that lists the Developer ID certificate, macOS kills the
+  app at launch, even though it passes notarization. The development profile
+  doesn't list it.
+- **Host the DMG.** It's too big for Vercel's `public/`, so it goes on GitHub
+  Releases, tagged with its version:
+
+  ```sh
+  gh release create v0.1.0 public/downloads/Avora-0.1.0-arm64.dmg \
+    --repo brannonglover/avora --title "Avora 0.1.0"
+  ```
+
+  Then point `NEXT_PUBLIC_DOWNLOAD_URL` in `.env.production` at the new asset.
+  It's read at build time, so rebuild the site afterwards.
 
 ## Screenshots
 
