@@ -1,0 +1,37 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B1740"/>
+      <stop offset="1" stop-color="#08070F"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="38%" r="60%">
+      <stop offset="0" stop-color="#3A2E6E" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#08070F" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="aMark" x1="150" y1="845" x2="874" y2="845" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5B6BFF"/>
+      <stop offset="0.5" stop-color="#7CF3D0"/>
+      <stop offset="1" stop-color="#FF7CCB"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" rx="225" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="225" fill="url(#glow)"/>
+  <rect x="2" y="2" width="1020" height="1020" rx="223" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
+
+  <!-- monogram A, rounded apex, sharp legs, triangular counter -->
+  <path fill-rule="evenodd" fill="url(#aMark)"
+    d="M500,166 Q512,150 524,166
+       L858,845
+       L717,845
+       L653,704
+       L371,704
+       L307,845
+       L166,845
+       Z
+       M512,358
+       L614,602
+       L410,602
+       Z"/>
+</svg>

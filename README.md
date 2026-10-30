@@ -39,6 +39,10 @@ Chrome extension support depends on how much of the Chromium extension stack is 
 - Chrome Web Store CRX download/unpack/install where supported
 - Native messaging, WebAuthn/passkeys, and extension compatibility reporting
 
+## Website
+
+The marketing site lives in `website/`. `npm run site` serves it at http://localhost:3000. See `website/README.md`.
+
 ## Architecture
 
 - `native/cef-project`: official CEF baseline, CMake build, Avora/minimal targets

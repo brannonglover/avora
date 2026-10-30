@@ -1,0 +1,8 @@
+{
+  "version": "0.1.0",
+  "chromium": "155.0.8038.0",
+  "file": "Avora-0.1.0-arm64.dmg",
+  "sizeBytes": 188411633,
+  "sha256": "469a0921ddbb3ffc0e39be175b8d0fdef8d1948c54b106faba7fca1539122bc9",
+  "notarized": false
+}

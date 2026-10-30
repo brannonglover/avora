@@ -8,6 +8,8 @@
     "build:full": "bash build-scripts/build.sh full",
     "build:gen": "bash build-scripts/build.sh gen",
     "start": "open chromium/src/out/Default/Avora.app",
-    "cleanup": "bash build-scripts/build.sh cleanup"
+    "cleanup": "bash build-scripts/build.sh cleanup",
+    "site": "npm --prefix website run dev",
+    "site:dmg": "npm --prefix website run dmg"
   }
 }
