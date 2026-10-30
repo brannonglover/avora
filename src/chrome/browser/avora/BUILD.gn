@@ -88,6 +88,8 @@ source_set("avora") {
   if (is_mac) {
     sources += [
       "avora_local_user_mac.mm",
+      "avora_updater.h",
+      "avora_updater_mac.mm",
       "sync/avora_device_name_mac.mm",
     ]
     frameworks = [

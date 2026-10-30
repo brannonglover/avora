@@ -1,6 +1,8 @@
 #!/bin/bash
 # Packages the built Avora.app into the DMG the site's download buttons serve,
-# and records its size, checksum and notarization in website/release.json.
+# and saves it as a draft in website/releases.json with its size, checksum,
+# notarization and update signature. Nothing goes out until the draft is
+# published at /admin/releases.
 #
 #   npm run dmg            # from website/; uses chromium/src/out/Default
 #   npm run dmg -- <out>   # another build directory, e.g. out/Signing
@@ -18,6 +20,11 @@
 #
 # Either way the signature is redone on a staged copy, because a build
 # directory's app is usually out of step with its own signature.
+#
+# Sparkle only goes in once website/sparkle-public-key exists, so a build made
+# without one simply never checks for updates. A Developer ID build requires it,
+# because a release without an updater can't be told about the next one. The
+# matching private key is read from the Keychain, where generate_keys left it.
 set -euo pipefail
 
 SITE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,6 +47,21 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Conten
 FILE="Avora-$VERSION-arm64.dmg"
 DEST_DIR="$SITE_DIR/public/downloads"
 DEST="$DEST_DIR/$FILE"
+FEED_URL="https://www.avorabrowser.com/appcast.xml"
+PUBLIC_KEY_FILE="$SITE_DIR/sparkle-public-key"
+SPARKLE="$SITE_DIR/.sparkle"
+# Six hours, so a security fix reaches people the day it ships.
+CHECK_INTERVAL=21600
+
+# A published release is on people's Macs under this version and signature, and
+# Sparkle would never offer a rebuild of it to anyone who already has it.
+STATUS="$(node -p '
+  const [path, version] = process.argv.slice(1);
+  JSON.parse(require("fs").readFileSync(path, "utf8"))
+    .find((release) => release.version === version)?.status ?? "new"
+' "$SITE_DIR/releases.json" "$VERSION")"
+[[ "$STATUS" != "published" ]] ||
+  die "$VERSION is already published. Bump the version in package.json first."
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/avora-dmg.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
@@ -83,6 +105,41 @@ write_entitlements() {
   /usr/libexec/PlistBuddy -c "Merge $STAGE/avora-entitlements.plist" "$STAGE/app-entitlements.plist"
 }
 
+# Avora's own version lives in CFBundleVersion, which Sparkle compares against the
+# feed. CFBundleShortVersionString has to stay Chromium's, because app shims use
+# it to find the versioned framework inside the bundle.
+stamp_version() {
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" \
+    "$STAGED_APP/Contents/Info.plist"
+}
+
+# Sets UPDATES, and adds Sparkle to the staged app. The XPC services are only for
+# sandboxed apps, which the browser process isn't.
+embed_sparkle() {
+  local plist="$STAGED_APP/Contents/Info.plist"
+  local framework="$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+
+  UPDATES=false
+  if [[ ! -f "$PUBLIC_KEY_FILE" ]]; then
+    [[ "$RELEASE" == false ]] ||
+      die "A release needs $PUBLIC_KEY_FILE. See \"Before this goes public\" in the README."
+    return
+  fi
+
+  bash "$SITE_DIR/scripts/fetch-sparkle.sh"
+  ditto "$SPARKLE/Sparkle.framework" "$framework"
+  rm -rf "$framework/XPCServices" "$framework/Versions/B/XPCServices"
+
+  /usr/libexec/PlistBuddy \
+    -c "Add :SUFeedURL string $FEED_URL" \
+    -c "Add :SUPublicEDKey string $(cat "$PUBLIC_KEY_FILE")" \
+    -c "Add :SUEnableAutomaticChecks bool true" \
+    -c "Add :SUScheduledCheckInterval integer $CHECK_INTERVAL" \
+    -c "Add :SUVerifyUpdateBeforeExtraction bool true" \
+    "$plist"
+  UPDATES=true
+}
+
 # sign <path> <identifier> [options] [entitlements]
 sign() {
   local args=(--force --timestamp --sign "$IDENTITY" --identifier "$2")
@@ -118,6 +175,13 @@ sign_inside_out() {
   sign "$libraries/libvk_swiftshader.dylib" libvk_swiftshader
   sign "$libraries/libvulkan.dylib" libvulkan
   sign "$framework" "$BUNDLE_ID.framework"
+
+  if [[ "$UPDATES" == true ]]; then
+    local sparkle="$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+    sign "$sparkle/Versions/B/Autoupdate" org.sparkle-project.Sparkle.Autoupdate runtime
+    sign "$sparkle/Versions/B/Updater.app" org.sparkle-project.Sparkle.Updater runtime
+    sign "$sparkle" org.sparkle-project.Sparkle runtime
+  fi
 
   cp "$PROVISIONING_PROFILE" "$STAGED_APP/Contents/embedded.provisionprofile"
   sign "$STAGED_APP" "$BUNDLE_ID" "$hardened" "$STAGE/app-entitlements.plist"
@@ -159,6 +223,8 @@ echo "Staging $APP"
 mkdir "$STAGE/root"
 ditto "$APP" "$STAGED_APP"
 ln -s /Applications "$STAGE/root/Applications"
+stamp_version
+embed_sparkle
 
 echo "Signing with identity: $IDENTITY"
 if [[ "$IDENTITY" == "-" ]]; then
@@ -186,19 +252,50 @@ mv -f "$DMG" "$DEST"
 SIZE="$(stat -f %z "$DEST")"
 SHA256="$(shasum -a 256 "$DEST" | cut -d' ' -f1)"
 
+# Signed last, because this has to cover the stapled DMG exactly as it's served.
+SIGNATURE=""
+if [[ "$UPDATES" == true ]]; then
+  SIGNATURE="$("$SPARKLE/bin/sign_update" -p "$DEST")"
+fi
+
+# A starting point for the notes: what changed since the last published release.
+LAST_VERSION="$(node -p '
+  JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
+    .filter((release) => release.status === "published")
+    .map((release) => release.version)
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0]
+' "$SITE_DIR/releases.json")"
+NOTES="$(git -C "$REPO_DIR" log --format=%s "v$LAST_VERSION..HEAD" 2>/dev/null || true)"
+
 node -e '
   const fs = require("fs");
-  const path = process.argv[1];
-  const release = JSON.parse(fs.readFileSync(path, "utf8"));
-  Object.assign(release, {
-    version: process.argv[2],
-    chromium: process.argv[3],
-    file: process.argv[4],
-    sizeBytes: Number(process.argv[5]),
-    sha256: process.argv[6],
-    notarized: process.argv[7] === "true",
-  });
-  fs.writeFileSync(path, JSON.stringify(release, null, 2) + "\n");
-' "$SITE_DIR/release.json" "$VERSION" "$CHROMIUM" "$FILE" "$SIZE" "$SHA256" "$NOTARIZED"
+  const [path, version, chromium, file, sizeBytes, sha256, notarized, signature, notes] =
+    process.argv.slice(1);
+  const releases = JSON.parse(fs.readFileSync(path, "utf8"));
+  const existing = releases.find((release) => release.version === version);
+  // Rebuilding a draft replaces the build, not the notes written for it.
+  const draft = {
+    version,
+    chromium,
+    file,
+    sizeBytes: Number(sizeBytes),
+    sha256,
+    notarized: notarized === "true",
+    edSignature: signature || null,
+    title: existing?.title ?? null,
+    bullets: existing?.bullets.length ? existing.bullets : notes.split("\n").filter(Boolean),
+    status: "draft",
+    createdAt: new Date().toISOString(),
+    publishedAt: null,
+  };
+  const next = [draft, ...releases.filter((release) => release !== existing)].sort(
+    (a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }),
+  );
+  fs.writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
+' "$SITE_DIR/releases.json" "$VERSION" "$CHROMIUM" "$FILE" "$SIZE" "$SHA256" \
+  "$NOTARIZED" "$SIGNATURE" "$NOTES"
 
 echo "Wrote $DEST ($((SIZE / 1000000)) MB)"
+if [[ "$UPDATES" == false ]]; then
+  echo "This build has no updater, because $PUBLIC_KEY_FILE doesn't exist."
+fi

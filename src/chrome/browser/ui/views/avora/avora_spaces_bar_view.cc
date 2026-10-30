@@ -10,6 +10,7 @@
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
@@ -24,6 +25,9 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_icon_picker.h"
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/views/avora/avora_update_button.h"
+#endif
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -586,7 +590,14 @@ void AvoraSpacesBarView::RebuildManaged() {
   AddChildView(std::move(icons));
   views::View* trailing_flex = AddChildView(MakeSpacer(0));
   if (has_account_button) {
-    AddChildView(MakeSpacer(kAddBtnSize + kIconGap));
+    // The slot keeps its width with the update button hidden, so the Space
+    // icons don't shift when an update turns up.
+    auto* slot = AddChildView(std::make_unique<views::View>());
+    slot->SetPreferredSize(gfx::Size(kAddBtnSize + kIconGap, kAddBtnSize));
+#if BUILDFLAG(IS_MAC)
+    slot->SetLayoutManager(std::make_unique<views::BoxLayout>());
+    slot->AddChildView(std::make_unique<avora::UpdateButton>());
+#endif
   }
 
   create_button_ = AddChildView(std::make_unique<CreateSpaceButton>(

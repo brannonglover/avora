@@ -43,6 +43,7 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/apps/app_shim/app_shim_termination_manager.h"
 #include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
+#include "chrome/browser/avora/avora_updater.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
@@ -631,6 +632,10 @@ Profile* GetLastProfileMac() {
 // Avora: shows or hides the app menu's "Make Avora Your Default Browser" item
 // according to whether Avora is currently the default browser.
 - (void)avoraRefreshSetDefaultBrowserMenuItem;
+
+// Avora: starts the updater and, in a copy that has one, adds the app menu's
+// "Check for Updates…" item.
+- (void)avoraStartUpdater;
 @end
 
 class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
@@ -1419,6 +1424,7 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   // Avora: the item is built hidden, so this first check is what reveals it
   // for a user who has not made Avora their default browser yet.
   [self avoraRefreshSetDefaultBrowserMenuItem];
+  [self avoraStartUpdater];
 }
 
 - (void)observeValueForKeyPath:(NSString*)keyPath
@@ -1722,6 +1728,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   } else if (action == @selector(toggleConfirmToQuit:)) {
     [self updateConfirmToQuitPrefMenuItem:static_cast<NSMenuItem*>(item)];
     enable = [self shouldEnableConfirmToQuitPrefMenuItem];
+  } else if (action == @selector(avoraCheckForUpdates:)) {
+    enable = YES;
   }
   return enable;
 }
@@ -2062,6 +2070,28 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
           base::BindOnce(^(shell_integration::DefaultWebClientState state) {
             item.hidden = (state == shell_integration::IS_DEFAULT);
           }));
+}
+
+// Avora: built here rather than in main_menu_builder.mm because only packaged
+// copies have an updater, and a new menu string there would regenerate
+// branded_strings.h, which most of chrome/browser includes.
+- (void)avoraStartUpdater {
+  avora::StartUpdater();
+  if (!avora::IsUpdaterEnabled()) {
+    return;
+  }
+
+  NSMenu* appMenu = [NSApp.mainMenu itemWithTag:IDC_CHROME_MENU].submenu;
+  NSMenuItem* item =
+      [[NSMenuItem alloc] initWithTitle:@"Check for Updates…"
+                                 action:@selector(avoraCheckForUpdates:)
+                          keyEquivalent:@""];
+  item.target = self;
+  [appMenu insertItem:item atIndex:[appMenu indexOfItemWithTag:IDC_ABOUT] + 1];
+}
+
+- (void)avoraCheckForUpdates:(id)sender {
+  avora::CheckForUpdates();
 }
 
 // Conditionally adds the Profile menu to the main menu bar.

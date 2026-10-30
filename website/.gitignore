@@ -32,7 +32,6 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-!.env.production
 
 # vercel
 .vercel
@@ -43,3 +42,6 @@ next-env.d.ts
 
 # built by npm run dmg
 /public/downloads/
+
+# fetched by scripts/fetch-sparkle.sh
+/.sparkle/

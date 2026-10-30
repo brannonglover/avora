@@ -74,6 +74,8 @@ source_set("avora") {
       "avora_caption_buttons_mac.mm",
       "avora_file_trash_mac.h",
       "avora_file_trash_mac.mm",
+      "avora_update_button.cc",
+      "avora_update_button.h",
     ]
   }
 
