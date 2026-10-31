@@ -21,8 +21,10 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
@@ -42,6 +44,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace avora {
 
@@ -609,6 +612,7 @@ void AvoraLiveFoldersView::OnTabStripModelChanged(
 
 void AvoraLiveFoldersView::OnTabChangedAt(tabs::TabInterface* tab,
                                           TabChangeType change_type) {
+  CheckSignInPreview();
   ReportActiveHost();
 
   // A restored tab may only learn its URL here, after it was inserted.
@@ -788,6 +792,7 @@ void AvoraLiveFoldersView::OnLiveFolderSyncStateChanged(
   if (space_id == SpaceId()) {
     ScheduleRebuild();
   }
+  CheckSignInPreview();
 }
 
 void AvoraLiveFoldersView::ScheduleRebuild() {
@@ -885,9 +890,9 @@ void AvoraLiveFoldersView::Rebuild() {
           base::UTF8ToUTF16(
               base::StrCat({"Sign in to ", source.name, " (SSO)"})),
           kBadgeColor,
-          base::BindRepeating(&AvoraLiveFoldersView::OpenUrl,
-                              weak_factory_.GetWeakPtr(),
-                              source.sign_in_url.spec())));
+          base::BindRepeating(&AvoraLiveFoldersView::OpenSignInPreview,
+                              weak_factory_.GetWeakPtr(), folder.id,
+                              source.sign_in_url)));
     }
 
     if (!items.empty()) {
@@ -1093,13 +1098,103 @@ void AvoraLiveFoldersView::OpenSignIn(const std::string& folder_id) {
     return;
   }
   // There is nothing to connect: signing in on github.com, in this Space, is
-  // the whole flow.  The service notices the new session when the tab lands
-  // back on github.com and fills the folder.
+  // the whole flow.  The folder fills once the page lands back on github.com
+  // with a session.
   const GURL url =
       service_->GetSignInUrl(SpaceId(), LiveFolderProviderId::kGitHub);
   if (url.is_valid()) {
-    OpenUrl(url.spec());
+    OpenSignInPreview(folder_id, url);
   }
+}
+
+void AvoraLiveFoldersView::OpenSignInPreview(const std::string& folder_id,
+                                             const GURL& url) {
+  BrowserView* const browser_view =
+      BrowserView::GetBrowserViewForBrowser(browser_);
+  if (browser_view && browser_view->IsAvoraLinkPreviewShowing()) {
+    // A card already open is the active tab until its host gets activation
+    // back on a posted task, so this waits in line behind that.
+    browser_view->HideAvoraLinkPreview();
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&AvoraLiveFoldersView::OpenSignInPreview,
+                                  weak_factory_.GetWeakPtr(), folder_id, url));
+    return;
+  }
+
+  content::WebContents* const host_tab =
+      tab_strip_model_ ? tab_strip_model_->GetActiveWebContents() : nullptr;
+  if (browser_view && host_tab && !IsLinkPreviewTab(host_tab)) {
+    browser_view->ShowAvoraLinkPreview(url);
+  }
+  content::WebContents* const preview = GetLinkPreviewContents(host_tab);
+  if (!preview) {
+    OpenUrl(url.spec());
+    return;
+  }
+  sign_in_preview_ =
+      SignInPreview{preview->GetWeakPtr(), SpaceId(), folder_id, url, GURL()};
+}
+
+void AvoraLiveFoldersView::CheckSignInPreview() {
+  if (!sign_in_preview_ || !service_) {
+    return;
+  }
+  SignInPreview& sign_in = *sign_in_preview_;
+
+  // Closed, or expanded into a tab of its own: no longer ours to follow.
+  content::WebContents* const contents = sign_in.contents.get();
+  if (!contents || !IsLinkPreviewTab(contents)) {
+    sign_in_preview_.reset();
+    return;
+  }
+
+  const LiveFolderService::SyncState state =
+      service_->GetSyncState(sign_in.space_id, sign_in.folder_id);
+  // An in-flight sync wins over a new one, so this runs again when it ends.
+  if (state.syncing) {
+    return;
+  }
+
+  const bool signed_in =
+      state.connected &&
+      std::ranges::none_of(state.protected_sources,
+                           [&](const LiveFolderProtectedSource& source) {
+                             return source.sign_in_url == sign_in.sign_in_url;
+                           });
+  if (signed_in) {
+    // Reachable from inside a tab strip notification, where closing a tab
+    // would re-enter the model.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&AvoraLiveFoldersView::CloseSignInPreview,
+                                  weak_factory_.GetWeakPtr(),
+                                  std::move(sign_in.contents)));
+    sign_in_preview_.reset();
+    return;
+  }
+
+  const GURL url = contents->GetLastCommittedURL();
+  if (url == sign_in.checked_url ||
+      !url::Origin::Create(sign_in.sign_in_url).IsSameOriginWith(url)) {
+    return;
+  }
+  sign_in.checked_url = url;
+  service_->ForceRefreshFolder(sign_in.space_id, sign_in.folder_id);
+}
+
+void AvoraLiveFoldersView::CloseSignInPreview(
+    base::WeakPtr<content::WebContents> preview) {
+  if (!preview || !IsLinkPreviewTab(preview.get())) {
+    return;
+  }
+  BrowserView* const browser_view =
+      BrowserView::GetBrowserViewForBrowser(browser_);
+  if (browser_view && browser_view->IsAvoraLinkPreviewShowing() &&
+      tab_strip_model_ &&
+      tab_strip_model_->GetActiveWebContents() == preview.get()) {
+    browser_view->HideAvoraLinkPreview();
+    return;
+  }
+  LinkPreviewTabState::Clear(GetLinkPreviewHostTab(preview.get()));
 }
 
 void AvoraLiveFoldersView::ToggleQueryFilter(const std::string& folder_id,

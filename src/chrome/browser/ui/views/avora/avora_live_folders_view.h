@@ -204,9 +204,22 @@ class AvoraLiveFoldersView : public views::View,
                          const std::string& external_id,
                          const gfx::Point& screen_point);
 
-  // Opens |url| in the tab that already shows it, or a new one.  For pages
-  // that are not rows of their own, such as sign-in.
+  // Opens |url| in the tab that already shows it, or a new one.  For a
+  // sign-in that has no tab to open its preview over.
   void OpenUrl(const std::string& url);
+
+  // Takes the user through a provider's sign-in page in the link preview, over
+  // the tab they are on, so signing in does not leave a tab behind.
+  void OpenSignInPreview(const std::string& folder_id, const GURL& url);
+
+  // Follows the sign-in in |sign_in_preview_|: re-syncs the folder as it
+  // reaches the provider's site, since only the provider can say whether it
+  // worked, and closes the card once it has.
+  void CheckSignInPreview();
+
+  // Closes |preview|, whether it is on screen or parked on a tab the user has
+  // since left.
+  void CloseSignInPreview(base::WeakPtr<content::WebContents> preview);
 
   // Activates the tab behind a row, opening one if there is none.
   void OpenItem(const std::string& folder_id, const std::string& external_id);
@@ -287,6 +300,18 @@ class AvoraLiveFoldersView : public views::View,
 
   // Tabs AdoptTabs() has already decided about.
   std::set<tabs::TabHandle> evaluated_tabs_;
+
+  // A sign-in underway in the link preview.
+  struct SignInPreview {
+    base::WeakPtr<content::WebContents> contents;
+    std::string space_id;
+    std::string folder_id;
+    GURL sign_in_url;
+
+    // The page the folder last re-synced for.
+    GURL checked_url;
+  };
+  std::optional<SignInPreview> sign_in_preview_;
 
   base::WeakPtrFactory<AvoraLiveFoldersView> weak_factory_{this};
 };
