@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_side_by_side.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
@@ -136,7 +137,9 @@ std::unique_ptr<content::WebContents> LinkPreviewTabState::Set(
   // it in the background: the overlay, not the tab strip, is what shows it.
   const int host_index = model->GetIndexOfWebContents(tab);
   const int index =
-      host_index == TabStripModel::kNoTab ? model->count() : host_index + 1;
+      host_index == TabStripModel::kNoTab
+          ? model->count()
+          : InsertionIndexOutsideSplit(*model, host_index + 1);
   model->InsertWebContentsAt(index, std::move(preview), AddTabTypes::ADD_NONE);
 
   // Insertion transferred ownership to the tab strip, so there is nothing

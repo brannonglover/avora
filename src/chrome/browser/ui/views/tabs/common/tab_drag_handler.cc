@@ -14,7 +14,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "base/types/to_address.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/avora/avora_favorites.h"
@@ -24,6 +26,7 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
+#include "chrome/browser/ui/views/avora/avora_side_by_side.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
@@ -32,10 +35,12 @@
 #include "chrome/browser/ui/views/tabs/common/tab_link_drop_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab_slot_view.h"
+#include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_collection.h"
 #include "components/tabs/public/split_tab_data.h"
@@ -115,6 +120,15 @@ class DraggedTabSlotView : public TabSlotView {
 
 BEGIN_METADATA(DraggedTabSlotView)
 END_METADATA
+
+// How long a dragged tab has to sit over another before it lights up.  Long
+// enough that crossing rows on the way somewhere else doesn't, and short enough
+// to feel like a pause rather than a wait.
+constexpr base::TimeDelta kCombineDwell = base::Milliseconds(300);
+
+// The dragged tab sits right on top of the one it would combine with, so it
+// fades to let that tab's highlight show through.
+constexpr float kCombiningDraggedTabOpacity = 0.35f;
 
 ui::mojom::DragEventSource EventSourceFromEvent(const ui::LocatedEvent& event) {
   return event.IsGestureEvent() ? ui::mojom::DragEventSource::kTouch
@@ -354,6 +368,18 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
   if (!drag_controller_) {
     return false;
   }
+
+  // Avora: a pair comes apart by dragging one tab away from it.
+  if (auto* tab_view = views::AsViewClass<TabView>(&event_source_view);
+      tab_view && !drag_controller_->started_drag() && IsDraggingOnePair()) {
+    const gfx::Point point_in_pair = views::View::ConvertPointToTarget(
+        tab_view, tab_view->parent(), event.location());
+    if (!tab_view->parent()->GetLocalBounds().Contains(point_in_pair)) {
+      PullTabOutOfPair(*tab_view, event);
+    }
+    return !!drag_controller_;
+  }
+
   gfx::Point screen_location(event.location());
   ConvertPointToScreen(&event_source_view, &screen_location);
 
@@ -395,7 +421,11 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
       for (auto& [_, slot_view] : slot_views_) {
         views::View* dragged_view = ViewFromTabSlot(slot_view);
         if (dragged_view && dragged_view->layer()) {
-          dragged_view->layer()->SetOpacity(in_avora_drop_zone ? 0.f : 1.f);
+          dragged_view->layer()->SetOpacity(
+              in_avora_drop_zone
+                  ? 0.f
+                  : (combine_target_armed_ ? kCombiningDraggedTabOpacity
+                                           : 1.f));
         }
       }
     }
@@ -677,6 +707,127 @@ void TabDragHandlerImpl::OnTabWillBeRemoved(content::WebContents* contents) {
   }
 }
 
+bool TabDragHandlerImpl::CanCombineDraggedTab() const {
+  if (!drag_controller_) {
+    return false;
+  }
+  const auto& tab_data = drag_controller_->GetSessionData().tab_drag_data_;
+  return tab_data.size() == 1 && tab_data[0].contents &&
+         avora::CanPutTabSideBySide(
+             tabs::TabInterface::GetFromContents(tab_data[0].contents));
+}
+
+void TabDragHandlerImpl::SetCombineTarget(const TabCollectionNode* node) {
+  const tabs::TabInterface* tab =
+      node ? std::get<tabs::ConstDanglingUntriagedTabInterface>(
+                 node->GetNodeData())
+           : nullptr;
+  const tabs::TabHandle handle = tab ? tab->GetHandle() : tabs::TabHandle();
+  if (handle == combine_target_) {
+    return;
+  }
+  ClearCombineTarget();
+  if (!tab || !CanCombineDraggedTab()) {
+    return;
+  }
+  auto* dragged = tabs::TabInterface::GetFromContents(
+      drag_controller_->GetSessionData().tab_drag_data_[0].contents);
+  if (!avora::CanPutTabsSideBySide(handle.Get(), dragged)) {
+    return;
+  }
+  combine_target_ = handle;
+  combine_dwell_timer_.Start(FROM_HERE, kCombineDwell, this,
+                             &TabDragHandlerImpl::ArmCombineTarget);
+}
+
+void TabDragHandlerImpl::ArmCombineTarget() {
+  TabCollectionNode* node = root_node_->GetNodeForHandle(combine_target_);
+  auto* tab_view = node ? views::AsViewClass<TabView>(node->view()) : nullptr;
+  if (!tab_view) {
+    return;
+  }
+  combine_target_armed_ = true;
+  tab_view->SetAvoraCombineHighlight(true);
+  SetDraggedTabOpacity(kCombiningDraggedTabOpacity);
+}
+
+void TabDragHandlerImpl::SetDraggedTabOpacity(float opacity) {
+  if (!drag_controller_) {
+    return;
+  }
+  const TabDragData* drag_data =
+      drag_controller_->GetSessionData().source_view_drag_data();
+  views::View* view = drag_data && drag_data->attached_view
+                          ? ViewFromTabSlot(drag_data->attached_view)
+                          : nullptr;
+  if (view && view->layer()) {
+    view->layer()->SetOpacity(opacity);
+  }
+}
+
+void TabDragHandlerImpl::ClearCombineTarget() {
+  combine_dwell_timer_.Stop();
+  if (combine_target_armed_ && combine_target_.Get()) {
+    TabCollectionNode* node = root_node_->GetNodeForHandle(combine_target_);
+    if (auto* tab_view =
+            node ? views::AsViewClass<TabView>(node->view()) : nullptr) {
+      tab_view->SetAvoraCombineHighlight(false);
+    }
+    SetDraggedTabOpacity(1.f);
+  }
+  combine_target_ = tabs::TabHandle();
+  combine_target_armed_ = false;
+}
+
+void TabDragHandlerImpl::PutDraggedTabSideBySide(tabs::TabHandle anchor,
+                                                 tabs::TabHandle incoming) {
+  avora::PutTabsSideBySide(*tab_strip_model_, anchor.Get(), incoming.Get(),
+                           split_tabs::SplitTabCreatedSource::kDragAndDropTab);
+}
+
+bool TabDragHandlerImpl::IsDraggingOnePair() const {
+  const auto& tab_data = drag_controller_->GetSessionData().tab_drag_data_;
+  if (tab_data.size() != 2 || !tab_data[0].contents || !tab_data[1].contents) {
+    return false;
+  }
+  const tabs::TabInterface* first =
+      tabs::TabInterface::GetFromContents(tab_data[0].contents);
+  const tabs::TabInterface* second =
+      tabs::TabInterface::GetFromContents(tab_data[1].contents);
+  return first->IsSplit() && !first->IsPinned() &&
+         first->GetSplit() == second->GetSplit();
+}
+
+void TabDragHandlerImpl::PullTabOutOfPair(TabView& tab_view,
+                                          const ui::LocatedEvent& event) {
+  const tabs::TabHandle handle = tab_view.GetTabInterface()->GetHandle();
+  const split_tabs::SplitTabId split = handle.Get()->GetSplit().value();
+  const ui::ListSelectionModel original_selection_model =
+      tab_strip_model_->selection_model().GetListSelectionModel();
+
+  // The drag set up at mouse press is carrying both tabs, and hadn't started.
+  EndDrag(EndDragReason::kCancel);
+
+  // Separating leaves only the active tab selected, and a drag takes the
+  // selection, so this has to be the active one first.
+  tab_strip_model_->ActivateTabAt(tab_strip_model_->GetIndexOfTab(handle.Get()));
+  tab_strip_model_->RemoveSplit(split);
+
+  // The pointer has left the row by now, so hold the tab by its middle rather
+  // than from some way outside it.
+  std::unique_ptr<ui::Event> held_event = event.Clone();
+  held_event->AsLocatedEvent()->set_location(
+      tab_view.GetLocalBounds().CenterPoint());
+  InitializeDrag(CHECK_DEREF(root_node_->GetNodeForHandle(handle)),
+                 original_selection_model, *held_event->AsLocatedEvent());
+
+  // Leaving the pair's row took the tab out of its parent view, which also
+  // ended its hold on the mouse.  The drag takes it over from here.
+  if (drag_controller_) {
+    GetWidget()->SetCapture(this);
+  }
+}
+
 bool TabDragHandlerImpl::CanAcceptEvent(const ui::Event& event) {
   // The drag context has to be able to process mouse events during the drag.
   // By default, this is predicated on visibility, but the handler should not
@@ -925,6 +1076,7 @@ void TabDragHandlerImpl::StartedDragging(
 void TabDragHandlerImpl::DraggedTabsDetached() {
   expand_on_hover_lock_.reset();
   scroll_synchronizers_.clear();
+  ClearCombineTarget();
 
   // Avora: Clear drag-active state on favorites when tabs detach to a new
   // window.
@@ -1101,6 +1253,26 @@ void TabDragHandlerImpl::StoppedDragging() {
       drop_on_unpinned =
           !drop_on_folder &&
           tab_strip_view->GetDailyListBoundsInScreen().Contains(drop_point);
+    }
+  }
+
+  // Avora: Letting go while a tab is lit puts the two side by side. Deferred
+  // for the same reason as the pin below: the drag session still holds views
+  // that this is about to reparent.
+  const tabs::TabHandle combine_anchor =
+      combine_target_armed_ ? combine_target_ : tabs::TabHandle();
+  ClearCombineTarget();
+  if (combine_anchor.Get() && drop_on_unpinned && drag_controller_ &&
+      !drag_controller_->reverted()) {
+    const auto& tab_data = drag_controller_->GetSessionData().tab_drag_data_;
+    if (!tab_data.empty() && tab_data[0].contents) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &TabDragHandlerImpl::PutDraggedTabSideBySide,
+              weak_factory_.GetWeakPtr(), combine_anchor,
+              tabs::TabInterface::GetFromContents(tab_data[0].contents)
+                  ->GetHandle()));
     }
   }
 

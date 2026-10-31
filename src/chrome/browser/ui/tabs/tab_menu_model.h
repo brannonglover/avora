@@ -106,6 +106,8 @@ class TabMenuModel : public ui::SimpleMenuModel {
   // Avora: "Move Tab to Space" submenu.  Owns its own delegate, and must
   // outlive the menu because the parent model holds it as a bare pointer.
   std::unique_ptr<ui::SimpleMenuModel> avora_move_to_space_submenu_;
+  // Avora: "Open Side by Side With" submenu, on the same terms.
+  std::unique_ptr<ui::SimpleMenuModel> avora_side_by_side_submenu_;
   std::unique_ptr<ui::SimpleMenuModel> send_tab_to_self_submenu_;
   std::unique_ptr<send_tab_to_self::SendTabToSelfContextMenuDelegate>
       send_tab_to_self_submenu_delegate_;

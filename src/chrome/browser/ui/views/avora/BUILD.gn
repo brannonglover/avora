@@ -54,6 +54,8 @@ source_set("avora") {
     "avora_pinned_section_view.h",
     "avora_quick_nav_view.cc",
     "avora_quick_nav_view.h",
+    "avora_side_by_side.cc",
+    "avora_side_by_side.h",
     "avora_sidebar_view.cc",
     "avora_sidebar_view.h",
     "avora_space_label_view.cc",
@@ -146,6 +148,7 @@ source_set("browser_tests") {
     "avora_mini_window_identity_browsertest.cc",
     "avora_mini_window_lifecycle_browsertest.cc",
     "avora_mini_window_toolbar_browsertest.cc",
+    "avora_side_by_side_browsertest.cc",
     "avora_style_ai_settings_browsertest.cc",
     "avora_tab_sync_browsertest.cc",
   ]

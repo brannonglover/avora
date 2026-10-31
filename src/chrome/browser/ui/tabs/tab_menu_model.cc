@@ -20,6 +20,7 @@
 #include "chrome/browser/avora/avora_space.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_tab_space.h"
+#include "chrome/browser/ui/views/avora/avora_side_by_side.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -40,6 +41,7 @@
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/glic_tab_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_menu_model.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/split_tab_swap_menu_model.h"
 #include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
@@ -58,9 +60,11 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/commerce/core/commerce_constants.h"
 #include "components/commerce/core/commerce_feature_list.h"
+#include "components/favicon/content/content_favicon_driver.h"
 #include "components/feed/feed_feature_list.h"
 #include "components/send_tab_to_self/features.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_context_menu_command.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
@@ -69,6 +73,8 @@
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/gfx/image/image.h"
+#include "ui/gfx/text_elider.h"
 #include "ui/views/vector_icons.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -118,22 +124,82 @@ class AvoraMoveToSpaceSubMenuModel : public ui::SimpleMenuModel,
     if (index >= space_ids_.size() || !tab_strip_ || !tab_) {
       return;
     }
-    content::WebContents* contents = tab_->GetContents();
-    if (!contents) {
-      return;
-    }
+    // A side-by-side pair is one row, so it moves as one.
+    const std::vector<tabs::TabInterface*> moving =
+        tab_->IsSplit() ? tab_strip_->GetSplitData(*tab_->GetSplit())->ListTabs()
+                        : std::vector<tabs::TabInterface*>{tab_.get()};
     // Retagging the WebContents is the entire move.  AvoraSpaceTabFilter
     // owns which tabs a window draws, and picks the new tag up from the
     // change notification below (see AdoptRetaggedTab there), so this call
     // site needs no handle on the window's view hierarchy.
-    avora::SetTabSpaceId(contents, space_ids_[index]);
-    tab_strip_->UpdateWebContentsState(contents, TabChangeType::kAll);
+    for (tabs::TabInterface* tab : moving) {
+      avora::SetTabSpaceId(tab->GetContents(), space_ids_[index]);
+    }
+    for (tabs::TabInterface* tab : moving) {
+      tab_strip_->UpdateWebContentsState(tab->GetContents(),
+                                         TabChangeType::kAll);
+    }
   }
 
  private:
   raw_ptr<TabStripModel> tab_strip_;
   base::WeakPtr<tabs::TabInterface> tab_;
   std::vector<std::string> space_ids_;
+};
+
+// Avora: the "Open Side by Side With" submenu, one row per tab the context tab
+// can pair with.  Acts as its own delegate, like the Space submenu above.
+class AvoraSideBySideSubMenuModel : public ui::SimpleMenuModel,
+                                    public ui::SimpleMenuModel::Delegate {
+ public:
+  // Above AvoraMoveToSpaceSubMenuModel's range, for the same reason.
+  static constexpr int kMinCommandId = 3001;
+
+  AvoraSideBySideSubMenuModel(TabStripModel* tab_strip,
+                              tabs::TabInterface* tab)
+      : ui::SimpleMenuModel(this),
+        tab_strip_(tab_strip),
+        tab_(tab->GetHandle()) {
+    static constexpr size_t kMaxTitleLength = 60;
+    for (tabs::TabInterface* partner :
+         avora::GetSideBySidePartners(*tab_strip, tab)) {
+      content::WebContents* contents = partner->GetContents();
+      AddItem(kMinCommandId + static_cast<int>(partners_.size()),
+              gfx::TruncateString(contents->GetTitle(), kMaxTitleLength,
+                                  gfx::WORD_BREAK));
+      partners_.push_back(partner->GetHandle());
+
+      // A copy that has never loaded in this window has no icon to show.
+      auto* favicon_driver =
+          favicon::ContentFaviconDriver::FromWebContents(contents);
+      const gfx::Image favicon =
+          favicon_driver ? favicon_driver->GetFavicon() : gfx::Image();
+      SetIcon(GetItemCount() - 1,
+              favicon.IsEmpty()
+                  ? ui::ImageModel::FromVectorIcon(
+                        vector_icons::kGlobeIcon, ui::kColorMenuIcon,
+                        ui::SimpleMenuModel::kDefaultIconSize)
+                  : ui::ImageModel::FromImage(favicon));
+    }
+  }
+
+  bool has_partners() const { return !partners_.empty(); }
+
+  // ui::SimpleMenuModel::Delegate:
+  void ExecuteCommand(int command_id, int event_flags) override {
+    const size_t index = static_cast<size_t>(command_id - kMinCommandId);
+    if (index >= partners_.size() || !tab_strip_) {
+      return;
+    }
+    // Handles, not pointers: the tabs can close while the menu is open.
+    avora::PutTabsSideBySide(*tab_strip_, partners_[index].Get(), tab_.Get(),
+                             split_tabs::SplitTabCreatedSource::kTabContextMenu);
+  }
+
+ private:
+  raw_ptr<TabStripModel> tab_strip_;
+  tabs::TabHandle tab_;
+  std::vector<tabs::TabHandle> partners_;
 };
 
 }  // namespace
@@ -398,6 +464,25 @@ void TabMenuModel::Build(int index) {
   }
   SetElementIdentifierAt(GetItemCount() - 1, kAddNewTabAdjacentMenuItem);
 
+  const ui::ImageModel side_by_side_icon = ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? kSplitSceneIcon : kSplitSceneOldIcon,
+      ui::kColorMenuIcon, kTabMenuIconSize);
+
+  // Avora: a tab in the daily list pairs with any other in it, not only the
+  // active one, so the choice is a submenu of them.
+  if (showing_vertical_tabs && num_tabs == 1 &&
+      !tab_strip_->GetSplitForTab(index).has_value()) {
+    auto submenu = std::make_unique<AvoraSideBySideSubMenuModel>(
+        tab_strip_, tab_strip_->GetTabAtIndex(index));
+    if (submenu->has_partners()) {
+      avora_side_by_side_submenu_ = std::move(submenu);
+      AddSubMenuWithIcon(TabStripModel::CommandAddToSplit,
+                         u"Open Side by Side With",
+                         avora_side_by_side_submenu_.get(), side_by_side_icon);
+      SetElementIdentifierAt(GetItemCount() - 1, kSplitTabsMenuItem);
+    }
+  }
+
   if (!tab_strip_->GetSplitForTab(index).has_value()) {
     if (tab_strip_->GetActiveTab()->IsSplit()) {
       swap_with_split_submenu_ =
@@ -412,7 +497,7 @@ void TabMenuModel::Build(int index) {
       const int swap_with_split_index = GetItemCount() - 1;
       SetEnabledAt(swap_with_split_index, num_tabs == 1);
       SetElementIdentifierAt(swap_with_split_index, kSwapSplitTabsMenuItem);
-    } else {
+    } else if (!avora_side_by_side_submenu_) {
       if (tabs::IsSplitViewHorizontalDirectAccessEnabledForTab()) {
         split_layout_submenu_ =
             std::make_unique<SplitViewLayoutMenuModel>(base::BindOnce(
@@ -454,6 +539,9 @@ void TabMenuModel::Build(int index) {
       SetElementIdentifierAt(add_to_split_index, kSplitTabsMenuItem);
     }
   } else {
+    // Avora: leaving a pair is one click, not a trip through "Arrange".
+    AddItemWithIcon(TabStripModel::CommandAddToSplit, u"Separate Tabs",
+                    side_by_side_icon);
     arrange_split_view_submenu_ = std::make_unique<SplitTabMenuModel>(
         tab_strip_, SplitTabMenuModel::MenuSource::kTabContextMenu, index);
     AddSubMenuWithStringIdAndIcon(

@@ -267,6 +267,10 @@ views::ScrollView* UnpinnedTabContainerView::GetScrollViewForContainer() const {
   return avora::FindEnclosingScrollView(this);
 }
 
+bool UnpinnedTabContainerView::CanDropDraggedTabOntoTabs() const {
+  return GetDragHandler().CanCombineDraggedTab();
+}
+
 void UnpinnedTabContainerView::UpdateTargetLayoutForDrag(
     const std::vector<const views::View*>& views_to_snap) {
   layout_manager_->ResetViewsToTargetLayout(views_to_snap);

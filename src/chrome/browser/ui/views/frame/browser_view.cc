@@ -2464,6 +2464,16 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
     UpdateFastResizeForContentViews(original_fast_resize);
   } else if (tab_change_in_split_view) {
     UpdateActiveTabInSplitView();
+  } else if (!avora_overlay_hosts_preview_ &&
+             !multi_contents_view_->IsInSplitView() &&
+             tabs::TabInterface::GetFromContents(new_contents)->IsSplit() &&
+             !exclusive_access_context_->GetExclusiveAccessManager()
+                  ->fullscreen_controller()
+                  ->IsTabFullscreen()) {
+    // Back from a link preview to a tab in a pair.  The active contents view
+    // never let go of the tab, so nothing above brought the pair back.  See
+    // MountAvoraLinkPreview().
+    ShowSplitView(/*focus_active_view=*/false);
   }
 
   MaybeUpdateStoredFocusForWebContents(new_contents);
@@ -4698,6 +4708,9 @@ void BrowserView::ShowSplitView(bool focus_active_view) {
 
   for (size_t i = 0; tabs::TabInterface* tab : split_tabs) {
     multi_contents_view_->SetWebContentsAtIndex(tab->GetContents(), i++);
+    // Avora: only one tab of the pair is being activated.  The other can be a
+    // copy that has never loaded here, or one the warm-tab budget unloaded.
+    tab->GetContents()->GetController().LoadIfNecessary();
   }
   const int first_split_tab_index =
       browser_->GetTabStripModel()->GetIndexOfTab(split_tabs[0]);
@@ -7186,6 +7199,12 @@ void BrowserView::MountAvoraLinkPreview(content::WebContents* preview) {
   if (!multi_contents_view_ || !avora_link_preview_ || !preview) {
     return;
   }
+  // A card and a pair both need the secondary container, so the host's pair
+  // steps aside for the card and comes back when the card closes.  Only the
+  // view changes: the tabs are still a pair.  Touches views alone, so it is
+  // safe from inside a tab-strip notification.
+  multi_contents_view_->CloseSplitView();
+
   // The overlay is sized to the contents view, so its card bounds are already
   // in MultiContentsView's coordinate space.
   multi_contents_view_->ShowOverlayContents(

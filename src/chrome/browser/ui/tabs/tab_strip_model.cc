@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 
 #include "chrome/browser/avora/avora_favorites.h"
+#include "chrome/browser/ui/views/avora/avora_side_by_side.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -2715,8 +2716,9 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       base::RecordAction(UserMetricsAction("TabContextMenu_NewTab"));
       UMA_HISTOGRAM_ENUMERATION("Tab.NewTab", NewTabTypes::kNewTabContextMenu,
                                 NewTabTypes::kNewTabEnumCount);
-      delegate()->AddTabAt(GURL(), context_index + 1, true,
-                           GetTabGroupForTab(context_index));
+      delegate()->AddTabAt(
+          GURL(), avora::InsertionIndexOutsideSplit(*this, context_index + 1),
+          true, GetTabGroupForTab(context_index));
       break;
     }
 
@@ -2938,6 +2940,12 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
     }
 
     case CommandAddToSplit: {
+      // Avora: on a tab that's already side by side, this is "Separate Tabs".
+      if (const std::optional<split_tabs::SplitTabId> split =
+              GetSplitForTab(context_index)) {
+        RemoveSplit(*split);
+        break;
+      }
       ExecuteAddToNewSplitCommand(context_index,
                                   split_tabs::SplitTabLayout::kSideBySide);
       break;
@@ -5710,14 +5718,14 @@ int TabStripModel::DetermineInsertionIndex(ui::PageTransition transition,
     if (foreground) {
       // If the page was opened in the foreground by a link click in another
       // tab, insert it adjacent to the tab that opened that link.
-      return active_index() + 1;
+      return avora::InsertionIndexOutsideSplit(*this, active_index() + 1);
     }
     content::WebContents* const opener = GetActiveWebContents();
     // Figure out the last tab opened by the current tab.
     const int index = GetIndexOfLastWebContentsOpenedBy(opener, active_index());
     // If no such tab exists, simply place next to the current tab.
     if (index == TabStripModel::kNoTab) {
-      return active_index() + 1;
+      return avora::InsertionIndexOutsideSplit(*this, active_index() + 1);
     }
 
     // Normally we'd add the tab immediately after the most recent tab
@@ -5733,7 +5741,7 @@ int TabStripModel::DetermineInsertionIndex(ui::PageTransition transition,
     }
     // If there is no discontinuity, add after the last tab already associated
     // with the opener.
-    return index + 1;
+    return avora::InsertionIndexOutsideSplit(*this, index + 1);
   }
   // In other cases, such as Ctrl+T, open at the end of the strip.
   return count();

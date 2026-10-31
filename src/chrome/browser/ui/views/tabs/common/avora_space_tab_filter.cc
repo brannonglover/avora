@@ -30,16 +30,20 @@
 #include "chrome/browser/ui/views/avora/avora_live_folder_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_side_by_side.h"
 #include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
+#include "components/split_tabs/split_tab_id.h"
+#include "components/tabs/public/split_tab_data.h"
 #include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -348,6 +352,14 @@ void AvoraSpaceTabFilter::OnTabChangedAt(tabs::TabInterface* tab,
 
   ResolvePendingTabAssignments(/*sync_store=*/true);
   ApplyVisibility();
+}
+
+void AvoraSpaceTabFilter::OnSplitTabChanged(const SplitTabChange& change) {
+  // Separating a pair puts its tabs back in the container as ordinary rows,
+  // which have to pick up the visibility the pair's row was carrying.
+  if (!applying_) {
+    ApplyVisibility();
+  }
 }
 
 void AvoraSpaceTabFilter::OnTabPinnedStateChanged(tabs::TabInterface* tab,
@@ -1517,6 +1529,11 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
     // for the kPinned-hide rule below without a second model lookup.
     const bool is_pinned_container = (container == pinned_container);
     for (views::View* child : container->children()) {
+      if (SplitTabView* split_view = views::AsViewClass<SplitTabView>(child)) {
+        ApplyVisibilityToSplit(*split_view);
+        continue;
+      }
+
       TabView* tab_view = views::AsViewClass<TabView>(child);
       if (!tab_view) {
         // Group views and other children are left to the existing layout
@@ -1581,6 +1598,70 @@ void AvoraSpaceTabFilter::ApplyVisibility() {
     }
   }
   applying_ = false;
+}
+
+void AvoraSpaceTabFilter::ApplyVisibilityToSplit(SplitTabView& split_view) {
+  bool visible = false;
+  std::set<std::string> spaces;
+  for (views::View* child : split_view.children()) {
+    TabView* tab_view = views::AsViewClass<TabView>(child);
+    const tabs::TabInterface* tab =
+        tab_view ? tab_view->GetTabInterface() : nullptr;
+    if (!tab) {
+      continue;
+    }
+    // The row stands or falls as a whole, so a tab that would have no row of
+    // its own still has its half of this one.
+    tab_view->SetVisible(true);
+
+    const auto it = tab_space_.find(tab->GetHandle());
+    if (it == tab_space_.end() || it->second.empty()) {
+      visible = true;
+      continue;
+    }
+    visible |= it->second == current_space_id_;
+    spaces.insert(it->second);
+  }
+  split_view.SetVisible(visible);
+
+  // Posted: TabStripModel can't be changed from here, inside its own
+  // notifications.
+  if (spaces.size() > 1 && !separating_splits_) {
+    separating_splits_ = true;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&AvoraSpaceTabFilter::SeparateSplitsAcrossSpaces,
+                       weak_factory_.GetWeakPtr()));
+  }
+}
+
+void AvoraSpaceTabFilter::SeparateSplitsAcrossSpaces() {
+  separating_splits_ = false;
+  TabStripModel* model = GetModel();
+  if (!model) {
+    return;
+  }
+  std::set<split_tabs::SplitTabId> to_separate;
+  for (int i = 0; i < model->count(); ++i) {
+    const std::optional<split_tabs::SplitTabId> split =
+        model->GetTabAtIndex(i)->GetSplit();
+    if (!split.has_value()) {
+      continue;
+    }
+    std::set<std::string> spaces;
+    for (tabs::TabInterface* tab : model->GetSplitData(*split)->ListTabs()) {
+      const std::string space_id = GetTabSpaceId(tab->GetContents());
+      if (!space_id.empty()) {
+        spaces.insert(space_id);
+      }
+    }
+    if (spaces.size() > 1) {
+      to_separate.insert(*split);
+    }
+  }
+  for (const split_tabs::SplitTabId& split : to_separate) {
+    model->RemoveSplit(split);
+  }
 }
 
 // ── Today tab expiry ────────────────────────────────────────────────────────
@@ -2133,7 +2214,7 @@ tabs::TabInterface* AvoraSpaceTabFilter::InsertDailyTabCopy(
   {
     base::AutoReset<bool> applying(&applying_, true);
     inserted = model->InsertWebContentsAt(
-        index, std::move(copy),
+        InsertionIndexOutsideSplit(*model, index), std::move(copy),
         activate ? AddTabTypes::ADD_ACTIVE : AddTabTypes::ADD_NONE);
   }
   tabs::TabInterface* tab = model->GetTabAtIndex(inserted);
@@ -2418,7 +2499,9 @@ tabs::TabInterface* AvoraSpaceTabFilter::InsertSharedTab(const SharedTab& tab,
   {
     base::AutoReset<bool> applying(&applying_, true);
     inserted = model->InsertWebContentsAt(
-        std::clamp(index, 0, model->count()), std::move(contents),
+        InsertionIndexOutsideSplit(*model,
+                                   std::clamp(index, 0, model->count())),
+        std::move(contents),
         model->empty() ? AddTabTypes::ADD_ACTIVE : AddTabTypes::ADD_NONE);
   }
   tabs::TabInterface* local = model->GetTabAtIndex(inserted);
@@ -2520,12 +2603,17 @@ void AvoraSpaceTabFilter::EnforceWarmBudget() {
     return;
   }
   content::WebContents* const active = model->GetActiveWebContents();
+  // The other half of the active tab's pair is on screen too.
+  const tabs::TabInterface* const active_tab = model->GetActiveTab();
+  const std::optional<split_tabs::SplitTabId> active_split =
+      active_tab ? active_tab->GetSplit() : std::nullopt;
   std::vector<tabs::TabInterface*> warm;
   size_t pinned_warm = 0;
   for (int i = 0; i < model->count(); ++i) {
     tabs::TabInterface* tab = model->GetTabAtIndex(i);
     content::WebContents* contents = tab->GetContents();
     if (!contents || contents == active || !IsDailyTab(tab) ||
+        (active_split.has_value() && tab->GetSplit() == active_split) ||
         contents->GetController().NeedsReload() || contents->WasDiscarded()) {
       continue;
     }

@@ -22,6 +22,7 @@
 
 class BrowserWindowInterface;
 class Profile;
+class SplitTabView;
 class TabStripModel;
 class TabStripView;
 
@@ -74,6 +75,7 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
       const TabStripSelectionChange& selection) override;
   void OnTabChangedAt(tabs::TabInterface* tab,
                       TabChangeType change_type) override;
+  void OnSplitTabChanged(const SplitTabChange& change) override;
 
   // Gives Avora's native pin gesture -- the tab context menu's "Pin Tab",
   // its keyboard shortcut, anything else that ends in
@@ -275,6 +277,15 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // Shows tabs in the active Space and hides the rest.
   void ApplyVisibility();
 
+  // Shows or hides a side-by-side pair, which is one row with two tabs in it.
+  void ApplyVisibilityToSplit(SplitTabView& split_view);
+
+  // Separates any pair whose tabs have ended up in different Spaces.  A pair
+  // is one row in one Space's list, so it can't outlive that.  "Move to Space"
+  // takes both tabs along; what's left is a move that arrived from elsewhere,
+  // because another window's copy of the tab was not in a pair.
+  void SeparateSplitsAcrossSpaces();
+
   // Writes this window's tab set to SidebarItemStore as kTabState items keyed
   // by Avora tab GUID, so Space and Favorite ownership outlives the process.
   //
@@ -447,6 +458,9 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
 
   // Guards against reentrancy while we mutate visibility or the tab strip.
   bool applying_ = false;
+
+  // A SeparateSplitsAcrossSpaces() is already posted.
+  bool separating_splits_ = false;
 
   // Pages other devices moved a tab to while it was on screen here, by GUID;
   // applied once the user leaves the tab, dropped if they navigate it first.

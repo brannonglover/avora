@@ -12,6 +12,8 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/time/time.h"
+#include "cc/paint/paint_flags.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
@@ -75,11 +77,16 @@
 #include "ui/compositor/layer.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/events/types/event_type.h"
+#include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -767,6 +774,9 @@ void TabView::OnPaint(gfx::Canvas* canvas) {
   }
 
   tab_styling()->PaintTab(canvas);
+  if (avora_combine_highlight_) {
+    PaintAvoraCombineHighlight(canvas);
+  }
 
   views::View::OnPaint(canvas);
 }
@@ -1105,6 +1115,44 @@ void TabView::SetDataForTesting(tabs::TabData data) {
   UpdateTitle(tab_data_.title, tab_data_.should_render_loading_title);
   alert_indicator_->TransitionToAlertState(tab_data_.alert_state);
   SetHoverCardDataFrom(tab_data_);
+}
+
+void TabView::SetAvoraCombineHighlight(bool highlighted) {
+  if (avora_combine_highlight_ == highlighted) {
+    return;
+  }
+  avora_combine_highlight_ = highlighted;
+  SchedulePaint();
+}
+
+void TabView::PaintAvoraCombineHighlight(gfx::Canvas* canvas) {
+  // The accent the side nav's other drop targets are drawn in.
+  constexpr SkColor kAccentColor = SkColorSetRGB(0x6E, 0xA8, 0xFF);
+  constexpr int kIconSize = 16;
+  constexpr int kIconTrailingInset = 10;
+  constexpr float kStrokeWidth = 2.f;
+
+  const float corner_radius =
+      GetLayoutConstant(LayoutConstant::kVerticalTabCornerRadius);
+  gfx::RectF bounds(GetLocalBounds());
+  bounds.Inset(kStrokeWidth / 2);
+
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setColor(SkColorSetA(kAccentColor, 0x33));
+  canvas->DrawRoundRect(bounds, corner_radius, flags);
+  flags.setColor(kAccentColor);
+  flags.setStyle(cc::PaintFlags::kStroke_Style);
+  flags.setStrokeWidth(kStrokeWidth);
+  canvas->DrawRoundRect(bounds, corner_radius, flags);
+
+  // Says what letting go will do, in the same icon the menu item uses.
+  gfx::ScopedCanvas scoped_canvas(canvas);
+  canvas->Translate(gfx::Vector2d(
+      GetMirroredXWithWidthInView(width() - kIconTrailingInset - kIconSize,
+                                  kIconSize),
+      (height() - kIconSize) / 2));
+  gfx::PaintVectorIcon(canvas, kSplitSceneIcon, kIconSize, kAccentColor);
 }
 
 void TabView::OnAvoraLinkPreviewStateChanged(content::WebContents* tab) {

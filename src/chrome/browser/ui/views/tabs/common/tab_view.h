@@ -112,6 +112,11 @@ class TabView : public views::View,
   bool IsActive() const { return active_; }
   bool IsClosing() const { return !collection_node_; }
   bool split() const { return split_; }
+
+  // Avora: marks this row as the tab that the one being dragged would combine
+  // with if the user let go now.
+  void SetAvoraCombineHighlight(bool highlighted);
+  bool avora_combine_highlight() const { return avora_combine_highlight_; }
   bool pinned() const { return pinned_; }
   const tabs::TabInterface* GetTabInterface() const;
 
@@ -186,6 +191,7 @@ class TabView : public views::View,
   // tab, so the row carries a marker while one is waiting behind it.
   void OnAvoraLinkPreviewStateChanged(content::WebContents* tab);
   void UpdateAvoraLinkPreviewIndicator();
+  void PaintAvoraCombineHighlight(gfx::Canvas* canvas);
   void OnTabDataChanged(TabChangeType change_type, const tabs::TabData& data);
   void SetSelection(bool selected);
   void UpdateTabData(const tabs::TabInterface* tab);
@@ -247,6 +253,7 @@ class TabView : public views::View,
   bool selected_ = false;
   bool hovered_ = false;
   bool split_ = false;
+  bool avora_combine_highlight_ = false;
   bool collapsed_ = false;
   bool pinned_ = false;
   bool shift_pressed_on_mouse_down_ = false;
