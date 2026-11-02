@@ -32,6 +32,7 @@ function renderItem(release: Release): string {
       <sparkle:shortVersionString>${version}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>${minimumMacOS}.0.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>${siteUrl}/releases</sparkle:fullReleaseNotesLink>
       <description><![CDATA[${releaseNotes(release)}]]></description>
       <enclosure url="${url}" length="${release.sizeBytes}" type="application/octet-stream" sparkle:edSignature="${signature}"/>
     </item>`;

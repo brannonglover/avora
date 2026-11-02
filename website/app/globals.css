@@ -183,12 +183,14 @@ a {
 }
 
 .tab[aria-current="true"],
+.tab[aria-current="page"],
 .tab[aria-selected="true"] {
   background: var(--tab-active);
   color: var(--text);
 }
 
 .tab[aria-current="true"] svg,
+.tab[aria-current="page"] svg,
 .tab[aria-selected="true"] svg {
   color: var(--accent);
 }
@@ -447,6 +449,121 @@ a {
 
 code {
   font-family: var(--mono);
+}
+
+.release-link {
+  position: relative;
+  display: inline-block;
+  margin-top: 16px;
+  color: var(--link);
+  font-size: 15px;
+}
+
+/* Release notes */
+
+.releases h1 {
+  font-size: clamp(2.5rem, 5vw, 4rem);
+}
+
+.release-list {
+  display: grid;
+  gap: 32px;
+  max-width: 1040px;
+}
+
+.release {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+  padding-top: 32px;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 24px;
+}
+
+.release-head {
+  position: sticky;
+  top: 24px;
+}
+
+.release-head h2 {
+  font-size: clamp(1.9rem, 3vw, 2.4rem);
+}
+
+.release-kicker {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--accent);
+  font-family: var(--body);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.release-latest {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgb(124 243 208 / 0.14);
+  color: var(--mint);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.release-meta {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.release-body {
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgb(30 34 42 / 0.7);
+}
+
+.release-body h3 {
+  margin-bottom: 16px;
+}
+
+.release-body ul {
+  padding-left: 1.2em;
+  list-style: disc;
+}
+
+.release-body li + li {
+  margin-top: 10px;
+}
+
+.release-body li::marker {
+  color: var(--accent);
+}
+
+.release-empty {
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .release {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  /* Clears the top bar the sidebar becomes, which stays pinned. */
+  .release {
+    scroll-margin-top: 104px;
+  }
+
+  .release-head {
+    position: static;
+  }
+
+  .release-body {
+    padding: 20px;
+  }
 }
 
 /* Tour */

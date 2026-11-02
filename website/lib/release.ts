@@ -36,6 +36,11 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+// Where a version's notes are on /releases, and its GitHub tag's name.
+export function releaseAnchor(version: string): string {
+  return `v${version}`;
+}
+
 // The DMG is too big for Vercel's public/, so it lives on GitHub Releases.
 export function releaseDownloadUrl(release: Release): string {
   return `https://github.com/brannonglover/avora/releases/download/v${release.version}/${release.file}`;

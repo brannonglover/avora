@@ -1,5 +1,5 @@
 import { DownloadButton } from "./DownloadButton";
-import { notarized } from "@/lib/release";
+import { notarized, releaseAnchor, version } from "@/lib/release";
 
 export function Download() {
   return (
@@ -16,6 +16,10 @@ export function Download() {
       </header>
 
       <DownloadButton />
+
+      <a className="release-link" href={`/releases#${releaseAnchor(version)}`}>
+        What&apos;s new in Avora {version}
+      </a>
 
       <ol className="install">
         <li>

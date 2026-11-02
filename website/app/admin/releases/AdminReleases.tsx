@@ -173,7 +173,8 @@ function ReleaseEditor({
       </label>
 
       <div className={styles.preview}>
-        <p>What people see in the update window</p>
+        <p>What people see in the update window and on /releases</p>
+        <p className={styles.previewVersion}>Version {release.version}</p>
         {title.trim() && <h3>{title.trim()}</h3>}
         {bullets.length === 0 ? (
           <p>Add one change per line above.</p>

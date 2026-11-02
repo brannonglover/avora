@@ -10,6 +10,7 @@ import {
   Images,
   Microscope,
   Palette,
+  ScrollText,
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
@@ -30,8 +31,11 @@ const SPACES: { name: string; color: string; icon: LucideIcon }[] = [
   { name: "Design", color: "#f78fd0", icon: Palette },
 ];
 
-export function Sidebar() {
-  const [active, setActive] = useState(SECTIONS[0].id);
+// The home page's sections are anchors on it, so from any other page they lead
+// back there.
+export function Sidebar({ page = "home" }: { page?: "home" | "releases" }) {
+  const home = page === "home" ? "" : "/";
+  const [active, setActive] = useState(page === "home" ? SECTIONS[0].id : "");
   const [space, setSpace] = useState(SPACES[2].name);
 
   useEffect(() => {
@@ -64,7 +68,7 @@ export function Sidebar() {
         <span />
       </div>
 
-      <a className="address" href="#overview">
+      <a className="address" href={`${home}#overview`}>
         <Image src="/avora-mark.svg" alt="" width={20} height={20} />
         Avora
       </a>
@@ -75,7 +79,7 @@ export function Sidebar() {
             <li key={id}>
               <a
                 className="tab"
-                href={`#${id}`}
+                href={`${home}#${id}`}
                 aria-current={active === id ? "true" : undefined}
               >
                 <Icon size={16} aria-hidden="true" />
@@ -83,6 +87,16 @@ export function Sidebar() {
               </a>
             </li>
           ))}
+          <li>
+            <a
+              className="tab"
+              href="/releases"
+              aria-current={page === "releases" ? "page" : undefined}
+            >
+              <ScrollText size={16} aria-hidden="true" />
+              Release notes
+            </a>
+          </li>
         </ul>
       </nav>
 

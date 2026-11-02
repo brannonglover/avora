@@ -258,14 +258,17 @@ if [[ "$UPDATES" == true ]]; then
   SIGNATURE="$("$SPARKLE/bin/sign_update" -p "$DEST")"
 fi
 
-# A starting point for the notes: what changed since the last published release.
+# A starting point for the notes: browser changes since the last published release.
+# Commits that don't touch src/ (the site, release tooling) and version bumps say
+# nothing to someone using Avora, and a one-word subject says nothing to anyone.
 LAST_VERSION="$(node -p '
   JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
     .filter((release) => release.status === "published")
     .map((release) => release.version)
     .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0]
 ' "$SITE_DIR/releases.json")"
-NOTES="$(git -C "$REPO_DIR" log --format=%s "v$LAST_VERSION..HEAD" 2>/dev/null || true)"
+NOTES="$(git -C "$REPO_DIR" log --no-merges --format=%s "v$LAST_VERSION..HEAD" -- src 2>/dev/null |
+  grep -vE '^v?[0-9]+(\.[0-9]+)+$' | awk 'NF > 1' || true)"
 GIT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
 
 node -e '

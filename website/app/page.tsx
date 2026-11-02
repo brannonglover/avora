@@ -3,8 +3,8 @@ import { Hero } from "@/components/Hero";
 import { Tour } from "@/components/Tour";
 import { Intelligence } from "@/components/Intelligence";
 import { Download } from "@/components/Download";
+import { Footer } from "@/components/Footer";
 import { StructuredData } from "@/components/StructuredData";
-import { chromiumMajor, version } from "@/lib/release";
 
 export default function Home() {
   return (
@@ -15,12 +15,7 @@ export default function Home() {
         <Tour />
         <Intelligence />
         <Download />
-        <footer className="footer">
-          <span>
-            Avora {version}, built on Chromium {chromiumMajor}
-          </span>
-          <span>© 2026 Avora</span>
-        </footer>
+        <Footer />
       </main>
       <StructuredData />
     </div>
