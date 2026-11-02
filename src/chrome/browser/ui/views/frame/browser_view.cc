@@ -3866,8 +3866,21 @@ LocationBarView* BrowserView::GetLocationBarView() const {
 // BrowserView, TabStripModelObserver implementation:
 
 void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
+  // Avora: DevTools docks below a page in a pair, and back when it leaves one.
+  const auto update_devtools =
+      [](const std::vector<std::pair<tabs::TabInterface*, int>>& changed_tabs) {
+        for (const auto& [tab, index] : changed_tabs) {
+          if (DevToolsWindow* devtools =
+                  DevToolsWindow::GetInstanceForInspectedWebContents(
+                      tab->GetContents())) {
+            devtools->UpdateDockBelowPage();
+          }
+        }
+      };
+
   switch (change.type) {
     case SplitTabChange::Type::kAdded: {
+      update_devtools(change.GetAddedChange()->tabs());
       const tabs::TabInterface* active_tab =
           browser_->GetTabStripModel()->GetActiveTab();
       if (active_tab->IsSplit()) {
@@ -3900,6 +3913,8 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
     }
 
     case SplitTabChange::Type::kContentsChanged: {
+      update_devtools(change.GetContentsChange()->prev_tabs());
+      update_devtools(change.GetContentsChange()->new_tabs());
       const tabs::TabInterface* active_tab =
           browser_->GetTabStripModel()->GetActiveTab();
 
@@ -3910,6 +3925,7 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
     }
 
     case SplitTabChange::Type::kRemoved: {
+      update_devtools(change.GetRemovedChange()->tabs());
       content::WebContents* active_web_contents =
           multi_contents_view_->GetActiveContentsView()->web_contents();
 

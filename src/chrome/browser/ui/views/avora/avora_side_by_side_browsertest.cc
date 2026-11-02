@@ -17,6 +17,10 @@
 #include "base/test/run_until.h"
 #include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/devtools/devtools_dock_side.h"
+#include "chrome/browser/devtools/devtools_settings.h"
+#include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/avora/avora_window_space.h"
@@ -34,6 +38,7 @@
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view_mini_toolbar.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
@@ -59,6 +64,7 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/menus/simple_menu_model.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -161,6 +167,30 @@ class AvoraSideBySideBrowserTest : public InProcessBrowserTest {
     return std::make_unique<TabMenuModel>(
         &menu_delegate_, TabMenuModelDelegate::From(browser()), model(),
         model()->GetIndexOfTab(tab));
+  }
+
+  // Opens DevTools the way the user does.  DevToolsWindowTesting's helpers won't
+  // do here: they force the bottom dock, and the side a real profile starts on
+  // is the one that matters.
+  DevToolsWindow* OpenDevTools(tabs::TabInterface* tab) {
+    DevToolsWindowCreationObserver observer;
+    DevToolsWindow::OpenDevToolsWindow(
+        tab->GetContents(), DevToolsOpenedByAction::kMainMenuOrMainShortcut);
+    observer.WaitForLoad();
+    return observer.devtools_window();
+  }
+
+  using DockedPlacement = ContentsContainerView::DevToolsDockedPlacement;
+
+  ContentsContainerView* PaneFor(tabs::TabInterface* tab) {
+    return multi_contents_view()->GetContentsContainerViewFor(
+        tab->GetContents());
+  }
+
+  // Where |tab|'s DevTools sits, or kUnknown while the tab isn't on screen.
+  DockedPlacement Placement(tabs::TabInterface* tab) {
+    ContentsContainerView* pane = PaneFor(tab);
+    return pane ? pane->devtools_docked_placement() : DockedPlacement::kUnknown;
   }
 
   TabStripView* strip() {
@@ -313,6 +343,36 @@ IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest, ShowsBothTabsInTheWindow) {
                                    ->contents_container_views()[1]
                                    ->contents_view()
                                    ->web_contents());
+}
+
+// Each pane says which site it is, whichever of them has focus.
+IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest, BothPanesShowTheirDomain) {
+  OpenThreeTabs();
+  Pair(a_, b_);
+
+  const auto bar = [&](size_t pane) {
+    return multi_contents_view()->contents_container_views()[pane]
+        ->mini_toolbar();
+  };
+  const auto shows = [&](size_t pane, std::u16string_view host) {
+    views::Label* label = bar(pane)->domain_label_for_testing();
+    return label->IsDrawn() && label->GetText().contains(host);
+  };
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return shows(0, u"a.test") && shows(1, u"b.test"); }));
+
+  model()->ActivateTabAt(model()->GetIndexOfTab(a_));
+  EXPECT_TRUE(shows(0, u"a.test"));
+  EXPECT_TRUE(shows(1, u"b.test"));
+
+  // The pane in use is the one that gets navigated, and it has to keep up.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), TestURL("a-much-longer-host-name.test")));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return shows(0, u"a-much-longer-host-name.test"); }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return bar(0)->width() == bar(0)->GetPreferredSize().width();
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest,
@@ -545,6 +605,54 @@ IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest,
   Wait(base::Milliseconds(200));
   EXPECT_FALSE(a_->GetContents()->GetController().NeedsReload());
   EXPECT_FALSE(b_->GetContents()->GetController().NeedsReload());
+}
+
+// ── DevTools ────────────────────────────────────────────────────────────────
+
+// Half a window leaves no room to dock beside a page: the page ends up a sliver
+// next to a panel that has run out of room for its own tabs.
+IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest,
+                       DevToolsOpensBelowEachPageOfAPair) {
+  OpenThreeTabs();
+  Pair(a_, b_);
+  DevToolsWindow* const first = OpenDevTools(a_);
+  DevToolsWindow* const second = OpenDevTools(b_);
+
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return Placement(a_) == DockedPlacement::kBottom &&
+           Placement(b_) == DockedPlacement::kBottom;
+  }));
+  for (tabs::TabInterface* tab : {a_.get(), b_.get()}) {
+    ContentsContainerView* pane = PaneFor(tab);
+    EXPECT_EQ(pane->devtools_web_view()->width(),
+              pane->contents_view()->width());
+  }
+
+  // The user's side is only set aside, not changed.
+  EXPECT_EQ(devtools::DockSide::kRight,
+            DevToolsSettings::GetDockSide(browser()->GetProfile()));
+
+  DevToolsWindowTesting::CloseDevToolsWindowSync(first);
+  DevToolsWindowTesting::CloseDevToolsWindowSync(second);
+}
+
+IN_PROC_BROWSER_TEST_F(AvoraSideBySideBrowserTest,
+                       DevToolsFollowsThePageInAndOutOfAPair) {
+  OpenThreeTabs();
+  DevToolsWindow* const devtools = OpenDevTools(a_);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return Placement(a_) == DockedPlacement::kRight; }));
+
+  Pair(a_, b_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return Placement(a_) == DockedPlacement::kBottom; }));
+
+  model()->RemoveSplit(*a_->GetSplit());
+  model()->ActivateTabAt(model()->GetIndexOfTab(a_));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return Placement(a_) == DockedPlacement::kRight; }));
+
+  DevToolsWindowTesting::CloseDevToolsWindowSync(devtools);
 }
 
 // ── Link previews, which need the pair's second pane ────────────────────────

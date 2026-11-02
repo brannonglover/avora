@@ -161,6 +161,7 @@ source_set("browser_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser/avora",
+    "//chrome/browser/devtools:test_support",
     "//chrome/browser/extensions",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sessions:test_support",
