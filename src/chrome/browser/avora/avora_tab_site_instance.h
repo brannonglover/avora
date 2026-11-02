@@ -43,6 +43,21 @@ scoped_refptr<content::SiteInstance> GetSiteInstanceForSpace(
     const std::string& space_id,
     const GURL& url);
 
+// Returns the SiteInstance a tab restored into |browser| should be created
+// with, or nullptr to create it the stock way, in the default partition.
+//
+// A partition is fixed for the life of a WebContents, and Chromium restores
+// every tab into the default one, so without this a restored tab in a Space
+// with its own identity signs in as the first Space instead -- and disagrees
+// with every new tab opened in the same Space.  The tab's Space is the one
+// recorded against |tab_guid| when it was last open; a tab with no record
+// (one the user closed, then reopened) falls back to the window's Space,
+// which is where the Space tab filter adopts it.
+scoped_refptr<content::SiteInstance> GetSiteInstanceForRestoredAvoraTab(
+    BrowserWindowInterface* browser,
+    const std::string& tab_guid,
+    const GURL& url);
+
 }  // namespace avora
 
 #endif  // CHROME_BROWSER_AVORA_AVORA_TAB_SITE_INSTANCE_H_
