@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.4.1",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-0.4.1-arm64.dmg",
+    "sizeBytes": 190387113,
+    "sha256": "aa63c9556edbe3c19c1c16380f8a21440d58ff7cfe7d3c3f37ea9e95397d6a54",
+    "notarized": true,
+    "edSignature": "YWbrpQuXuT7f09sy9hk8Ylyk2vQyIok4QGs+2TpMzrHElpxHCbiSn26xofCJJzGDYBd7Zw1fbXs4xEsA9U6wBg==",
+    "gitSha": "a4a448b9c8a432d2facdb2d91045a75fae908cdf",
+    "title": null,
+    "bullets": [
+      "Say Avora on the About page, and lead its version line with Avora's.",
+      "Report Sparkle's update state on the About page."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-02T18:40:22.409Z",
+    "publishedAt": "2026-11-02T18:41:42.296Z"
+  },
+  {
     "version": "0.4.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-0.4.0-arm64.dmg",
