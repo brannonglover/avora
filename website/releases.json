@@ -1,5 +1,27 @@
 [
   {
+    "version": "0.4.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-0.4.0-arm64.dmg",
+    "sizeBytes": 190388649,
+    "sha256": "77d4b7bc5916dbd4c4c2598180d4205f4de34fdcdfe3d34ae47fa86b4d857b86",
+    "notarized": true,
+    "edSignature": "QkyoBAygq/6B08x7RawkpFz4NxpsV6wxnaIOrKUfAgoMoZxBTy0by1a+in/syHvFJmjViXorJqYeqV8cm+WqAA==",
+    "gitSha": "7147dea284d3837ac67bfdf2e3089b04606f1208",
+    "title": null,
+    "bullets": [
+      "View two tabs side by side, each with its own DevTools underneath.",
+      "Spaces stay signed in after you quit and reopen Avora.",
+      "Restored tabs reopen in the right Space, with that Space's sign-ins.",
+      "Sign in to Live Folder services right from the link preview.",
+      "The quick-nav overlay now closes when you switch tabs.",
+      "Avora now updates itself. When an update is ready, a button appears at the bottom of the sidebar."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-02T17:51:47.347Z",
+    "publishedAt": "2026-11-02T18:13:18.678Z"
+  },
+  {
     "version": "0.1.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-0.1.0-arm64.dmg",
