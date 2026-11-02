@@ -437,18 +437,12 @@ a {
   font-weight: 600;
 }
 
-.note,
-.checksum {
+.note {
   position: relative;
   max-width: 960px;
   margin-top: 20px;
   color: var(--muted);
   font-size: 15px;
-}
-
-.checksum {
-  overflow-wrap: anywhere;
-  font-size: 13px;
 }
 
 code {

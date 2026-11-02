@@ -52,7 +52,6 @@ export const downloadUrl = releaseDownloadUrl(latest);
 export const version = latest.version;
 export const chromiumMajor = latest.chromium.split(".")[0];
 export const sizeLabel = `${Math.round(latest.sizeBytes / 1_000_000)} MB`;
-export const sha256 = latest.sha256;
 export const minimumMacOS = "13";
 
 // False until the DMG is signed with a Developer ID and notarized. Until then

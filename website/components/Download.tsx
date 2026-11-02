@@ -1,5 +1,5 @@
 import { DownloadButton } from "./DownloadButton";
-import { notarized, sha256 } from "@/lib/release";
+import { notarized } from "@/lib/release";
 
 export function Download() {
   return (
@@ -36,12 +36,6 @@ export function Download() {
           This preview build isn&apos;t notarized yet, so macOS will stop the
           first launch. Open System Settings, go to Privacy &amp; Security, and
           choose Open Anyway.
-        </p>
-      )}
-
-      {sha256 && (
-        <p className="checksum">
-          SHA-256 <code>{sha256}</code>
         </p>
       )}
     </section>
