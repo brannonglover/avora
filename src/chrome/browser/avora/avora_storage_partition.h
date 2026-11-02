@@ -10,6 +10,10 @@
 
 class GURL;
 
+namespace base {
+class FilePath;
+}  // namespace base
+
 namespace content {
 class BrowserContext;
 class SiteInstance;
@@ -28,6 +32,11 @@ inline constexpr char kAvoraPartitionDomain[] = "avora";
 // identity does, which is what allows a fresh install (or an upgrade from a
 // pre-Spaces build) to keep its existing cookies and logins.
 bool UsesDefaultPartition(const BrowserProfile& profile);
+
+// True when |relative_partition_path|, a partition's directory relative to
+// the browser profile as Chromium passes it to network-context setup, is one
+// of the Avora identity partitions.
+bool IsIdentityPartitionPath(const base::FilePath& relative_partition_path);
 
 // The StoragePartitionConfig isolating |profile|'s cookies, localStorage,
 // IndexedDB, service workers, and permissions.
