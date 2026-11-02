@@ -2322,6 +2322,14 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   DCHECK(new_contents);
   TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
 
+  // The quick-nav overlay is opened from the tab that was active at the time
+  // (Cmd+L edits that tab's URL), so it does not follow the user to another
+  // tab.  Committing from it with Cmd+T also lands here once the new tab
+  // activates, which is harmless: the overlay dismisses itself right after.
+  if (avora_quick_nav_ && avora_quick_nav_->IsShowing()) {
+    HideAvoraQuickNav();
+  }
+
   // A link preview's tab is hidden from the tab strip but still in the model,
   // so model-order navigation (Cmd+Opt+arrow, Cmd+<n>) can land on it.  One
   // WebContents cannot be hosted by two WebViews at once, so the overlay lets
