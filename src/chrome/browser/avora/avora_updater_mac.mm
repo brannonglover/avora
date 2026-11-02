@@ -5,9 +5,11 @@
 #import <Cocoa/Cocoa.h>
 
 #include <utility>
+#include <vector>
 
 #include "base/apple/bundle_locations.h"
 #include "base/check.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
@@ -16,7 +18,13 @@
 // The parts of Sparkle used here.  The framework is added at packaging time and
 // loaded at runtime, so its headers aren't available to the build.
 
+@protocol AvoraSparkleUpdater
+@property(nonatomic, readonly) BOOL sessionInProgress;
+- (void)checkForUpdateInformation;
+@end
+
 @protocol AvoraSparkleController
+@property(nonatomic, readonly) id<AvoraSparkleUpdater> updater;
 - (instancetype)initWithStartingUpdater:(BOOL)startUpdater
                         updaterDelegate:(id)updaterDelegate
                      userDriverDelegate:(id)userDriverDelegate;
@@ -31,6 +39,9 @@
 
 namespace avora {
 namespace {
+
+// Sparkle's code for a check that found nothing newer.
+constexpr NSInteger kNoUpdateError = 1001;
 
 class Updater {
  public:
@@ -59,11 +70,42 @@ class Updater {
 
   base::ObserverList<UpdaterObserver>& observers() { return observers_; }
 
+  // Whether a CheckForUpdateInformation() is waiting on Sparkle.
+  bool checking() const { return !check_callbacks_.empty(); }
+  void AddCheckCallback(UpdateCheckCallback callback) {
+    check_callbacks_.push_back(std::move(callback));
+  }
+
+  void set_found_update() { found_update_ = true; }
+
+  // Every check ends here, whoever started it.  Callers of
+  // CheckForUpdateInformation() hear about the first one to end, which is
+  // theirs: Sparkle won't start one while another is in progress.
+  void FinishCheck(NSError* error) {
+    UpdateCheckResult result = UpdateCheckResult::kUpToDate;
+    std::u16string message;
+    if (error && error.code != kNoUpdateError) {
+      result = UpdateCheckResult::kFailed;
+      message = base::SysNSStringToUTF16(error.localizedDescription);
+    } else if (!error && found_update_) {
+      result = UpdateCheckResult::kUpdateAvailable;
+    }
+    found_update_ = false;
+
+    std::vector<UpdateCheckCallback> callbacks = std::move(check_callbacks_);
+    check_callbacks_.clear();
+    for (UpdateCheckCallback& callback : callbacks) {
+      std::move(callback).Run(result, message);
+    }
+  }
+
  private:
   id<AvoraSparkleController> __strong controller_ = nil;
   AvoraUpdaterDelegate* __strong delegate_ = nil;
   std::u16string waiting_version_;
   base::ObserverList<UpdaterObserver> observers_;
+  std::vector<UpdateCheckCallback> check_callbacks_;
+  bool found_update_ = false;
 };
 
 NSBundle* SparkleBundle() {
@@ -76,12 +118,22 @@ NSBundle* SparkleBundle() {
 }  // namespace
 }  // namespace avora
 
-// Sparkle's user driver delegate, and its version formatter.  Sparkle calls all
-// of these on the main thread.
+// Sparkle's updater and user driver delegate, and its version formatter.
+// Sparkle calls all of these on the main thread.
 @interface AvoraUpdaterDelegate : NSObject
 @end
 
 @implementation AvoraUpdaterDelegate
+
+- (void)updater:(id)updater didFindValidUpdate:(id)item {
+  avora::Updater::Get().set_found_update();
+}
+
+- (void)updater:(id)updater
+    didFinishUpdateCycleForUpdateCheck:(NSInteger)updateCheck
+                                 error:(NSError*)error {
+  avora::Updater::Get().FinishCheck(error);
+}
 
 - (BOOL)supportsGentleScheduledUpdateReminders {
   return YES;
@@ -161,7 +213,7 @@ void StartUpdater() {
   AvoraUpdaterDelegate* delegate = [[AvoraUpdaterDelegate alloc] init];
   Updater::Get().SetController([[controller_class alloc]
                                    initWithStartingUpdater:YES
-                                           updaterDelegate:nil
+                                           updaterDelegate:delegate
                                         userDriverDelegate:delegate],
                                delegate);
 }
@@ -172,6 +224,26 @@ void CheckForUpdates() {
 
 std::u16string WaitingUpdateVersion() {
   return Updater::Get().waiting_version();
+}
+
+void CheckForUpdateInformation(UpdateCheckCallback callback) {
+  Updater& state = Updater::Get();
+  id<AvoraSparkleUpdater> updater = state.controller().updater;
+  if (!updater) {
+    std::move(callback).Run(UpdateCheckResult::kFailed,
+                            u"Avora's updater didn't start.");
+    return;
+  }
+  if (state.checking()) {
+    state.AddCheckCallback(std::move(callback));
+    return;
+  }
+  if (updater.sessionInProgress) {
+    std::move(callback).Run(UpdateCheckResult::kBusy, std::u16string());
+    return;
+  }
+  state.AddCheckCallback(std::move(callback));
+  [updater checkForUpdateInformation];
 }
 
 void AddUpdaterObserver(UpdaterObserver* observer) {

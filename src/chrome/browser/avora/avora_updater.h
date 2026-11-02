@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "base/functional/callback_forward.h"
 #include "base/observer_list_types.h"
 
 namespace avora {
@@ -38,6 +39,21 @@ void CheckForUpdates();
 
 // The version of the waiting update, or empty when there isn't one.
 std::u16string WaitingUpdateVersion();
+
+enum class UpdateCheckResult {
+  kUpToDate,
+  kUpdateAvailable,
+  // Sparkle is already checking or installing, in its own window if it has one.
+  kBusy,
+  kFailed,
+};
+
+// Asks the feed whether there's an update without showing anything, for the
+// About page.  |error| is Sparkle's explanation when the check fails.
+using UpdateCheckCallback =
+    base::OnceCallback<void(UpdateCheckResult result,
+                            const std::u16string& error)>;
+void CheckForUpdateInformation(UpdateCheckCallback callback);
 
 void AddUpdaterObserver(UpdaterObserver* observer);
 void RemoveUpdaterObserver(UpdaterObserver* observer);
