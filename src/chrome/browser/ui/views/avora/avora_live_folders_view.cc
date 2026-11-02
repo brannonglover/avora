@@ -1178,7 +1178,18 @@ void AvoraLiveFoldersView::CheckSignInPreview() {
     return;
   }
   sign_in.checked_url = url;
-  service_->ForceRefreshFolder(sign_in.space_id, sign_in.folder_id);
+  // Reachable from inside the service's own sync notification, and starting
+  // a sync notifies again, which its observer list does not allow.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<AvoraLiveFoldersView> view, std::string space_id,
+             std::string folder_id) {
+            if (view && view->service_) {
+              view->service_->ForceRefreshFolder(space_id, folder_id);
+            }
+          },
+          weak_factory_.GetWeakPtr(), sign_in.space_id, sign_in.folder_id));
 }
 
 void AvoraLiveFoldersView::CloseSignInPreview(
