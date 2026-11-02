@@ -266,10 +266,11 @@ LAST_VERSION="$(node -p '
     .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0]
 ' "$SITE_DIR/releases.json")"
 NOTES="$(git -C "$REPO_DIR" log --format=%s "v$LAST_VERSION..HEAD" 2>/dev/null || true)"
+GIT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
 
 node -e '
   const fs = require("fs");
-  const [path, version, chromium, file, sizeBytes, sha256, notarized, signature, notes] =
+  const [path, version, chromium, file, sizeBytes, sha256, notarized, signature, notes, gitSha] =
     process.argv.slice(1);
   const releases = JSON.parse(fs.readFileSync(path, "utf8"));
   const existing = releases.find((release) => release.version === version);
@@ -282,6 +283,7 @@ node -e '
     sha256,
     notarized: notarized === "true",
     edSignature: signature || null,
+    gitSha,
     title: existing?.title ?? null,
     bullets: existing?.bullets.length ? existing.bullets : notes.split("\n").filter(Boolean),
     status: "draft",
@@ -293,7 +295,7 @@ node -e '
   );
   fs.writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
 ' "$SITE_DIR/releases.json" "$VERSION" "$CHROMIUM" "$FILE" "$SIZE" "$SHA256" \
-  "$NOTARIZED" "$SIGNATURE" "$NOTES"
+  "$NOTARIZED" "$SIGNATURE" "$NOTES" "$GIT_SHA"
 
 echo "Wrote $DEST ($((SIZE / 1000000)) MB)"
 if [[ "$UPDATES" == false ]]; then

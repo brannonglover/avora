@@ -83,12 +83,14 @@ function ReleaseEditor({
   const [bulletsText, setBulletsText] = useState(release.bullets.join("\n"));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const bullets = parseBullets(bulletsText);
 
   const save = async (status?: ReleaseStatus) => {
     setSaving(true);
     setError(null);
+    setNotice(null);
     try {
       const response = await fetch(`/api/admin/releases/${release.version}`, {
         method: "PATCH",
@@ -97,10 +99,14 @@ function ReleaseEditor({
       });
       const data = (await response.json().catch(() => null)) as {
         release?: Release;
+        notice?: string;
+        warning?: string;
         error?: string;
       } | null;
       if (response.ok && data?.release) {
         onSaved(data.release);
+        setNotice(data.notice ?? null);
+        setError(data.warning ?? null);
       } else {
         setError(data?.error ?? "Could not save the release.");
       }
@@ -137,6 +143,12 @@ function ReleaseEditor({
       {error && (
         <p className={styles.error} role="alert">
           {error}
+        </p>
+      )}
+
+      {notice && (
+        <p className={styles.notice} role="status">
+          {notice}
         </p>
       )}
 

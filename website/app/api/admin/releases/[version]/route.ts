@@ -45,5 +45,6 @@ export async function PATCH(
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 422 });
   }
-  return NextResponse.json({ release: result.release });
+  const { ok: _, ...saved } = result;
+  return NextResponse.json(saved);
 }

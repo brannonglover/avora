@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   compareVersions,
   releaseDownloadUrl,
@@ -10,6 +12,8 @@ import {
 // Only the local admin uses this. Vercel's filesystem is read-only, and the
 // site itself reads releases.json at build time through lib/release.ts.
 const RELEASES_PATH = path.join(process.cwd(), "releases.json");
+
+const run = promisify(execFile);
 
 export async function readReleases(): Promise<Release[]> {
   const releases = JSON.parse(
@@ -33,6 +37,30 @@ async function publishBlocker(release: Release): Promise<string | null> {
     return `The uploaded DMG is ${size} bytes, not this build's ${release.sizeBytes}.`;
   }
   return null;
+}
+
+// Pushing main deploys the site, and the deploy is what changes the feed. Only
+// this file is committed, whatever else is in the working tree or the index.
+async function shipReleases(message: string) {
+  try {
+    await run("git", ["commit", "-m", message, "--", "releases.json"]);
+    await run("git", ["push"]);
+    return {
+      notice:
+        "Pushed. The site deploys in about a minute, and updates go out from there.",
+    };
+  } catch (error) {
+    const detail = (error as { stderr?: string }).stderr?.trim();
+    return {
+      warning: `Saved here, but not sent: ${detail || "git failed"}. Commit and push releases.json to send it.`,
+    };
+  }
+}
+
+function shipMessage(before: Release, after: Release): string {
+  if (before.status !== "published") return `Publish Avora ${after.version}.`;
+  if (after.status !== "published") return `Pull Avora ${after.version}.`;
+  return `Update the notes for Avora ${after.version}.`;
 }
 
 type ReleaseEdit = {
@@ -66,6 +94,12 @@ export async function updateRelease(version: string, edit: ReleaseEdit) {
     return { ok: false as const, error: "The site needs a published release." };
   }
 
-  await writeFile(RELEASES_PATH, `${JSON.stringify(updated, null, 2)}\n`);
-  return { ok: true as const, release: next };
+  const text = `${JSON.stringify(updated, null, 2)}\n`;
+  const changed = text !== (await readFile(RELEASES_PATH, "utf8"));
+  await writeFile(RELEASES_PATH, text);
+
+  const live = release.status === "published" || next.status === "published";
+  const shipped =
+    live && changed ? await shipReleases(shipMessage(release, next)) : {};
+  return { ok: true as const, release: next, ...shipped };
 }

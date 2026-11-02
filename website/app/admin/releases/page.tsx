@@ -27,9 +27,9 @@ export default function AdminReleasesPage() {
       <header className={styles.header}>
         <h1>Releases</h1>
         <p>
-          Edit the notes for a build, then publish it. Publishing saves{" "}
-          <code>website/releases.json</code>. Commit and deploy that file to send
-          the update to everyone.
+          Edit the notes for a build, then publish it. Publishing commits and
+          pushes <code>website/releases.json</code>, and that deploy sends the
+          update to everyone.
         </p>
       </header>
       <Suspense fallback={<p className={styles.empty}>Loading releases…</p>}>

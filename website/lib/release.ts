@@ -15,6 +15,9 @@ export type Release = {
   // The DMG's EdDSA signature. Null for builds made without Sparkle, which the
   // update feed has to leave out.
   edSignature: string | null;
+  // The commit it was built from, so a failed release can resume without
+  // rebuilding. Missing from rows older than build-scripts/release.sh.
+  gitSha?: string;
   title: string | null;
   bullets: string[];
   status: ReleaseStatus;

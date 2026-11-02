@@ -143,6 +143,15 @@
   font-size: 14px;
 }
 
+.notice {
+  margin: 16px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgb(124 243 208 / 0.1);
+  color: var(--mint);
+  font-size: 14px;
+}
+
 .field {
   display: block;
   margin-top: 16px;
