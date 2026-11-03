@@ -35,8 +35,23 @@ export function isSecure(url: string | null | undefined): boolean {
   return !!url && url.startsWith('https://');
 }
 
+// Google rewrites the results URL as you refine a search, so q isn't always
+// the first parameter.
+const SEARCH_QUERY_RE = /^https:\/\/www\.google\.com\/search\?(?:[^#]*?&)?q=([^&#]*)/i;
+
+// The terms behind a search results URL, or null for any other page.
+export function searchQueryOf(url: string | null | undefined): string | null {
+  const q = url?.match(SEARCH_QUERY_RE)?.[1];
+  if (q === undefined) return null;
+  try {
+    return decodeURIComponent(q.replace(/\+/g, ' '));
+  } catch {
+    return q;
+  }
+}
+
 export function isSearchUrl(url: string | null | undefined): boolean {
-  return !!url && url.startsWith(SEARCH_URL);
+  return searchQueryOf(url) !== null;
 }
 
 // Plain http to a real host. Local dev servers don't count.
@@ -66,15 +81,14 @@ export function splitHost(host: string): { sub: string; domain: string } {
 // query rather than a google.com URL.
 export function displayText(url: string | null | undefined): string {
   if (!url) return '';
-  if (isSearchUrl(url)) {
-    const q = url.slice(SEARCH_URL.length).split(/[&#]/)[0];
-    try {
-      return decodeURIComponent(q.replace(/\+/g, ' '));
-    } catch {
-      return q;
-    }
-  }
-  return hostOf(url);
+  return searchQueryOf(url) ?? hostOf(url);
+}
+
+// What the address bar starts with when it's tapped: the search terms on a
+// results page, so they can be refined, otherwise the full URL.
+export function editText(url: string | null | undefined): string {
+  if (!url) return '';
+  return searchQueryOf(url) ?? url;
 }
 
 export function isWebUrl(url: string): boolean {

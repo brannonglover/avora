@@ -5,7 +5,6 @@ import { StatusBar } from 'expo-status-bar';
 import {
   ArrowDown,
   ArrowUp,
-  ArrowUpRight,
   Copy,
   CopyPlus,
   Pin,
@@ -26,11 +25,8 @@ import {
   Keyboard,
   Linking,
   Platform,
-  Pressable,
-  ScrollView,
   Share,
   StyleSheet,
-  Text,
   type TextInputInstance,
   View,
   type ViewInstance,
@@ -44,7 +40,6 @@ import { isShareableUrl } from '../sync/rows';
 
 import { ActionSheet, type SheetAction } from './ActionSheet';
 import { BottomBar } from './BottomBar';
-import { Favicon } from './Favicon';
 import {
   captureJpeg,
   PASSWORD_PROBE,
@@ -52,12 +47,14 @@ import {
   PREVIEW_INTERVAL_MS,
   usePreviewsEnabled,
 } from './previews';
+import { QuickNav } from './QuickNav';
 import { StartPage } from './StartPage';
+import { TabBackdrop } from './TabBackdrop';
 import { TabSwitcher } from './TabSwitcher';
 import { type Tab, useTabs } from './tabs';
-import { colors, radius } from './theme';
+import { colors } from './theme';
 import { Toast, type ToastMessage } from './Toast';
-import { displayText, hostOf, isWebUrl, resolveInput } from './url';
+import { displayText, editText, hostOf, isWebUrl, resolveInput } from './url';
 
 // The most recently used tabs keep their page alive; the rest unload and
 // show their preview until they're selected and load again.
@@ -456,7 +453,7 @@ export function BrowserScreen() {
   // --- Address bar ----------------------------------------------------------
 
   const startEditing = useCallback(() => {
-    setQuery(activeTab.url ?? '');
+    setQuery(editText(activeTab.url));
     setEditing(true);
   }, [activeTab]);
 
@@ -464,7 +461,7 @@ export function BrowserScreen() {
   // at the end, so typing would append to the URL. Select it once the field
   // is actually focused instead.
   const selectAddress = useCallback(() => {
-    const length = activeTab.url?.length ?? 0;
+    const length = editText(activeTab.url).length;
     requestAnimationFrame(() => inputRef.current?.setSelection(0, length));
   }, [activeTab]);
 
@@ -479,24 +476,12 @@ export function BrowserScreen() {
       if (!url) return;
       setEditing(false);
       Keyboard.dismiss();
-      if (url === activeTab.url) webviews.current.get(activeTab.id)?.reload();
+      const unchanged = url === activeTab.url || raw.trim() === editText(activeTab.url);
+      if (unchanged) webviews.current.get(activeTab.id)?.reload();
       else dispatch({ type: 'navigate', id: activeTab.id, url });
     },
     [activeTab, dispatch],
   );
-
-  const matchingTabs = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!activeTab || !q || q === activeTab.url?.toLowerCase()) return [];
-    return tabs
-      .filter(
-        (t) =>
-          t.id !== activeTab.id &&
-          t.url &&
-          (t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)),
-      )
-      .slice(0, 4);
-  }, [query, tabs, activeTab]);
 
   // --- Android back ---------------------------------------------------------
 
@@ -551,6 +536,7 @@ export function BrowserScreen() {
               }}
               onLoadStarted={() => passwordFields.current.set(id, null)}
               onLoaded={() => scheduleCapture(id)}
+              onTerminated={() => webviews.current.get(id)?.reload()}
               onPasswordField={(has) => onPasswordField(id, has)}
             />
           );
@@ -563,36 +549,12 @@ export function BrowserScreen() {
           />
         ) : null}
 
-        {editing ? (
-          <Pressable style={styles.scrim} onPress={cancelEditing}>
-            <ScrollView
-              style={styles.suggestions}
-              contentContainerStyle={styles.suggestionsContent}
-              keyboardShouldPersistTaps="handled"
-            >
-              {matchingTabs.map((tab) => (
-                <Suggestion
-                  key={tab.id}
-                  icon={<Favicon url={tab.url} size={20} />}
-                  title={tab.title || hostOf(tab.url)}
-                  detail={`Switch to tab · ${hostOf(tab.url)}`}
-                  trailing={<ArrowUpRight size={16} color={colors.textTertiary} />}
-                  onPress={() => {
-                    setEditing(false);
-                    Keyboard.dismiss();
-                    leave();
-                    dispatch({ type: 'activate', id: tab.id });
-                  }}
-                />
-              ))}
-            </ScrollView>
-          </Pressable>
-        ) : null}
       </View>
 
-      <View style={[styles.bottom, { paddingBottom: keyboardHeight || insets.bottom }]}>
+      {/* While the overlay is up the keyboard belongs to it, so the bar stays put
+          underneath; otherwise it rides up with the keyboard for page inputs. */}
+      <View style={[styles.bottom, { paddingBottom: (!editing && keyboardHeight) || insets.bottom }]}>
         <BottomBar
-          ref={inputRef}
           tab={activeTab}
           tabCount={tabs.length}
           hasPrevTab={tabs[0]?.id !== activeTab.id}
@@ -600,13 +562,7 @@ export function BrowserScreen() {
           loading={nav.loading}
           canGoBack={nav.canGoBack}
           canGoForward={nav.canGoForward}
-          editing={editing}
-          query={query}
-          onQueryChange={setQuery}
           onStartEditing={startEditing}
-          onInputFocus={selectAddress}
-          onCancelEditing={cancelEditing}
-          onSubmit={go}
           onBack={() => webviews.current.get(activeTab.id)?.goBack()}
           onForward={() => webviews.current.get(activeTab.id)?.goForward()}
           onReloadOrStop={() => {
@@ -625,6 +581,27 @@ export function BrowserScreen() {
           onSwipeTab={swipeTab}
         />
       </View>
+
+      {editing ? (
+        <QuickNav
+          inputRef={inputRef}
+          currentTab={activeTab}
+          tabs={tabs}
+          query={query}
+          keyboardHeight={keyboardHeight}
+          onQueryChange={setQuery}
+          onInputFocus={selectAddress}
+          onSubmit={go}
+          onSelectTab={(tab) => {
+            setEditing(false);
+            Keyboard.dismiss();
+            if (tab.id === activeTab.id) return;
+            leave();
+            dispatch({ type: 'activate', id: tab.id });
+          }}
+          onCancel={cancelEditing}
+        />
+      ) : null}
 
       <TabSwitcher
         visible={switcherOpen}
@@ -685,6 +662,9 @@ type TabWebViewProps = {
   onOpenWindow: (url: string) => void;
   onLoadStarted: () => void;
   onLoaded: () => void;
+  // iOS reclaimed the page's content process (usually while the app was in
+  // the background), leaving the WebView blank.
+  onTerminated: () => void;
   onPasswordField: (has: boolean) => void;
 };
 
@@ -702,6 +682,7 @@ function TabWebView({
   onOpenWindow,
   onLoadStarted,
   onLoaded,
+  onTerminated,
   onPasswordField,
 }: TabWebViewProps) {
   // A WebView that was unloaded and mounted again resumes from where the tab
@@ -710,7 +691,8 @@ function TabWebView({
     requestId: tab.requestId,
     uri: tab.url ?? tab.requestedUrl ?? 'about:blank',
   }));
-  // The preview covers only the first load after mounting.
+  // The preview (or, without one, the backdrop) covers only the first load
+  // after mounting.
   const [painted, setPainted] = useState(false);
   const uri = tab.requestId === mount.requestId ? mount.uri : tab.requestedUrl ?? 'about:blank';
   const source = useMemo(() => ({ uri }), [uri]);
@@ -758,6 +740,10 @@ function TabWebView({
           if (e.url && e.url !== 'about:blank') onRecord(e.url, e.title && e.title !== e.url ? e.title : '');
         }}
         onOpenWindow={({ nativeEvent }) => onOpenWindow(nativeEvent.targetUrl)}
+        onContentProcessDidTerminate={() => {
+          setPainted(false);
+          onTerminated();
+        }}
         onShouldStartLoadWithRequest={(req) => {
           if (isWebUrl(req.url)) return true;
           // mailto:, tel:, app links and the like belong to the OS.
@@ -768,36 +754,8 @@ function TabWebView({
       {preview && !painted ? (
         <Image source={preview} style={styles.preview} resizeMode="cover" pointerEvents="none" />
       ) : null}
+      <TabBackdrop url={tab.url ?? tab.requestedUrl} title={tab.title} visible={!preview && !painted} />
     </View>
-  );
-}
-
-function Suggestion({
-  icon,
-  title,
-  detail,
-  trailing,
-  onPress,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  detail: string;
-  trailing?: React.ReactNode;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.suggestion, pressed && styles.suggestionPressed]}>
-      <View style={styles.suggestionIcon}>{icon}</View>
-      <View style={styles.suggestionText}>
-        <Text style={styles.suggestionTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        <Text style={styles.suggestionDetail} numberOfLines={1}>
-          {detail}
-        </Text>
-      </View>
-      {trailing}
-    </Pressable>
   );
 }
 
@@ -823,25 +781,4 @@ const styles = StyleSheet.create({
   hidden: { display: 'none' },
   preview: { ...StyleSheet.absoluteFill, backgroundColor: colors.background },
   bottom: { backgroundColor: colors.surface },
-  scrim: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(16,20,24,0.82)',
-    justifyContent: 'flex-end',
-  },
-  suggestions: { flexGrow: 0 },
-  suggestionsContent: { padding: 12, gap: 6 },
-  suggestion: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderRadius: radius.row,
-    backgroundColor: colors.raised,
-  },
-  suggestionPressed: { backgroundColor: colors.border },
-  suggestionIcon: { width: 22, alignItems: 'center' },
-  suggestionText: { flex: 1 },
-  suggestionTitle: { color: colors.text, fontSize: 15 },
-  suggestionDetail: { color: colors.textTertiary, fontSize: 12, marginTop: 1 },
 });

@@ -8,20 +8,17 @@ import {
   Search,
   X,
 } from 'lucide-react-native';
-import { forwardRef, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   PanResponder,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
-  type TextInputInstance,
   View,
 } from 'react-native';
 
-import { aurora, AuroraProgress, AuroraRing } from './Aurora';
+import { AuroraProgress } from './Aurora';
 import { Favicon } from './Favicon';
 import type { Tab } from './tabs';
 import { colors, radius } from './theme';
@@ -38,13 +35,7 @@ type Props = {
   canGoBack: boolean;
   canGoForward: boolean;
 
-  editing: boolean;
-  query: string;
-  onQueryChange: (q: string) => void;
   onStartEditing: () => void;
-  onInputFocus: () => void;
-  onCancelEditing: () => void;
-  onSubmit: (text: string) => void;
 
   onBack: () => void;
   onForward: () => void;
@@ -57,22 +48,8 @@ type Props = {
   onSwipeTab: (direction: -1 | 1) => void;
 };
 
-export const BottomBar = forwardRef<TextInputInstance, Props>(function BottomBar(props, inputRef) {
-  const {
-    tab,
-    tabCount,
-    progress,
-    loading,
-    canGoBack,
-    canGoForward,
-    editing,
-    query,
-    onQueryChange,
-    onStartEditing,
-    onInputFocus,
-    onCancelEditing,
-    onSubmit,
-  } = props;
+export function BottomBar(props: Props) {
+  const { tab, tabCount, progress, loading, canGoBack, canGoForward, onStartEditing } = props;
 
   const [pillX] = useState(() => new Animated.Value(0));
   // The responder is created once; read the latest props through a ref.
@@ -87,9 +64,8 @@ export const BottomBar = forwardRef<TextInputInstance, Props>(function BottomBar
       // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, g) =>
-          !latest.current.editing &&
-          ((Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5) ||
-            (g.dy < -16 && Math.abs(g.dy) > Math.abs(g.dx) * 1.5)),
+          (Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5) ||
+          (g.dy < -16 && Math.abs(g.dy) > Math.abs(g.dx) * 1.5),
         onPanResponderMove: (_, g) => {
           if (Math.abs(g.dy) > Math.abs(g.dx)) return;
           // Resist dragging toward a tab that doesn't exist.
@@ -138,123 +114,83 @@ export const BottomBar = forwardRef<TextInputInstance, Props>(function BottomBar
   return (
     <View style={styles.container}>
       <View style={styles.addressRow}>
-        {editing ? (
-          <View style={[styles.pill, styles.pillEditing]}>
-            <AuroraRing radius={radius.row} />
-            <Search size={16} color={colors.textTertiary} />
-            <TextInput
-              ref={inputRef}
-              style={styles.input}
-              value={query}
-              onChangeText={onQueryChange}
-              onSubmitEditing={(e) => onSubmit(e.nativeEvent.text)}
-              autoFocus
-              onFocus={onInputFocus}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-              spellCheck={false}
-              keyboardType={Platform.OS === 'ios' ? 'web-search' : 'default'}
-              keyboardAppearance="dark"
-              returnKeyType="go"
-              placeholder="Search or enter address"
-              placeholderTextColor={colors.textTertiary}
-              selectionColor={colors.accent}
-            />
-            {query ? (
-              <Pressable hitSlop={10} onPress={() => onQueryChange('')}>
-                <View style={styles.clear}>
-                  <X size={12} color={colors.background} strokeWidth={3} />
-                </View>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : (
-          <Animated.View
-            style={[styles.pillWrap, { transform: [{ translateX: pillX }] }]}
-            {...pan.panHandlers}
+        <Animated.View
+          style={[styles.pillWrap, { transform: [{ translateX: pillX }] }]}
+          {...pan.panHandlers}
+        >
+          <Pressable
+            style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
+            onPress={onStartEditing}
+            accessibilityRole="search"
+            accessibilityLabel={label ? `Address, ${label}` : 'Search or enter address'}
+            accessibilityHint="Swipe left or right to switch tabs"
           >
-            <Pressable
-              style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
-              onPress={onStartEditing}
-              accessibilityRole="search"
-              accessibilityLabel={label ? `Address, ${label}` : 'Search or enter address'}
-              accessibilityHint="Swipe left or right to switch tabs"
-            >
-              <AuroraProgress loading={loading} progress={progress} radius={radius.row} />
-              <View style={styles.pillSide}>
-                {!tab.url ? (
-                  <Search size={15} color={colors.textTertiary} />
-                ) : isInsecure(tab.url) ? (
-                  <LockOpen size={13} color={colors.danger} />
-                ) : null}
-              </View>
-              <View style={styles.pillCenter}>
-                {isSearch ? (
-                  <Search size={14} color={colors.textSecondary} />
-                ) : tab.url ? (
-                  <Favicon url={tab.url} size={16} />
-                ) : null}
-                <Text style={[styles.pillText, !label && styles.placeholder]} numberOfLines={1}>
-                  {host ? (
-                    <>
-                      <Text style={styles.subdomain}>{host.sub}</Text>
-                      {host.domain}
-                    </>
+            <AuroraProgress loading={loading} progress={progress} radius={radius.row} />
+            <View style={styles.pillSide}>
+              {!tab.url ? (
+                <Search size={15} color={colors.textTertiary} />
+              ) : isInsecure(tab.url) ? (
+                <LockOpen size={13} color={colors.danger} />
+              ) : null}
+            </View>
+            <View style={styles.pillCenter}>
+              {isSearch ? (
+                <Search size={14} color={colors.textSecondary} />
+              ) : tab.url ? (
+                <Favicon url={tab.url} size={16} />
+              ) : null}
+              <Text style={[styles.pillText, !label && styles.placeholder]} numberOfLines={1}>
+                {host ? (
+                  <>
+                    <Text style={styles.subdomain}>{host.sub}</Text>
+                    {host.domain}
+                  </>
+                ) : (
+                  label || 'Search or enter address'
+                )}
+              </Text>
+            </View>
+            <View style={styles.pillSide}>
+              {tab.url ? (
+                <Pressable hitSlop={12} onPress={props.onReloadOrStop}>
+                  {loading ? (
+                    <X size={16} color={colors.textSecondary} />
                   ) : (
-                    label || 'Search or enter address'
+                    <RotateCw size={15} color={colors.textSecondary} />
                   )}
-                </Text>
-              </View>
-              <View style={styles.pillSide}>
-                {tab.url ? (
-                  <Pressable hitSlop={12} onPress={props.onReloadOrStop}>
-                    {loading ? (
-                      <X size={16} color={colors.textSecondary} />
-                    ) : (
-                      <RotateCw size={15} color={colors.textSecondary} />
-                    )}
-                  </Pressable>
-                ) : null}
-              </View>
-            </Pressable>
-          </Animated.View>
-        )}
-        {editing ? (
-          <Pressable hitSlop={8} onPress={onCancelEditing} style={styles.cancel}>
-            <Text style={styles.cancelText}>Cancel</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </Pressable>
-        ) : null}
+        </Animated.View>
       </View>
 
-      {!editing ? (
-        <View style={styles.toolbar}>
-          <ToolButton label="Back" disabled={!canGoBack} onPress={props.onBack}>
-            <ChevronLeft size={26} color={canGoBack ? colors.text : colors.textTertiary} />
-          </ToolButton>
-          <ToolButton label="Forward" disabled={!canGoForward} onPress={props.onForward}>
-            <ChevronRight size={26} color={canGoForward ? colors.text : colors.textTertiary} />
-          </ToolButton>
-          <ToolButton label="New tab" onPress={props.onNewTab}>
-            <Plus size={24} color={colors.text} />
-          </ToolButton>
-          <ToolButton
-            label={`Show tabs, ${tabCount} open`}
-            onPress={props.onShowTabs}
-            onLongPress={props.onTabsLongPress}
-          >
-            <View style={styles.tabCount}>
-              <Text style={styles.tabCountText}>{tabCount > 99 ? ':D' : tabCount}</Text>
-            </View>
-          </ToolButton>
-          <ToolButton label="More" onPress={props.onMenu}>
-            <Ellipsis size={24} color={colors.text} />
-          </ToolButton>
-        </View>
-      ) : null}
+      <View style={styles.toolbar}>
+        <ToolButton label="Back" disabled={!canGoBack} onPress={props.onBack}>
+          <ChevronLeft size={26} color={canGoBack ? colors.text : colors.textTertiary} />
+        </ToolButton>
+        <ToolButton label="Forward" disabled={!canGoForward} onPress={props.onForward}>
+          <ChevronRight size={26} color={canGoForward ? colors.text : colors.textTertiary} />
+        </ToolButton>
+        <ToolButton label="New tab" onPress={props.onNewTab}>
+          <Plus size={24} color={colors.text} />
+        </ToolButton>
+        <ToolButton
+          label={`Show tabs, ${tabCount} open`}
+          onPress={props.onShowTabs}
+          onLongPress={props.onTabsLongPress}
+        >
+          <View style={styles.tabCount}>
+            <Text style={styles.tabCountText}>{tabCount > 99 ? ':D' : tabCount}</Text>
+          </View>
+        </ToolButton>
+        <ToolButton label="More" onPress={props.onMenu}>
+          <Ellipsis size={24} color={colors.text} />
+        </ToolButton>
+      </View>
     </View>
   );
-});
+}
 
 function ToolButton({
   label,
@@ -308,17 +244,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   pillPressed: { backgroundColor: colors.border },
-  pillEditing: {
-    flex: 1,
-    gap: 8,
-    borderColor: 'transparent',
-    // A faint aurora glow around the field while typing (iOS only; Android
-    // shadows can't be tinted).
-    shadowColor: aurora.start,
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 0 },
-  },
   pillSide: { width: 22, alignItems: 'center' },
   pillCenter: {
     flex: 1,
@@ -336,17 +261,6 @@ const styles = StyleSheet.create({
   },
   subdomain: { color: colors.textTertiary, fontWeight: '400' },
   placeholder: { color: colors.textTertiary, fontWeight: '400' },
-  input: { flex: 1, color: colors.text, fontSize: 16, paddingVertical: 0 },
-  clear: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.textTertiary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancel: { paddingVertical: 8 },
-  cancelText: { color: colors.accent, fontSize: 16 },
   toolbar: {
     flexDirection: 'row',
     justifyContent: 'space-around',
