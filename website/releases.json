@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.5.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-0.5.0-arm64.dmg",
+    "sizeBytes": 190394147,
+    "sha256": "9c14dbc4b9dadbeaf039aff3a27f914daa527db129c109ef7b1bf81e37f8fb16",
+    "notarized": true,
+    "edSignature": "f0mbCD/5jtKzLH9smNWRFuf5Bgr8lZwksQ+HEXTlH5ZEOvdGTREvkayuCRGGJfvpEGYuV4jJgXta6ZDUFdqCBA==",
+    "gitSha": "a2da7b389a87c6942a3b620b54a6424e4587bb4e",
+    "title": null,
+    "bullets": [
+      "Keep the side nav still when a Live Folder pull request opens.",
+      "Mark a Live Folder pull request's tab before it joins the strip."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-03T17:29:03.913Z",
+    "publishedAt": "2026-11-03T17:30:31.608Z"
+  },
+  {
     "version": "0.4.1",
     "chromium": "155.0.8038.0",
     "file": "Avora-0.4.1-arm64.dmg",
