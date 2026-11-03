@@ -12,6 +12,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -1030,13 +1031,22 @@ void AvoraLiveFoldersView::OpenItem(const std::string& folder_id,
     }
   }
 
-  NavigateParams params(browser_, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  Navigate(&params);
-  if (content::WebContents* contents = params.navigated_or_inserted_contents) {
-    SetTabSpaceId(contents, space_id);
-    MarkLiveFolderTab(contents, key);
-  }
+  // Marked before it joins the strip, so it is hidden from the moment its row
+  // in the daily list is created.  Marked after, it shows for as long as
+  // opening it takes, and the side nav scrolls to it as to any new tab.
+  std::unique_ptr<content::WebContents> contents =
+      content::WebContents::Create(content::WebContents::CreateParams(
+          browser_->GetProfile(),
+          GetSiteInstanceForNewAvoraTab(browser_, url)));
+  content::WebContents* const tab = contents.get();
+  SetTabSpaceId(tab, space_id);
+  MarkLiveFolderTab(tab, key);
+  tab_strip_model_->AddWebContents(std::move(contents), -1,
+                                   ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                                   AddTabTypes::ADD_ACTIVE);
+  tab->GetController().LoadURL(url, content::Referrer(),
+                               ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                               std::string());
 }
 
 void AvoraLiveFoldersView::CloseItemTab(const std::string& folder_id,
