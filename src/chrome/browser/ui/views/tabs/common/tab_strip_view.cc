@@ -29,6 +29,8 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.h"
 #include "chrome/browser/ui/views/avora/avora_favorites_view.h"
 #include "chrome/browser/ui/views/avora/avora_imported_section_view.h"
+#include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_live_folder_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_label_view.h"
@@ -42,6 +44,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_group.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/views/background.h"
@@ -200,6 +203,17 @@ class AvoraSideNavContentsLayout : public views::LayoutManagerBase {
  private:
   raw_ptr<TabStripView> strip_;
 };
+
+// Whether |tab| is one the side nav shows somewhere other than the tab list,
+// such as a Live Folder row or a link preview's card.  AvoraSpaceTabFilter
+// hides such a tab's row, but only once it hears of the tab, which is after
+// this view has: asking whether the row is visible is not enough, because
+// when the tab has just been added it still is.
+bool IsShownOutsideTabList(const tabs::TabInterface* tab) {
+  content::WebContents* const contents = tab ? tab->GetContents() : nullptr;
+  return contents && (avora::IsLiveFolderTab(contents) ||
+                      avora::IsLinkPreviewTab(contents));
+}
 
 }  // namespace
 
@@ -504,6 +518,11 @@ void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
     return;
   }
 
+  // There is no row in the list to bring into view.
+  if (IsShownOutsideTabList(active_tab)) {
+    return;
+  }
+
   // Expand group if the activated tab is within a collapsed group unless
   // we are header dragging the collapsed group.
   if (active_tab->GetGroup().has_value()) {
@@ -552,6 +571,14 @@ void TabStripView::ScrollToFitTabs(const tabs::TabInterface* active_tab,
 
   if (!active_view || !new_view) {
     return;
+  }
+
+  // Only the tabs that have a row in the list to bring into view.
+  if (IsShownOutsideTabList(active_tab)) {
+    active_view = nullptr;
+  }
+  if (IsShownOutsideTabList(new_tab)) {
+    new_view = nullptr;
   }
 
   ScrollToFitViews(active_view, new_view);

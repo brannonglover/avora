@@ -3,11 +3,13 @@
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "cc/paint/paint_flags.h"
@@ -97,6 +99,18 @@ GURL UrlForMatching(content::WebContents* contents) {
   GURL::Replacements strip_ref;
   strip_ref.ClearRef();
   return url.ReplaceComponents(strip_ref);
+}
+
+// Whether |url| is |item_url| or one of its own pages, such as a pull
+// request's Files changed or Commits tab.
+bool IsWithinItem(const GURL& url, const GURL& item_url) {
+  if (!url::Origin::Create(item_url).IsSameOriginWith(url)) {
+    return false;
+  }
+  const std::string_view path = url.path();
+  const std::string_view item_path = item_url.path();
+  return path == item_path ||
+         base::StartsWith(path, base::StrCat({item_path, "/"}));
 }
 
 // Whether |tab| is free to become a row's tab.  Everything excluded here is
@@ -1005,11 +1019,12 @@ void AvoraLiveFoldersView::OpenItem(const std::string& folder_id,
 
   // The row's own tab.  Clicking the selected row after browsing away from
   // the pull request takes the tab back to it, as a pinned row's return
-  // control does; Back still has the page that was left.
+  // control does; Back still has the page that was left.  The pull request's
+  // own pages -- its files, its commits -- are not away.
   if (const int index = FindItemTab(key); index != TabStripModel::kNoTab) {
     content::WebContents* contents = tab_strip_model_->GetWebContentsAt(index);
     if (index == tab_strip_model_->active_index() &&
-        UrlForMatching(contents) != url) {
+        !IsWithinItem(UrlForMatching(contents), url)) {
       contents->GetController().LoadURL(url, content::Referrer(),
                                         ui::PAGE_TRANSITION_AUTO_BOOKMARK,
                                         std::string());
