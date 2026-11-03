@@ -35,6 +35,9 @@ module.exports = {
       bundleIdentifier: 'com.avora.browser',
       buildNumber,
       supportsTablet: true,
+      config: {
+        usesNonExemptEncryption: false,
+      },
       infoPlist: {
         NSAppTransportSecurity: {
           NSAllowsArbitraryLoads: true,
