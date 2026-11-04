@@ -1,5 +1,25 @@
 [
   {
+    "version": "1.1.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.1.0-arm64.dmg",
+    "sizeBytes": 190700621,
+    "sha256": "3de1e6f7e165c8d58974084aca3ee0a9c300e8aa531587fbe225ae53fc350226",
+    "notarized": true,
+    "edSignature": "jq/YC1m7ebAvoGs04DJ7TJ0ZLtoyqTu7rpyFp9KBDN/we846hWnncraTco065ArB3H0wO7mAzRcFqLPdnSzHDg==",
+    "gitSha": "d2cbdb53eac57b47a9be3ffb7c10eb433f8c3fae",
+    "title": null,
+    "bullets": [
+      "Let each Space wear its own theme, picked in a new Theme Studio.",
+      "Brand Settings as Avora and drop its Google-only sections.",
+      "Drop a site's favicon from the address bar once the text stops naming it.",
+      "Make the update button pulse so a waiting update gets noticed."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-04T22:41:45.258Z",
+    "publishedAt": "2026-11-04T22:42:25.185Z"
+  },
+  {
     "version": "0.5.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-0.5.0-arm64.dmg",
