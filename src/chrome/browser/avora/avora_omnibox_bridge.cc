@@ -80,7 +80,11 @@ void OmniboxBridge::OnResultChanged(AutocompleteController* controller,
   if (const AutocompleteMatch* default_match = result.default_match()) {
     if (!default_match->inline_autocompletion.empty()) {
       results.inline_completion = default_match->inline_autocompletion;
-      results.inline_completion_url = default_match->destination_url;
+      // A completed search goes to the search engine, not a site, so the
+      // field keeps the search glyph rather than the engine's favicon.
+      if (!AutocompleteMatch::IsSearchType(default_match->type)) {
+        results.inline_completion_url = default_match->destination_url;
+      }
     }
   }
 

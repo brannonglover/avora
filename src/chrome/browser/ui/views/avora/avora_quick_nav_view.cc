@@ -375,15 +375,11 @@ void AvoraQuickNavView::ShowOverlay(const std::u16string& url_text) {
 
   // Reset inline icon to search icon; it will be replaced by a favicon
   // when the user selects a row from the list.
-  if (input_favicon_) {
-    input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-        vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-    input_favicon_->SetVisible(true);
-    // Only load a page favicon for CMD+L (url_text is pre-filled).
-    // CMD+T should keep the search icon in the empty input field.
-    if (!url_text.empty() && !current_page_url_.empty()) {
-      LoadInputFavicon(current_page_url_);
-    }
+  ResetInputIcon();
+  // Only load a page favicon for CMD+L (url_text is pre-filled).
+  // CMD+T should keep the search icon in the empty input field.
+  if (!url_text.empty() && !current_page_url_.empty()) {
+    LoadInputFavicon(current_page_url_);
   }
 
   user_text_ = url_text;
@@ -420,11 +416,7 @@ void AvoraQuickNavView::Hide() {
   if (input_field_) {
     input_field_->SetText(std::u16string());
   }
-  if (input_favicon_) {
-    input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-        vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
-    input_favicon_->SetVisible(true);
-  }
+  ResetInputIcon();
   cancelable_task_tracker_.TryCancelAll();
 }
 
@@ -723,6 +715,7 @@ void AvoraQuickNavView::UpdateSelection(int new_index) {
           gfx::Size(kInputFaviconSize, kInputFaviconSize));
       input_favicon_->SetImage(ui::ImageModel::FromImageSkia(resized));
       input_favicon_->SetVisible(true);
+      input_favicon_url_ = row_values_[selected_index_];
     } else {
       ResetInputIcon();
     }
@@ -834,9 +827,13 @@ void AvoraQuickNavView::LoadFavicon(views::View* row_view,
 }
 
 void AvoraQuickNavView::LoadInputFavicon(const std::string& url) {
-  if (!browser_ || !input_favicon_) {
+  if (!browser_ || !input_favicon_ || url == input_favicon_url_) {
     return;
   }
+  // Another site's icon must not linger while this one loads, or for good if
+  // this one has none.
+  ResetInputIcon();
+  input_favicon_url_ = url;
   favicon::FaviconService* favicon_service =
       FaviconServiceFactory::GetForProfile(
           browser_->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
@@ -847,9 +844,10 @@ void AvoraQuickNavView::LoadInputFavicon(const std::string& url) {
   favicon_service->GetFaviconImageForPageURL(
       GURL(url),
       base::BindOnce(
-          [](base::WeakPtr<AvoraQuickNavView> view,
+          [](base::WeakPtr<AvoraQuickNavView> view, const std::string& url,
              const favicon_base::FaviconImageResult& result) {
-            if (!view || !view->input_favicon_) {
+            if (!view || !view->input_favicon_ ||
+                view->input_favicon_url_ != url) {
               return;
             }
             if (!result.image.IsEmpty()) {
@@ -863,7 +861,7 @@ void AvoraQuickNavView::LoadInputFavicon(const std::string& url) {
               view->input_favicon_->SetVisible(true);
             }
           },
-          weak_factory_.GetWeakPtr()),
+          weak_factory_.GetWeakPtr(), url),
       &cancelable_task_tracker_);
 }
 
@@ -955,13 +953,15 @@ void AvoraQuickNavView::ApplyInlineCompletion(const std::u16string& user_text,
 
   if (completion.empty()) {
     // Whatever was completed no longer applies.  Take it back out, leaving
-    // exactly the characters the user typed.
+    // exactly the characters the user typed.  The icon goes back to the
+    // search glyph even when the user has already typed over the completion
+    // themselves, since the field no longer names that site.
     if (input_field_->GetText() != user_text) {
       updating_from_selection_ = true;
       input_field_->SetText(user_text);
       updating_from_selection_ = false;
-      ResetInputIcon();
     }
+    ResetInputIcon();
     return;
   }
 
@@ -979,6 +979,8 @@ void AvoraQuickNavView::ApplyInlineCompletion(const std::u16string& user_text,
   // Show the completed site's favicon for as long as its name is in the field.
   if (completion_url.is_valid()) {
     LoadInputFavicon(completion_url.spec());
+  } else {
+    ResetInputIcon();
   }
 }
 
@@ -1003,6 +1005,7 @@ bool AvoraQuickNavView::CanTypeAhead(const std::u16string& user_text) const {
 }
 
 void AvoraQuickNavView::ResetInputIcon() {
+  input_favicon_url_.clear();
   if (!input_favicon_) {
     return;
   }

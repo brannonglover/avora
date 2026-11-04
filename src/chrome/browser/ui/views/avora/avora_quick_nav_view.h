@@ -173,6 +173,11 @@ class AvoraQuickNavView : public views::View,
   raw_ptr<views::ImageView> input_favicon_ = nullptr;
   raw_ptr<views::Textfield> input_field_ = nullptr;
 
+  // The page whose favicon the inline icon shows or is fetching; empty while
+  // it shows the search glyph.  A fetch that lands after this has moved on is
+  // dropped, so a site's icon never sits beside text that is no longer it.
+  std::string input_favicon_url_;
+
   // The container holding the history list.
   raw_ptr<views::View> grid_container_ = nullptr;
 
