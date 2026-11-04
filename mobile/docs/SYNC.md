@@ -63,10 +63,40 @@ read or written; it stays only for app builds older than this document.
 | --- | --- |
 | `id` | UUID. The desktop keeps its local Space id. |
 | `name`, `icon`, `color` | `icon` is a Lucide name (`briefcase`), `color` is `#RRGGBB`. |
+| `theme` | The Space's theme as JSON text (see *Space themes*), or `''` for the default look. |
 | `position` | Fractional index (below). Spaces are shown in `position` order. |
 | `updated_at`, `updated_by`, `deleted_at` | See *Writing*. |
 
 A Space's cookie jar and logins belong to each device and are not synced.
+
+#### Space themes
+
+A theme tints a Space's chrome. `theme` holds it as compact JSON:
+
+```json
+{"colors":["#8C7CFF","#FF7FA8"],"mode":"dark","mood":"dusk","v":1}
+```
+
+- `colors`: one or two `#RRGGBB` colours, as picked. One tints the chrome
+  evenly; two run it top to bottom as a gradient.
+- `mode`: `"dark"` or `"light"`.
+- `mood`: the preset the theme started from (`dusk`, `tide`, `ember`,
+  `arcade`, `graphite`, `matcha`, `paper`, `blossom`), or absent. Only the
+  theme editor reads it.
+- `v`: `1`. Readers take the fields they understand and ignore the rest; a
+  change that alters what `colors` or `mode` mean must rename them.
+
+Anything unparseable, a `v` below 1, or a bad colour counts as no theme.
+Writers send keys in sorted order with no spaces, as above, so equal themes
+are equal strings. The colours are what the user picked, not what the chrome
+is painted with: each device derives its own shades from them (the desktop's
+rules are `PaletteForSpaceTheme` in `avora_space_theme.cc`), keeping text at
+7:1 contrast against the background.
+
+Setting a theme also sets the Space's `color` to the theme's first colour, in
+the same write. A theme is sent when the user closes the theme editor, not
+while they drag. A row without the `theme` key (a build from before themes, or
+an older server) says nothing about the theme; don't clear it.
 
 ### `public.items`
 
