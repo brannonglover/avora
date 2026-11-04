@@ -17,6 +17,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/avora/avora_downloads_panel_view.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkPath.h"
@@ -46,9 +47,11 @@ constexpr int kGlyphSize = 16;
 constexpr int kActiveGlyphSize = 13;
 constexpr int kCornerRadius = 8;
 
-constexpr SkColor kHoverBg = SkColorSetARGB(0x14, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kGlyphColor = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
-constexpr SkColor kRingTrack = SkColorSetARGB(0x33, 0xED, 0xF2, 0xF5);
+// The hover is the window palette's wash at this alpha; the idle glyph and the
+// ring's track are its text at these.
+constexpr SkAlpha kHoverAlpha = 0x14;
+constexpr SkAlpha kGlyphAlpha = 0xB0;
+constexpr SkAlpha kRingTrackAlpha = 0x33;
 constexpr SkColor kRingProgress = SkColorSetRGB(0x6E, 0xA8, 0xFE);
 
 constexpr float kRingStrokeWidth = 2.0f;
@@ -252,9 +255,12 @@ DownloadsButton::~DownloadsButton() {
 }
 
 void DownloadsButton::PaintButtonContents(gfx::Canvas* canvas) {
+  const avora::SpaceThemePalette& palette =
+      avora::WindowTheme::PaletteFor(this);
   if (GetState() == views::Button::STATE_HOVERED ||
       GetState() == views::Button::STATE_PRESSED) {
-    FillRoundRect(canvas, GetLocalBounds(), kHoverBg, kCornerRadius);
+    FillRoundRect(canvas, GetLocalBounds(),
+                  SkColorSetA(palette.wash, kHoverAlpha), kCornerRadius);
   }
 
   // A chip has just landed: a wash of the progress colour that fades out.
@@ -272,7 +278,8 @@ void DownloadsButton::PaintButtonContents(gfx::Canvas* canvas) {
   if (active) {
     gfx::Rect ring(GetLocalBounds());
     ring.Inset(kRingInset);
-    StrokeArc(canvas, ring, kRingTrack, 360.0f);
+    StrokeArc(canvas, ring, SkColorSetA(palette.text, kRingTrackAlpha),
+              360.0f);
     if (progress_ >= 0.0) {
       StrokeArc(canvas, ring, kRingProgress,
                 static_cast<float>(progress_ * 360.0));
@@ -289,7 +296,8 @@ void DownloadsButton::PaintButtonContents(gfx::Canvas* canvas) {
       gfx::Size(active ? kActiveGlyphSize : kGlyphSize,
                 active ? kActiveGlyphSize : kGlyphSize));
   PaintLucidePathData(canvas, glyph, kDownloadIconPath,
-                      active ? kRingProgress : kGlyphColor);
+                      active ? kRingProgress
+                             : SkColorSetA(palette.text, kGlyphAlpha));
 }
 
 void DownloadsButton::OnDownloadCreated(content::DownloadManager* manager,

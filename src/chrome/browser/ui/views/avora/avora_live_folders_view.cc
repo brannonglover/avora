@@ -3,6 +3,7 @@
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
 
 #include <algorithm>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/navigation_controller.h"
@@ -66,12 +68,21 @@ constexpr int kMenuFilterDraftsId = 15;
 
 constexpr int kMenuOpenItemId = 20;
 
-// Matches the pinned section so the two read as one list.
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kRowActiveBg = SkColorSetARGB(0x2E, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kLabelColor = SkColorSetARGB(0xE0, 0xED, 0xF2, 0xF5);
-constexpr SkColor kSubtleColor = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
-constexpr SkColor kChevronColor = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
+// Matches the pinned section so the two read as one list: the window
+// palette's wash and text at these alphas.
+constexpr SkAlpha kRowHoverAlpha = 0x1A;
+constexpr SkAlpha kRowActiveAlpha = 0x2E;
+constexpr SkAlpha kLabelAlpha = 0xE0;
+constexpr SkAlpha kSubtleAlpha = 0x99;
+constexpr SkAlpha kChevronAlpha = 0xB0;
+
+SkColor WashColor(const views::View* view, SkAlpha alpha) {
+  return SkColorSetA(avora::WindowTheme::PaletteFor(view).wash, alpha);
+}
+
+SkColor TextColor(const views::View* view, SkAlpha alpha) {
+  return SkColorSetA(avora::WindowTheme::PaletteFor(view).text, alpha);
+}
 
 // GitHub's own state colours, so the dots mean what they do on the site.
 constexpr SkColor kStatusOpenColor = SkColorSetRGB(0x3F, 0xB9, 0x50);
@@ -194,15 +205,16 @@ std::u16string FormatSubtitle(const LiveFolderItem& item) {
 
 // A full-width row of text that behaves like the other sidebar rows.  Used for
 // the sign-in prompt and the empty/error states; |on_click| is null for the
-// purely informational ones, which then render as plain text.
+// purely informational ones, which then render as plain text.  Without a
+// |color| the text is the palette's subtle grey.
 class MessageRow : public views::View {
   METADATA_HEADER(MessageRow, views::View)
 
  public:
   MessageRow(const std::u16string& text,
-             SkColor color,
+             std::optional<SkColor> color,
              base::RepeatingClosure on_click)
-      : on_click_(std::move(on_click)) {
+      : color_(color), on_click_(std::move(on_click)) {
     SetPreferredSize(gfx::Size(0, AvoraLiveFoldersView::kRowHeight));
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
@@ -211,10 +223,9 @@ class MessageRow : public views::View {
                               AvoraLiveFoldersView::kIndent,
                           0, AvoraLiveFoldersView::kHPadding)));
 
-    auto* label = AddChildView(std::make_unique<views::Label>(text));
-    label->SetEnabledColor(color);
-    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    label->SetElideBehavior(gfx::ELIDE_TAIL);
+    label_ = AddChildView(std::make_unique<views::Label>(text));
+    label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    label_->SetElideBehavior(gfx::ELIDE_TAIL);
 
     if (!text.empty()) {
       SetTooltipText(text);
@@ -223,11 +234,16 @@ class MessageRow : public views::View {
 
   ~MessageRow() override = default;
 
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    label_->SetEnabledColor(color_.value_or(TextColor(this, kSubtleAlpha)));
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
     if (hovered_ && on_click_) {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      flags.setColor(kRowHoverBg);
+      flags.setColor(WashColor(this, kRowHoverAlpha));
       canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6.0f, flags);
     }
   }
@@ -251,6 +267,8 @@ class MessageRow : public views::View {
   }
 
  private:
+  const std::optional<SkColor> color_;
+  raw_ptr<views::Label> label_ = nullptr;
   bool hovered_ = false;
   base::RepeatingClosure on_click_;
 };
@@ -304,13 +322,14 @@ class LiveFolderRowCloseButton : public views::Button {
         GetState() == views::Button::STATE_PRESSED) {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      flags.setColor(kRowHoverBg);
+      flags.setColor(WashColor(this, kRowHoverAlpha));
       flags.setStyle(cc::PaintFlags::kFill_Style);
       canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
     }
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kCloseGlyphSize, kCloseGlyphSize));
-    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, kLabelColor);
+    PaintLucidePathData(canvas, glyph, kCloseTabIconPath,
+                        TextColor(this, kLabelAlpha));
   }
 };
 
@@ -348,32 +367,39 @@ LiveFolderHeaderRow::LiveFolderHeaderRow(
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
 
-  auto* label = AddChildView(
+  name_label_ = AddChildView(
       std::make_unique<views::Label>(base::UTF8ToUTF16(name)));
-  label->SetEnabledColor(kLabelColor);
-  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  label->SetElideBehavior(gfx::ELIDE_TAIL);
-  layout->SetFlexForView(label, 1);
+  name_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  name_label_->SetElideBehavior(gfx::ELIDE_TAIL);
+  layout->SetFlexForView(name_label_, 1);
 
   if (syncing_) {
-    auto* status = AddChildView(std::make_unique<views::Label>(u"Updating…"));
-    status->SetEnabledColor(kSubtleColor);
+    status_label_ =
+        AddChildView(std::make_unique<views::Label>(u"Updating…"));
   }
 }
 
 LiveFolderHeaderRow::~LiveFolderHeaderRow() = default;
 
+void LiveFolderHeaderRow::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  name_label_->SetEnabledColor(TextColor(this, kLabelAlpha));
+  if (status_label_) {
+    status_label_->SetEnabledColor(TextColor(this, kSubtleAlpha));
+  }
+}
+
 void LiveFolderHeaderRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (hovered_) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(kRowHoverBg);
+    flags.setColor(WashColor(this, kRowHoverAlpha));
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6.0f, flags);
   }
 
   PaintChevron(canvas, AvoraLiveFoldersView::kHPadding,
                (height() - kChevronSize) / 2, kChevronSize, expanded_,
-               kChevronColor);
+               TextColor(this, kChevronAlpha));
 
   // The badge only earns its space when the rows it refers to are hidden.
   if (!expanded_ && unseen_count_ > 0) {
@@ -458,23 +484,23 @@ LiveFolderItemRow::LiveFolderItemRow(
   text->SetCanProcessEventsWithinSubtree(false);
   layout->SetFlexForView(text, 1);
 
-  auto* title = text->AddChildView(
+  title_label_ = text->AddChildView(
       std::make_unique<views::Label>(base::UTF8ToUTF16(item.title)));
-  title->SetEnabledColor(kLabelColor);
-  title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  title->SetElideBehavior(gfx::ELIDE_TAIL);
+  title_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  title_label_->SetElideBehavior(gfx::ELIDE_TAIL);
   if (unseen_) {
-    title->SetFontList(title->font_list().DeriveWithWeight(
+    title_label_->SetFontList(title_label_->font_list().DeriveWithWeight(
         gfx::Font::Weight::SEMIBOLD));
   }
 
   const std::u16string subtitle = FormatSubtitle(item);
   if (!subtitle.empty()) {
-    auto* repo = text->AddChildView(std::make_unique<views::Label>(subtitle));
-    repo->SetEnabledColor(kSubtleColor);
-    repo->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    repo->SetElideBehavior(gfx::ELIDE_HEAD);
-    repo->SetFontList(repo->font_list().DeriveWithSizeDelta(-1));
+    subtitle_label_ =
+        text->AddChildView(std::make_unique<views::Label>(subtitle));
+    subtitle_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    subtitle_label_->SetElideBehavior(gfx::ELIDE_HEAD);
+    subtitle_label_->SetFontList(
+        subtitle_label_->font_list().DeriveWithSizeDelta(-1));
   }
 
   // Hidden until hovered, as on a pinned row.  A press on it is the button's
@@ -491,6 +517,14 @@ LiveFolderItemRow::LiveFolderItemRow(
 }
 
 LiveFolderItemRow::~LiveFolderItemRow() = default;
+
+void LiveFolderItemRow::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  title_label_->SetEnabledColor(TextColor(this, kLabelAlpha));
+  if (subtitle_label_) {
+    subtitle_label_->SetEnabledColor(TextColor(this, kSubtleAlpha));
+  }
+}
 
 void LiveFolderItemRow::CloseTab() {
   if (on_close_) {
@@ -514,7 +548,8 @@ void LiveFolderItemRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (tab_active_ || hovered_) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(tab_active_ ? kRowActiveBg : kRowHoverBg);
+    flags.setColor(
+        WashColor(this, tab_active_ ? kRowActiveAlpha : kRowHoverAlpha));
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6.0f, flags);
   }
 
@@ -944,7 +979,7 @@ void AvoraLiveFoldersView::Rebuild() {
 }
 
 void AvoraLiveFoldersView::AddMessageRow(const std::u16string& text) {
-  AddChildView(std::make_unique<MessageRow>(text, kSubtleColor,
+  AddChildView(std::make_unique<MessageRow>(text, std::nullopt,
                                             base::RepeatingClosure()));
 }
 

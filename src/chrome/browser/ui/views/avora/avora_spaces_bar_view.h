@@ -123,6 +123,7 @@ class AvoraSpacesBarView : public views::View,
   // Space editor bubble, in its create and edit flavours.
   void ShowCreateSpaceEditor();
   void ShowEditSpaceEditor(const std::string& space_id);
+  void ShowThemeStudio(const std::string& space_id);
   void OnCreateSpaceCommitted(const avora::SpaceEditorFields& fields);
   void OnEditSpaceCommitted(const std::string& space_id,
                             const avora::SpaceEditorFields& fields);

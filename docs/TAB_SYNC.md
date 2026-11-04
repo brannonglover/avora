@@ -29,7 +29,7 @@ answers 401. Under `--use-mock-keychain` it lives in memory only.
 
 ## What is shared
 
-- **Spaces** (`SpaceManager`): name, icon, colour, order. Cookie jars are
+- **Spaces** (`SpaceManager`): name, icon, colour, theme, order. Cookie jars are
   per device.
 - **Favorites and pinned items** (`SidebarItemStore` kFavorite and kPinned).
   Pinned folders aren't shared yet: items sync flat, and an item filed in a

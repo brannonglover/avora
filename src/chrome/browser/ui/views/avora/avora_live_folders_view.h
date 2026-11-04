@@ -57,6 +57,7 @@ class LiveFolderHeaderRow : public views::View {
   ~LiveFolderHeaderRow() override;
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -68,6 +69,10 @@ class LiveFolderHeaderRow : public views::View {
   bool syncing_ = false;
   int unseen_count_ = 0;
   bool hovered_ = false;
+
+  raw_ptr<views::Label> name_label_ = nullptr;
+  // Only while the folder is syncing.
+  raw_ptr<views::Label> status_label_ = nullptr;
 
   base::RepeatingCallback<void(const std::string&)> on_toggle_;
   base::RepeatingCallback<void(const std::string&, const gfx::Point&)>
@@ -97,6 +102,7 @@ class LiveFolderItemRow : public views::View {
   ~LiveFolderItemRow() override;
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -117,6 +123,9 @@ class LiveFolderItemRow : public views::View {
   bool tab_active_ = false;
   bool hovered_ = false;
 
+  raw_ptr<views::Label> title_label_ = nullptr;
+  // Absent when the item has no repo to show.
+  raw_ptr<views::Label> subtitle_label_ = nullptr;
   raw_ptr<views::Button> close_button_ = nullptr;
 
   ItemCallback on_click_;

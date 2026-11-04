@@ -55,6 +55,7 @@ class AvoraParkedPinView : public views::View,
   ~AvoraParkedPinView() override;
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   void Layout(PassKey) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;

@@ -56,6 +56,8 @@ source_set("avora") {
     "avora_quick_nav_view.h",
     "avora_side_by_side.cc",
     "avora_side_by_side.h",
+    "avora_sidebar_background.cc",
+    "avora_sidebar_background.h",
     "avora_sidebar_view.cc",
     "avora_sidebar_view.h",
     "avora_space_label_view.cc",
@@ -66,6 +68,8 @@ source_set("avora") {
     "avora_style_ai_key_dialog.h",
     "avora_tab_sync_watcher.cc",
     "avora_tab_sync_watcher.h",
+    "avora_theme_studio.cc",
+    "avora_theme_studio.h",
     "avora_toast_view.cc",
     "avora_toast_view.h",
   ]
@@ -78,6 +82,8 @@ source_set("avora") {
       "avora_file_trash_mac.mm",
       "avora_update_button.cc",
       "avora_update_button.h",
+    "avora_window_theme.cc",
+    "avora_window_theme.h",
     ]
   }
 
@@ -95,6 +101,8 @@ source_set("avora") {
     "//components/web_modal",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/color:color_headers",
+    "//chrome/browser/ui/color:mixers",
+    "//ui/native_theme",
     "//chrome/browser/ui/tabs:tab_strip",
     "//components/tabs:public",
     "//components/favicon/core",
@@ -152,6 +160,7 @@ source_set("browser_tests") {
     "avora_side_by_side_browsertest.cc",
     "avora_style_ai_settings_browsertest.cc",
     "avora_tab_sync_browsertest.cc",
+    "avora_theme_studio_browsertest.cc",
   ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -182,6 +191,7 @@ source_set("browser_tests") {
     "//net:test_support",
     "//services/network:test_support",
     "//testing/gtest",
+    "//ui/color",
     "//ui/views",
     "//ui/views:test_support",
   ]

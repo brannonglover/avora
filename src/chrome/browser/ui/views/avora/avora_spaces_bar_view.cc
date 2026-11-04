@@ -25,6 +25,9 @@
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_icon_picker.h"
+#include "chrome/browser/ui/views/avora/avora_sidebar_background.h"
+#include "chrome/browser/ui/views/avora/avora_theme_studio.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/views/avora/avora_update_button.h"
 #endif
@@ -55,17 +58,20 @@ constexpr int kLegacyPillHeight = 26;
 constexpr int kLegacyPillCornerRadius = 13;
 
 // The strip is the foot of the side nav, not a slab parked under it, so it
-// takes the sidebar's own fill (AvoraSidebarView's kAvoraSidebarBg, the same
-// colour AddAvoraColorMixer hands the frame and the vertical tab strip).
-// Anything darker draws a seam across the bottom of the nav.
-constexpr SkColor kBarBg = SkColorSetRGB(0x18, 0x1C, 0x20);
+// takes the sidebar's own fill (avora::CreateSidebarBackground(), the same
+// colour the frame and the vertical tab strip are painted with).  Anything
+// darker draws a seam across the bottom of the nav.
 
 // Nothing in the strip carries a resting background: an icon's own accent
-// colour is the only fill in the bar.  This is the transient wash drawn
-// under the cursor alone, faint enough to read as a hover state rather than
-// as a chip the icon permanently sits in.
-constexpr SkColor kIconHoverBg = SkColorSetARGB(0x14, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kDimText = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
+// colour is the only fill in the bar.  This is the alpha of the transient
+// wash drawn under the cursor alone, faint enough to read as a hover state
+// rather than as a chip the icon permanently sits in.
+constexpr SkAlpha kIconHoverAlpha = 0x14;
+constexpr SkAlpha kDimTextAlpha = 0xB0;
+
+// The create menu draws on Chromium's own menu, which keeps its dark look
+// whatever the Space's theme.
+constexpr SkColor kMenuIconColor = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
 
 // Lucide "plus", used for the create button.  Chrome UI icons live outside the
 // Space catalog but still come from the same library.
@@ -92,6 +98,7 @@ constexpr int kActiveUnderlineHeight = 3;
 
 constexpr int kMenuEdit = 1;
 constexpr int kMenuDelete = 2;
+constexpr int kMenuTheme = 3;
 constexpr int kMenuNewSpace = 3;
 constexpr int kMenuNewFolder = 4;
 
@@ -167,7 +174,10 @@ class SpaceIconButton : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      FillRoundRect(canvas, GetLocalBounds(), kIconHoverBg, kIconCornerRadius);
+      FillRoundRect(canvas, GetLocalBounds(),
+                    SkColorSetA(avora::WindowTheme::PaletteFor(this).wash,
+                                kIconHoverAlpha),
+                    kIconCornerRadius);
     }
 
     // The glyph sits above the underline rather than centred in the button,
@@ -217,12 +227,17 @@ class CreateSpaceButton : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      FillRoundRect(canvas, GetLocalBounds(), kIconHoverBg, kIconCornerRadius);
+      FillRoundRect(canvas, GetLocalBounds(),
+                    SkColorSetA(avora::WindowTheme::PaletteFor(this).wash,
+                                kIconHoverAlpha),
+                    kIconCornerRadius);
     }
 
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kAddGlyphSize, kAddGlyphSize));
-    avora::PaintLucidePathData(canvas, glyph, kPlusIconPath, kDimText);
+    avora::PaintLucidePathData(
+        canvas, glyph, kPlusIconPath,
+        SkColorSetA(avora::WindowTheme::PaletteFor(this).text, kDimTextAlpha));
   }
 };
 
@@ -261,15 +276,19 @@ bool HitsButton(views::View* root, const gfx::Point& point) {
 class SpaceBarContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
   SpaceBarContextMenuDelegate(base::RepeatingClosure on_edit,
+                              base::RepeatingClosure on_theme,
                               base::RepeatingClosure on_delete,
                               bool can_delete)
       : on_edit_(std::move(on_edit)),
+        on_theme_(std::move(on_theme)),
         on_delete_(std::move(on_delete)),
         can_delete_(can_delete) {}
 
   void ExecuteCommand(int command_id, int event_flags) override {
     if (command_id == kMenuEdit && on_edit_) {
       on_edit_.Run();
+    } else if (command_id == kMenuTheme && on_theme_) {
+      on_theme_.Run();
     } else if (command_id == kMenuDelete && can_delete_ && on_delete_) {
       on_delete_.Run();
     }
@@ -281,6 +300,7 @@ class SpaceBarContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
 
  private:
   base::RepeatingClosure on_edit_;
+  base::RepeatingClosure on_theme_;
   base::RepeatingClosure on_delete_;
   bool can_delete_ = true;
 };
@@ -335,7 +355,7 @@ T* FindDescendantOfType(views::View* root) {
 
 AvoraSpacesBarView::AvoraSpacesBarView(SpaceClickedCallback clicked_cb)
     : clicked_cb_(std::move(clicked_cb)) {
-  SetBackground(views::CreateSolidBackground(kBarBg));
+  SetBackground(avora::CreateSidebarBackground());
   // Compositing layer, matching VerticalTabStripRegionView.  The page is a
   // native view that draws above anything without one, so without this the
   // spaces bar vanishes behind the page whenever the sidebar is peeked
@@ -432,7 +452,7 @@ void AvoraSpacesBarView::ConnectToProfile(Profile* profile) {
         std::make_unique<avora::BrowserProfileStore>(profile->GetPrefs());
     profile_store_->AddObserver(this);
 
-    SetBackground(views::CreateSolidBackground(kBarBg));
+    SetBackground(avora::CreateSidebarBackground());
     SetPreferredSize(gfx::Size(0, kManagedBarHeight));
     auto* root_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
@@ -658,12 +678,15 @@ void AvoraSpacesBarView::ShowSpaceContextMenu(const std::string& space_id,
   context_menu_delegate_ = std::make_unique<SpaceBarContextMenuDelegate>(
       base::BindRepeating(&AvoraSpacesBarView::ShowEditSpaceEditor,
                           base::Unretained(this), space_id),
+      base::BindRepeating(&AvoraSpacesBarView::ShowThemeStudio,
+                          base::Unretained(this), space_id),
       base::BindRepeating(&AvoraSpacesBarView::ConfirmDeleteSpace,
                           base::Unretained(this), space_id),
       can_delete);
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
   context_menu_model_->AddItem(kMenuEdit, u"Edit Space…");
+  context_menu_model_->AddItem(kMenuTheme, u"Theme Studio…");
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   context_menu_model_->AddItem(kMenuDelete, u"Delete Space…");
 
@@ -695,11 +718,11 @@ void AvoraSpacesBarView::ShowCreateMenu() {
   create_menu_model_->AddItemWithIcon(
       kMenuNewSpace, u"New Space",
       avora::LucideIconImageModel(kNewSpaceMenuIconId, kMenuIconSize,
-                                  kDimText));
+                                  kMenuIconColor));
   create_menu_model_->AddItemWithIcon(
       kMenuNewFolder, u"New Folder",
       avora::LucideIconImageModel(kNewFolderMenuIconId, kMenuIconSize,
-                                  kDimText));
+                                  kMenuIconColor));
 
   // The bar sits at the bottom of the sidebar, so the menu rises from the
   // "+" rather than dropping off the window; kBubbleTopRight only falls back
@@ -766,6 +789,23 @@ void AvoraSpacesBarView::ShowEditSpaceEditor(const std::string& space_id) {
       anchor_view, u"Edit Space", u"Save", fields,
       base::BindOnce(&AvoraSpacesBarView::OnEditSpaceCommitted,
                      weak_factory_.GetWeakPtr(), space_id));
+}
+
+void AvoraSpacesBarView::ShowThemeStudio(const std::string& space_id) {
+  if (!space_manager_ || !profile_ || !space_manager_->GetSpaceById(space_id)) {
+    return;
+  }
+  // The studio paints this window as it goes, so the window has to be
+  // showing the Space being themed.
+  if (window_space_state_ &&
+      window_space_state_->active_space_id() != space_id) {
+    window_space_state_->SetActiveSpaceId(space_id);
+  }
+  auto anchor = space_buttons_.find(space_id);
+  views::View* anchor_view = anchor != space_buttons_.end()
+                                  ? anchor->second.get()
+                                  : create_button_.get();
+  avora::ShowThemeStudioBubble(anchor_view, profile_->GetPrefs(), space_id);
 }
 
 void AvoraSpacesBarView::OnCreateSpaceCommitted(

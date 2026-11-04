@@ -63,6 +63,7 @@ std::vector<LocalRow> SharedModels::ProjectSpaces() const {
     row.columns.Set("name", space.name);
     row.columns.Set("icon", space.icon);
     row.columns.Set("color", space.accent_color);
+    row.columns.Set("theme", space.theme.Serialize());
     row.container = kSpacesContainer;
     row.index = space.order;
     rows.push_back(std::move(row));
@@ -159,15 +160,22 @@ void SharedModels::ApplySpaces(SharedStore& store,
     const std::string name = StringColumn(row, "name");
     const std::string icon = StringColumn(row, "icon");
     const std::string color = StringColumn(row, "color");
+    // A server without the theme column, or a row written before it, says
+    // nothing about the theme -- which is not the same as clearing it.
+    const std::string* theme = row.columns.FindString("theme");
+    std::string target = local;
     if (existing) {
       if (existing->name != name || existing->icon != icon ||
           existing->accent_color != color) {
         space_manager_.UpdateSpace(local, name, icon, color);
       }
     } else {
-      const std::string created = space_manager_.CreateSpace(
-          name.empty() ? "Space" : name, icon, std::string(), color);
-      store.Link(SharedTable::kSpaces, row.id, created);
+      target = space_manager_.CreateSpace(name.empty() ? "Space" : name, icon,
+                                          std::string(), color);
+      store.Link(SharedTable::kSpaces, row.id, target);
+    }
+    if (theme) {
+      space_manager_.SetSpaceTheme(target, SpaceTheme::Parse(*theme));
     }
   }
 

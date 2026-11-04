@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "base/memory/raw_ref.h"
 #include "base/strings/escape.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -19,6 +20,8 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
 #include "chrome/browser/ui/views/avora/avora_mini_window.h"
+#include "chrome/browser/ui/views/avora/avora_sidebar_background.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/vector_icons/vector_icons.h"
@@ -50,12 +53,10 @@ namespace avora {
 
 namespace {
 
-// Matches the sidebar's chrome so the mini window reads as the same browser.
-constexpr SkColor kToolbarBg = SkColorSetRGB(0x18, 0x1C, 0x20);
-constexpr SkColor kIconColor = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kChipBg = SkColorSetRGB(0x32, 0x38, 0x40);
-constexpr SkColor kChipHoverBg = SkColorSetRGB(0x3A, 0x41, 0x4A);
-constexpr SkColor kDisabledIconColor = SkColorSetARGB(0x55, 0xED, 0xF2, 0xF5);
+// Matches the sidebar's chrome so the mini window reads as the same browser:
+// the window palette's sidebar fill, raised chips and text.  A disabled glyph
+// is the text at this alpha.
+constexpr SkAlpha kDisabledIconAlpha = 0x55;
 
 gfx::FontList ChipFont() {
   return gfx::FontList({std::string("system-ui")}, gfx::Font::NORMAL, 13,
@@ -69,9 +70,13 @@ class ChipView : public views::View {
 
  public:
   explicit ChipView(base::RepeatingClosure callback)
-      : callback_(std::move(callback)) {
+      : callback_(std::move(callback)) {}
+
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
     SetBackground(views::CreateRoundedRectBackground(
-        kChipBg, AvoraMiniToolbarView::kChipCornerRadius));
+        WindowTheme::PaletteFor(this).raised,
+        AvoraMiniToolbarView::kChipCornerRadius));
   }
 
   bool OnMousePressed(const ui::MouseEvent& event) override { return true; }
@@ -99,8 +104,6 @@ class SpaceChipView : public views::View {
 
  public:
   SpaceChipView() {
-    SetBackground(views::CreateRoundedRectBackground(
-        kChipBg, AvoraMiniToolbarView::kChipCornerRadius));
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 0));
     // Both halves stretch to the chip's full height, so their contents centre
@@ -117,6 +120,13 @@ class SpaceChipView : public views::View {
         std::min(size.width(), AvoraMiniToolbarView::kSpaceButtonMaxWidth));
     return size;
   }
+
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    SetBackground(views::CreateRoundedRectBackground(
+        WindowTheme::PaletteFor(this).raised,
+        AvoraMiniToolbarView::kChipCornerRadius));
+  }
 };
 
 BEGIN_METADATA(SpaceChipView)
@@ -129,9 +139,11 @@ void PaintChipHover(gfx::Canvas* canvas, const views::Button& button) {
       button.GetState() != views::Button::STATE_PRESSED) {
     return;
   }
+  // The tab hover is the palette's nearest shade to the lift this used to
+  // have (#3A414A against the default's #383E48).
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
-  flags.setColor(kChipHoverBg);
+  flags.setColor(WindowTheme::PaletteFor(&button).tab_hover);
   flags.setStyle(cc::PaintFlags::kFill_Style);
   canvas->DrawRoundRect(button.GetLocalBounds(),
                         AvoraMiniToolbarView::kChipCornerRadius, flags);
@@ -144,15 +156,20 @@ class SpaceButton : public views::LabelButton {
  public:
   explicit SpaceButton(PressedCallback callback)
       : views::LabelButton(std::move(callback)) {
-    SetTextColor(views::Button::STATE_NORMAL, kIconColor);
-    SetTextColor(views::Button::STATE_HOVERED, kIconColor);
-    SetTextColor(views::Button::STATE_PRESSED, kIconColor);
     label()->SetFontList(ChipFont());
     label()->SetElideBehavior(gfx::ELIDE_TAIL);
     SetHorizontalAlignment(gfx::ALIGN_CENTER);
     SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, 10, 0, 6)));
     SetImageLabelSpacing(6);
     SetMinSize(gfx::Size(0, AvoraMiniToolbarView::kChipHeight));
+  }
+
+  void OnThemeChanged() override {
+    views::LabelButton::OnThemeChanged();
+    const SkColor text = WindowTheme::PaletteFor(this).text;
+    SetTextColor(views::Button::STATE_NORMAL, text);
+    SetTextColor(views::Button::STATE_HOVERED, text);
+    SetTextColor(views::Button::STATE_PRESSED, text);
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
@@ -170,10 +187,6 @@ class SpaceMenuButton : public views::ImageButton {
  public:
   explicit SpaceMenuButton(PressedCallback callback)
       : views::ImageButton(std::move(callback)) {
-    SetImageModel(views::Button::STATE_NORMAL,
-                  ui::ImageModel::FromVectorIcon(
-                      vector_icons::kCaretDownOldIcon, kIconColor,
-                      AvoraMiniToolbarView::kSpaceMenuIconSize));
     SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
     SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
     SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, 0, 0, 8)));
@@ -184,6 +197,15 @@ class SpaceMenuButton : public views::ImageButton {
       const views::SizeBounds& available_size) const override {
     return gfx::Size(AvoraMiniToolbarView::kSpaceMenuButtonWidth,
                      AvoraMiniToolbarView::kChipHeight);
+  }
+
+  void OnThemeChanged() override {
+    views::ImageButton::OnThemeChanged();
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(
+                      vector_icons::kCaretDownOldIcon,
+                      WindowTheme::PaletteFor(this).text,
+                      AvoraMiniToolbarView::kSpaceMenuIconSize));
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
@@ -213,23 +235,43 @@ class SpaceMenuDelegate : public ui::SimpleMenuModel::Delegate {
   base::RepeatingCallback<void(const std::string&)> callback_;
 };
 
+// An image button showing |icon| in the palette's text colour, dimmed when
+// disabled.  The glyph is re-coloured whenever the window's theme changes.
+class GlyphButton : public views::ImageButton {
+  METADATA_HEADER(GlyphButton, views::ImageButton)
+
+ public:
+  GlyphButton(PressedCallback callback, const gfx::VectorIcon& icon, int size)
+      : views::ImageButton(std::move(callback)), icon_(icon), size_(size) {}
+
+  void OnThemeChanged() override {
+    views::ImageButton::OnThemeChanged();
+    const SkColor text = WindowTheme::PaletteFor(this).text;
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(*icon_, text, size_));
+    SetImageModel(views::Button::STATE_DISABLED,
+                  ui::ImageModel::FromVectorIcon(
+                      *icon_, SkColorSetA(text, kDisabledIconAlpha), size_));
+  }
+
+ private:
+  const raw_ref<const gfx::VectorIcon> icon_;
+  const int size_;
+};
+
+BEGIN_METADATA(GlyphButton)
+END_METADATA
+
 std::unique_ptr<views::ImageButton> MakeNavButton(
     const gfx::VectorIcon& icon,
     base::RepeatingClosure callback,
     const std::u16string& tooltip) {
-  auto button = std::make_unique<views::ImageButton>(std::move(callback));
+  auto button = std::make_unique<GlyphButton>(
+      std::move(callback), icon, AvoraMiniToolbarView::kNavIconSize);
   // ImageButton draws top-left by default, which puts the glyph above the
   // address text's centre line instead of on it.
   button->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   button->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
-  button->SetImageModel(
-      views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(icon, kIconColor,
-                                     AvoraMiniToolbarView::kNavIconSize));
-  button->SetImageModel(
-      views::Button::STATE_DISABLED,
-      ui::ImageModel::FromVectorIcon(icon, kDisabledIconColor,
-                                     AvoraMiniToolbarView::kNavIconSize));
   button->SetPreferredSize(gfx::Size(AvoraMiniToolbarView::kNavButtonSize,
                                      AvoraMiniToolbarView::kNavButtonSize));
   button->SetTooltipText(tooltip);
@@ -265,7 +307,7 @@ AvoraMiniToolbarView::~AvoraMiniToolbarView() {
 }
 
 void AvoraMiniToolbarView::BuildUI() {
-  SetBackground(views::CreateSolidBackground(kToolbarBg));
+  SetBackground(CreateSidebarBackground());
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
       gfx::Insets::VH(0, kToolbarHPadding), kToolbarItemGap));
@@ -298,7 +340,6 @@ void AvoraMiniToolbarView::BuildUI() {
 
   auto label = std::make_unique<views::Label>(
       std::u16string(), views::Label::CustomFont{ChipFont()});
-  label->SetEnabledColor(kIconColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_TAIL);
   address_label_ = chip->AddChildView(std::move(label));
@@ -306,8 +347,6 @@ void AvoraMiniToolbarView::BuildUI() {
 
   auto field = std::make_unique<views::Textfield>();
   field->SetFontList(ChipFont());
-  field->SetColor(kIconColor);
-  field->SetBackgroundColor(kChipBg);
   field->SetBorder(nullptr);
   field->SetPlaceholderText(u"Search or enter URL");
   field->SetVisible(false);
@@ -346,6 +385,19 @@ gfx::Size AvoraMiniToolbarView::CalculatePreferredSize(
   gfx::Size size = views::View::CalculatePreferredSize(available_size);
   size.set_height(kToolbarHeight);
   return size;
+}
+
+void AvoraMiniToolbarView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  // Children hear of the change first, so the textfield has already reset its
+  // text colour from Chromium's colour provider; this puts the palette's back.
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(this);
+  address_label_->SetEnabledColor(palette.text);
+  address_field_->SetColor(palette.text);
+  address_field_->SetBackgroundColor(palette.raised);
+  // The Space button's glyph, when there is no Space to name, is drawn in the
+  // palette's text colour.
+  UpdateSpaceButton();
 }
 
 void AvoraMiniToolbarView::UpdateState() {
@@ -491,29 +543,30 @@ void AvoraMiniToolbarView::UpdateExtensionIcons() {
       continue;
     }
 
-    auto button = std::make_unique<views::ImageButton>(base::BindRepeating(
-        &AvoraMiniToolbarView::OnExtensionIconPressed,
-        base::Unretained(this), extension->id()));
+    // The icon the extension already has loaded for its action -- the same
+    // source the main window's row uses, and synchronous, so the row never
+    // flashes empty.  Extensions without one get the puzzle piece, which a
+    // GlyphButton keeps in the palette's text colour.
+    const gfx::Image icon = action->GetDefaultIconImage();
+    auto callback = base::BindRepeating(
+        &AvoraMiniToolbarView::OnExtensionIconPressed, base::Unretained(this),
+        extension->id());
+    std::unique_ptr<views::ImageButton> button;
+    if (!icon.IsEmpty()) {
+      button = std::make_unique<views::ImageButton>(std::move(callback));
+      button->SetImageModel(views::Button::STATE_NORMAL,
+                            ui::ImageModel::FromImage(icon));
+    } else {
+      button = std::make_unique<GlyphButton>(
+          std::move(callback), vector_icons::kChromeExtensionIcon,
+          kExtensionIconSize);
+    }
     button->SetPreferredSize(
         gfx::Size(kExtensionButtonSize, kExtensionButtonSize));
     button->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
     button->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
     button->SetTooltipText(base::UTF8ToUTF16(extension->name()));
     button->SetAccessibleName(base::UTF8ToUTF16(extension->name()));
-
-    // The icon the extension already has loaded for its action -- the same
-    // source the main window's row uses, and synchronous, so the row never
-    // flashes empty.  Extensions without one get the puzzle piece.
-    const gfx::Image icon = action->GetDefaultIconImage();
-    if (!icon.IsEmpty()) {
-      button->SetImageModel(views::Button::STATE_NORMAL,
-                            ui::ImageModel::FromImage(icon));
-    } else {
-      button->SetImageModel(
-          views::Button::STATE_NORMAL,
-          ui::ImageModel::FromVectorIcon(vector_icons::kChromeExtensionIcon,
-                                         kIconColor, kExtensionIconSize));
-    }
 
     extension_buttons_[extension->id()] =
         extensions_row_->AddChildView(std::move(button));
@@ -565,7 +618,8 @@ void AvoraMiniToolbarView::UpdateSpaceButton() {
     space_button_->SetText(u"Open Tab");
     space_button_->SetImageModel(
         views::Button::STATE_NORMAL,
-        LucideIconImageModel(kDefaultSpaceIconId, kSpaceIconSize, kIconColor));
+        LucideIconImageModel(kDefaultSpaceIconId, kSpaceIconSize,
+                             WindowTheme::PaletteFor(this).text));
     space_button_->SetTooltipText(u"Open in a tab");
     if (space_menu_button_) {
       space_menu_button_->SetVisible(false);

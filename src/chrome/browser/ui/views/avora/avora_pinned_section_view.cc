@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -100,8 +101,22 @@ constexpr SkColor kFolderIconColor = SkColorSetRGB(0x68, 0xA1, 0xEC);
 // 16dip; giving the nearer surface the lighter value is the cheapest cue that
 // reads as depth rather than as a second, unrelated shape.
 constexpr SkColor kFolderIconFlapColor = SkColorSetRGB(0x95, 0xBD, 0xF2);
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kLabelColor = SkColorSetARGB(0xE0, 0xED, 0xF2, 0xF5);
+
+// Row hovers and labels take the window palette's wash and text at these
+// alphas.
+constexpr SkAlpha kRowHoverAlpha = 0x1A;
+constexpr SkAlpha kLabelAlpha = 0xE0;
+// The rename field's fill behind a folder name being edited.
+constexpr SkAlpha kRenameFieldAlpha = 0x30;
+
+SkColor RowHoverColor(const views::View* view) {
+  return SkColorSetA(avora::WindowTheme::PaletteFor(view).wash,
+                     kRowHoverAlpha);
+}
+
+SkColor LabelColor(const views::View* view) {
+  return SkColorSetA(avora::WindowTheme::PaletteFor(view).text, kLabelAlpha);
+}
 
 // The dragged row, drawn as a card lifted off the list: an inset rounded
 // rect with a soft shadow and a thin accent edge, in the same blue the
@@ -194,13 +209,13 @@ class PinnedRowCloseButton : public views::Button {
         GetState() == views::Button::STATE_PRESSED) {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      flags.setColor(kRowHoverBg);
+      flags.setColor(RowHoverColor(this));
       flags.setStyle(cc::PaintFlags::kFill_Style);
       canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
     }
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kCloseGlyphSize, kCloseGlyphSize));
-    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, kLabelColor);
+    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, LabelColor(this));
   }
 };
 
@@ -466,7 +481,6 @@ FolderHeaderView::FolderHeaderView(
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                               gfx::Font::NORMAL, 12,
                                               gfx::Font::Weight::MEDIUM)});
-  label->SetEnabledColor(kLabelColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   name_label_ = AddChildView(std::move(label));
   layout->SetFlexForView(name_label_, 1);
@@ -480,8 +494,6 @@ FolderHeaderView::FolderHeaderView(
   field->SetFontList(gfx::FontList({std::string("system-ui")},
                                     gfx::Font::NORMAL, 12,
                                     gfx::Font::Weight::MEDIUM));
-  field->SetColor(kLabelColor);
-  field->SetBackgroundColor(ui::ColorVariant(SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF)));
   field->SetVisible(false);
   rename_field_ = AddChildView(std::unique_ptr<views::Textfield>(field.release()));
   layout->SetFlexForView(rename_field_, 1);
@@ -489,6 +501,15 @@ FolderHeaderView::FolderHeaderView(
 }
 
 FolderHeaderView::~FolderHeaderView() = default;
+
+void FolderHeaderView::OnThemeChanged() {
+  PinnedRowView::OnThemeChanged();
+  // After the textfield's own OnThemeChanged(), which resets its text colour.
+  name_label_->SetEnabledColor(LabelColor(this));
+  rename_field_->SetColor(LabelColor(this));
+  rename_field_->SetBackgroundColor(ui::ColorVariant(SkColorSetA(
+      avora::WindowTheme::PaletteFor(this).wash, kRenameFieldAlpha)));
+}
 
 void FolderHeaderView::SetHighlighted(bool highlighted) {
   if (highlighted_ == highlighted) {
@@ -821,17 +842,21 @@ FolderTabRow::FolderTabRow(
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                               gfx::Font::NORMAL, 14,
                                               gfx::Font::Weight::NORMAL)});
-  label->SetEnabledColor(kLabelColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_TAIL);
-  auto* label_ptr = AddChildView(std::move(label));
-  layout->SetFlexForView(label_ptr, 1);
+  title_label_ = AddChildView(std::move(label));
+  layout->SetFlexForView(title_label_, 1);
 
   SetTooltipText(base::UTF8ToUTF16(title.empty() ? url : title));
   SetNotifyEnterExitOnChild(true);
 }
 
 FolderTabRow::~FolderTabRow() = default;
+
+void FolderTabRow::OnThemeChanged() {
+  PinnedRowView::OnThemeChanged();
+  title_label_->SetEnabledColor(LabelColor(this));
+}
 
 void FolderTabRow::SetFavicon(const gfx::ImageSkia& icon) {
   if (icon.isNull() || !favicon_view_) {
@@ -853,7 +878,7 @@ void FolderTabRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (IsMouseHovered()) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(kRowHoverBg);
+    flags.setColor(RowHoverColor(this));
     flags.setStyle(cc::PaintFlags::kFill_Style);
     canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
   }
@@ -962,8 +987,8 @@ void PinnedRowIcon::OnPaint(gfx::Canvas* canvas) {
   // answer is the action itself: it becomes the arrow that undoes the
   // wandering.
   if (away_ && IsMouseHovered()) {
-    PaintLucidePathData(canvas, favicon_bounds, kReturnIconPath, kLabelColor,
-                        kReturnIconStrokeWidth);
+    PaintLucidePathData(canvas, favicon_bounds, kReturnIconPath,
+                        LabelColor(this), kReturnIconStrokeWidth);
     return;
   }
 
@@ -1075,7 +1100,6 @@ PinnedTabRow::PinnedTabRow(
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                               gfx::Font::NORMAL, 14,
                                               gfx::Font::Weight::NORMAL)});
-  label->SetEnabledColor(kLabelColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_TAIL);
   title_label_ = AddChildView(std::move(label));
@@ -1090,7 +1114,6 @@ PinnedTabRow::PinnedTabRow(
   field->SetFontList(gfx::FontList({std::string("system-ui")},
                                     gfx::Font::NORMAL, 14,
                                     gfx::Font::Weight::NORMAL));
-  field->SetColor(kLabelColor);
   field->SetBackgroundColor(SK_ColorTRANSPARENT);
   field->SetBorder(nullptr);
   field->SetVisible(false);
@@ -1118,6 +1141,13 @@ PinnedTabRow::~PinnedTabRow() {
     rename_field_->set_controller(nullptr);
     static_cast<RenameTextfield*>(rename_field_.get())->ClearOnBlur();
   }
+}
+
+void PinnedTabRow::OnThemeChanged() {
+  PinnedRowView::OnThemeChanged();
+  // After the textfield's own OnThemeChanged(), which resets its text colour.
+  title_label_->SetEnabledColor(LabelColor(this));
+  rename_field_->SetColor(LabelColor(this));
 }
 
 void PinnedTabRow::SetFavicon(const gfx::ImageSkia& icon) {
@@ -1205,7 +1235,7 @@ void PinnedTabRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (IsMouseHovered()) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(kRowHoverBg);
+    flags.setColor(RowHoverColor(this));
     flags.setStyle(cc::PaintFlags::kFill_Style);
     canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
   }

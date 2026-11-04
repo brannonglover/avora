@@ -102,6 +102,14 @@ class SpaceManager {
   void SetSpaceAccentColor(const std::string& id,
                            const std::string& accent_color);
 
+  // Replaces the Space's theme; an empty |theme| restores the default look.
+  // A non-empty |accent_color| ("#RRGGBB") is set in the same write: the
+  // Theme Studio passes the theme's first colour so the Space's icon matches
+  // the colour on top.
+  void SetSpaceTheme(const std::string& id,
+                     const SpaceTheme& theme,
+                     const std::string& accent_color = std::string());
+
   // Applies everything the Space editor can change in a single write, so the
   // UI rebuilds once instead of three times.
   void UpdateSpace(const std::string& id,

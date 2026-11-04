@@ -12,6 +12,8 @@
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/avora/avora_sidebar_background.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
 #include "chrome/app/vector_icons/vector_icons.h"
@@ -53,9 +55,6 @@
 
 namespace {
 
-constexpr SkColor kAvoraSidebarBg = SkColorSetRGB(0x18, 0x1C, 0x20);
-constexpr SkColor kAvoraIconColor = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kAvoraAddressChipBg = SkColorSetRGB(0x32, 0x38, 0x40);
 constexpr int kNavButtonSize = 32;
 // The toggle renders a 20px glyph beside ~12px traffic-light circles.  With
 // their centres matched the larger glyph overhangs the circles at the top and
@@ -64,13 +63,13 @@ constexpr int kNavButtonSize = 32;
 constexpr int kToggleOpticalNudge = 4;
 constexpr int kNavIconSize = 17;
 constexpr int kNavButtonGap = 4;
-// Hover and press feedback for the nav-row icons: a white wash over the dark
-// sidebar, kept faint on purpose, plus a small dip in the glyph while the
-// button is held.  The glyph sits centred in its button so the wash is square
-// around it, and the nav row takes the inset back out of its own padding so
-// the glyphs stay where they were before the wash existed.
+// Hover and press feedback for the nav-row icons: the palette's wash (white
+// over a dark sidebar, black over a light one), kept faint on purpose, plus a
+// small dip in the glyph while the button is held.  The glyph sits centred in
+// its button so the wash is square around it, and the nav row takes the inset
+// back out of its own padding so the glyphs stay where they were before the
+// wash existed.
 constexpr int kNavButtonCornerRadius = 8;
-constexpr SkColor kNavButtonWash = SK_ColorWHITE;
 constexpr int kNavButtonHoverAlpha = 0x14;
 constexpr int kNavButtonPressAlpha = 0x26;
 constexpr float kNavButtonPressShrink = 0.12f;
@@ -98,11 +97,11 @@ constexpr int kAddressChipMinHeight = 36;
 constexpr base::TimeDelta kNavLongPressDelay = base::Milliseconds(400);
 
 // ── Manage bubble colours ───────────────────────────────────────────────────
-constexpr SkColor kBubbleBg = SkColorSetRGB(0x22, 0x28, 0x2E);
-constexpr SkColor kBubbleSectionText = SkColorSetARGB(0x88, 0xED, 0xF2, 0xF5);
-constexpr SkColor kBubbleRowText = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kBubbleRowHoverBg = SkColorSetARGB(0x18, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kBubbleRowIconColor = SkColorSetARGB(0xBB, 0xED, 0xF2, 0xF5);
+// The bubble paints with the palette's surface; these are the alphas its text,
+// icons and row hover take over that.
+constexpr SkAlpha kBubbleSectionTextAlpha = 0x88;
+constexpr SkAlpha kBubbleRowHoverAlpha = 0x18;
+constexpr SkAlpha kBubbleRowIconAlpha = 0xBB;
 constexpr int kBubbleWidth = 220;
 constexpr int kBubbleRowHeight = 36;
 constexpr int kBubbleIconSize = 16;
@@ -119,10 +118,12 @@ constexpr int kNavHistoryRowHeight = 32;
 // History rows draw whatever favicon they can get at one size: pages hand out
 // anything from 16px to 256px, and a row of mismatched icons reads as broken.
 // An empty image means none has arrived, and the row falls back to a globe.
-ui::ImageModel NavHistoryIcon(const gfx::Image& favicon) {
+ui::ImageModel NavHistoryIcon(const gfx::Image& favicon,
+                              const avora::SpaceThemePalette& palette) {
   if (favicon.IsEmpty()) {
-    return ui::ImageModel::FromVectorIcon(vector_icons::kGlobeIcon,
-                                          kBubbleRowIconColor, kBubbleIconSize);
+    return ui::ImageModel::FromVectorIcon(
+        vector_icons::kGlobeIcon,
+        SkColorSetA(palette.text, kBubbleRowIconAlpha), kBubbleIconSize);
   }
   gfx::ImageSkia icon = favicon.AsImageSkia();
   if (icon.width() != kBubbleIconSize || icon.height() != kBubbleIconSize) {
@@ -212,6 +213,8 @@ class AvoraNavButton : public views::Button {
  protected:
   // views::Button:
   void PaintButtonContents(gfx::Canvas* canvas) override {
+    const avora::SpaceThemePalette& palette =
+        avora::WindowTheme::PaletteFor(this);
     const float press = static_cast<float>(press_animation_.GetCurrentValue());
     // Button drops its hover animation to zero on the way into the pressed
     // state, so while the button is held the press value stands in for it.
@@ -225,7 +228,7 @@ class AvoraNavButton : public views::Button {
       flags.setAntiAlias(true);
       flags.setStyle(cc::PaintFlags::kFill_Style);
       flags.setColor(
-          SkColorSetA(kNavButtonWash, base::ClampRound<U8CPU>(wash_alpha)));
+          SkColorSetA(palette.wash, base::ClampRound<U8CPU>(wash_alpha)));
       canvas->DrawRoundRect(GetLocalBounds(), kNavButtonCornerRadius, flags);
     }
 
@@ -239,7 +242,7 @@ class AvoraNavButton : public views::Button {
       canvas->sk_canvas()->translate(-center, -center);
     }
     canvas->Translate(gfx::Vector2d(kNavGlyphInset, kNavGlyphInset));
-    gfx::PaintVectorIcon(canvas, *icon_, kNavIconSize, kAvoraIconColor);
+    gfx::PaintVectorIcon(canvas, *icon_, kNavIconSize, palette.text);
   }
 
   void StateChanged(ButtonState old_state) override {
@@ -363,19 +366,24 @@ END_METADATA
 
 // ── Manage bubble row (icon + label, hover highlight) ───────────────────────
 
+// |palette| is the anchor window's: rows are built while their bubble opens,
+// before they are in a widget that could say.
 class ManageBubbleRow : public views::LabelButton {
   METADATA_HEADER(ManageBubbleRow, views::LabelButton)
 
  public:
   ManageBubbleRow(const gfx::VectorIcon& icon,
                   const std::u16string& text,
+                  const avora::SpaceThemePalette& palette,
                   views::Button::PressedCallback callback)
-      : ManageBubbleRow(ui::ImageModel::FromVectorIcon(icon,
-                                                       kBubbleRowIconColor,
-                                                       kBubbleIconSize),
+      : ManageBubbleRow(ui::ImageModel::FromVectorIcon(
+                            icon,
+                            SkColorSetA(palette.text, kBubbleRowIconAlpha),
+                            kBubbleIconSize),
                         text,
                         kBubbleWidth,
                         kBubbleRowHeight,
+                        palette,
                         std::move(callback)) {}
 
   // Rows whose icon is not a glyph — a page favicon, say — and whose text can
@@ -384,12 +392,13 @@ class ManageBubbleRow : public views::LabelButton {
                   const std::u16string& text,
                   int width,
                   int height,
+                  const avora::SpaceThemePalette& palette,
                   views::Button::PressedCallback callback)
       : views::LabelButton(std::move(callback), text) {
     SetImageModel(views::Button::STATE_NORMAL, image);
-    SetTextColor(views::Button::STATE_NORMAL, kBubbleRowText);
-    SetTextColor(views::Button::STATE_HOVERED, kBubbleRowText);
-    SetTextColor(views::Button::STATE_PRESSED, kBubbleRowText);
+    SetTextColor(views::Button::STATE_NORMAL, palette.text);
+    SetTextColor(views::Button::STATE_HOVERED, palette.text);
+    SetTextColor(views::Button::STATE_PRESSED, palette.text);
     SetHorizontalAlignment(gfx::ALIGN_LEFT);
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
     SetPreferredSize(gfx::Size(width, height));
@@ -408,7 +417,8 @@ class ManageBubbleRow : public views::LabelButton {
         GetState() == views::Button::STATE_PRESSED) {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      flags.setColor(kBubbleRowHoverBg);
+      flags.setColor(SkColorSetA(avora::WindowTheme::PaletteFor(this).wash,
+                                 kBubbleRowHoverAlpha));
       flags.setStyle(cc::PaintFlags::kFill_Style);
       canvas->DrawRoundRect(GetLocalBounds(), 6, flags);
     }
@@ -449,7 +459,7 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
       address_commit_cb_(std::move(address_commit_cb)) {
   avora::ApplyBrowserDefaults(profile_->GetPrefs());
 
-  SetBackground(views::CreateSolidBackground(kAvoraSidebarBg));
+  SetBackground(avora::CreateSidebarBackground());
   // Compositing layer, matching VerticalTabStripRegionView.  The page is a
   // native view that draws above anything without one, so without this the
   // nav row and address chip vanishes behind the page whenever the sidebar is peeked
@@ -524,8 +534,6 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
     auto chip_bg = std::make_unique<AddressChipView>(
         base::BindRepeating(&AvoraSidebarView::BeginEditing,
                             base::Unretained(this)));
-    chip_bg->SetBackground(views::CreateRoundedRectBackground(
-        kAvoraAddressChipBg, 10));
     chip_bg->SetPreferredSize(gfx::Size(0, kAddressChipMinHeight));
     chip_bg->SetFocusBehavior(FocusBehavior::NEVER);
     auto* chip_inner =
@@ -541,7 +549,6 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
         views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                                 gfx::Font::NORMAL, 15,
                                                 gfx::Font::Weight::NORMAL)});
-    label->SetEnabledColor(kAvoraIconColor);
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetElideBehavior(gfx::ELIDE_TAIL);
     address_label_ = chip_bg->AddChildView(std::move(label));
@@ -552,8 +559,6 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
     field->SetFontList(gfx::FontList({std::string("system-ui")},
                                      gfx::Font::NORMAL, 15,
                                      gfx::Font::Weight::NORMAL));
-    field->SetColor(kAvoraIconColor);
-    field->SetBackgroundColor(kAvoraAddressChipBg);
     field->SetBorder(nullptr);
     field->SetPlaceholderText(u"Search or enter URL");
     field->SetVisible(false);
@@ -565,10 +570,6 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
         base::BindRepeating(&AvoraSidebarView::ShowManageBubble,
                             base::Unretained(this)),
         chip_bg.get());
-    hover_btn->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(vector_icons::kTuneIcon,
-                                       kAvoraIconColor, kNavIconSize));
     hover_btn->SetPreferredSize(gfx::Size(kNavButtonSize, kNavButtonSize));
     hover_btn->SetTooltipText(u"Manage");
     hover_btn->SetVisible(false);
@@ -586,6 +587,23 @@ AvoraSidebarView::AvoraSidebarView(Profile* profile,
 }
 
 AvoraSidebarView::~AvoraSidebarView() = default;
+
+void AvoraSidebarView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  // Children hear of the change first, so the textfield has already reset its
+  // text colour from Chromium's colour provider; this puts the palette's back.
+  const avora::SpaceThemePalette& palette =
+      avora::WindowTheme::PaletteFor(this);
+  address_chip_bg_->SetBackground(
+      views::CreateRoundedRectBackground(palette.raised, 10));
+  address_label_->SetEnabledColor(palette.text);
+  address_field_->SetColor(palette.text);
+  address_field_->SetBackgroundColor(palette.raised);
+  manage_button_->SetImageModel(
+      views::Button::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(vector_icons::kTuneIcon, palette.text,
+                                     kNavIconSize));
+}
 
 void AvoraSidebarView::SetURL(const std::u16string& url_text) {
   current_url_text_ = url_text;
@@ -614,6 +632,8 @@ void AvoraSidebarView::ShowNavHistoryMenu(
     return;
   }
 
+  const avora::SpaceThemePalette& palette =
+      avora::WindowTheme::PaletteFor(anchor);
   auto delegate = std::make_unique<views::BubbleDialogDelegate>(
       anchor, views::BubbleBorder::TOP_RIGHT);
   delegate->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -621,7 +641,7 @@ void AvoraSidebarView::ShowNavHistoryMenu(
   delegate->SetTitle(u"");
   delegate->SetShowTitle(false);
   delegate->SetShowCloseButton(false);
-  delegate->SetBackgroundColor(kBubbleBg);
+  delegate->SetBackgroundColor(palette.surface);
 
   auto wrapper = std::make_unique<views::View>();
   auto* layout = wrapper->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -637,8 +657,8 @@ void AvoraSidebarView::ShowNavHistoryMenu(
                             : entry.title;
 
     auto* row = wrapper->AddChildView(std::make_unique<ManageBubbleRow>(
-        NavHistoryIcon(entry.favicon), title, kNavHistoryMenuWidth,
-        kNavHistoryRowHeight,
+        NavHistoryIcon(entry.favicon, palette), title, kNavHistoryMenuWidth,
+        kNavHistoryRowHeight, palette,
         base::BindRepeating(
             [](views::BubbleDialogDelegate* d,
                AvoraNavHistoryActivateCallback cb, int index) {
@@ -663,6 +683,7 @@ void AvoraSidebarView::ShowNavHistoryMenu(
   auto* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(delegate),
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  avora::WindowTheme::MatchColorMode(widget);
   widget->Show();
 }
 
@@ -689,14 +710,20 @@ void AvoraSidebarView::LoadNavHistoryFavicon(
             if (!row || result.image.IsEmpty()) {
               return;
             }
-            row->SetImageModel(views::Button::STATE_NORMAL,
-                               NavHistoryIcon(result.image));
+            row->SetImageModel(
+                views::Button::STATE_NORMAL,
+                NavHistoryIcon(result.image,
+                               avora::WindowTheme::PaletteFor(row.get())));
           },
           std::move(row)),
       &favicon_task_tracker_);
 }
 
 void AvoraSidebarView::ShowManageBubble() {
+  const avora::SpaceThemePalette& palette =
+      avora::WindowTheme::PaletteFor(manage_button_);
+  const SkColor section_text =
+      SkColorSetA(palette.text, kBubbleSectionTextAlpha);
   auto delegate = std::make_unique<views::BubbleDialogDelegate>(
       manage_button_, views::BubbleBorder::TOP_RIGHT);
   delegate->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -704,7 +731,7 @@ void AvoraSidebarView::ShowManageBubble() {
   delegate->SetTitle(u"");
   delegate->SetShowTitle(false);
   delegate->SetShowCloseButton(false);
-  delegate->SetBackgroundColor(kBubbleBg);
+  delegate->SetBackgroundColor(palette.surface);
 
   auto wrapper = std::make_unique<views::View>();
   auto* layout = wrapper->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -720,7 +747,7 @@ void AvoraSidebarView::ShowManageBubble() {
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                               gfx::Font::NORMAL, 11,
                                               gfx::Font::Weight::MEDIUM)});
-  section_label->SetEnabledColor(kBubbleSectionText);
+  section_label->SetEnabledColor(section_text);
   section_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   section_label->SetBorder(
       views::CreateEmptyBorder(gfx::Insets::TLBR(4, 12, 4, 12)));
@@ -792,7 +819,8 @@ void AvoraSidebarView::ShowManageBubble() {
           icon_btn->SetImageModel(
               views::Button::STATE_NORMAL,
               ui::ImageModel::FromVectorIcon(
-                  vector_icons::kChromeExtensionIcon, kBubbleRowIconColor,
+                  vector_icons::kChromeExtensionIcon,
+                  SkColorSetA(palette.text, kBubbleRowIconAlpha),
                   kExtIconImageSize));
 
           auto* image_loader = extensions::ImageLoader::Get(profile_);
@@ -847,7 +875,7 @@ void AvoraSidebarView::ShowManageBubble() {
   plus_btn->SetImageModel(
       views::Button::STATE_NORMAL,
       ui::ImageModel::FromVectorIcon(vector_icons::kAddOldIcon,
-                                     kBubbleSectionText, kExtIconImageSize));
+                                     section_text, kExtIconImageSize));
   plus_btn->SetPreferredSize(
       gfx::Size(kExtIconButtonSize, kExtIconButtonSize));
   plus_btn->SetTooltipText(u"Add Extensions");
@@ -857,7 +885,7 @@ void AvoraSidebarView::ShowManageBubble() {
 
   // ── Manage Extensions row ──
   wrapper->AddChildView(std::make_unique<ManageBubbleRow>(
-      vector_icons::kChromeExtensionIcon, u"Manage Extensions\u2026",
+      vector_icons::kChromeExtensionIcon, u"Manage Extensions\u2026", palette,
       base::BindRepeating(
           [](views::BubbleDialogDelegate* d, AvoraNavCallback cb) {
             if (d->GetWidget()) d->GetWidget()->Close();
@@ -877,7 +905,7 @@ void AvoraSidebarView::ShowManageBubble() {
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                               gfx::Font::NORMAL, 11,
                                               gfx::Font::Weight::MEDIUM)});
-  settings_label->SetEnabledColor(kBubbleSectionText);
+  settings_label->SetEnabledColor(section_text);
   settings_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   settings_label->SetBorder(
       views::CreateEmptyBorder(gfx::Insets::TLBR(4, 12, 4, 12)));
@@ -886,7 +914,7 @@ void AvoraSidebarView::ShowManageBubble() {
   // ── Settings row ──
   AvoraNavCallback set_cb = settings_cb_;
   wrapper->AddChildView(std::make_unique<ManageBubbleRow>(
-      vector_icons::kSettingsIcon, u"Avora Settings",
+      vector_icons::kSettingsIcon, u"Avora Settings", palette,
       base::BindRepeating(
           [](views::BubbleDialogDelegate* d, AvoraNavCallback cb) {
             if (d->GetWidget()) d->GetWidget()->Close();
@@ -899,6 +927,7 @@ void AvoraSidebarView::ShowManageBubble() {
   auto* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(delegate),
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  avora::WindowTheme::MatchColorMode(widget);
   widget->Show();
 }
 

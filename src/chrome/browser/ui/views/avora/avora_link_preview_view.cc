@@ -5,10 +5,12 @@
 #include <algorithm>
 
 #include "base/functional/bind.h"
+#include "base/memory/raw_ref.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_state.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
@@ -35,9 +37,12 @@ namespace avora {
 namespace {
 
 constexpr SkColor kBackdropColor = SkColorSetARGB(0x99, 0x10, 0x10, 0x18);
-constexpr SkColor kButtonBg = SkColorSetARGB(0xCC, 0x28, 0x2C, 0x34);
-constexpr SkColor kButtonHoverBg = SkColorSetARGB(0xFF, 0x38, 0x3C, 0x46);
-constexpr SkColor kButtonIconColor = SkColorSetARGB(0xDD, 0xED, 0xF2, 0xF5);
+// The buttons beside the card are the window palette's surface at this
+// alpha, its tab hover when hovered, and its text at this alpha for the
+// glyph.  (Before windows had themes they were the near shades #282C34 and
+// #383C46.)
+constexpr SkAlpha kButtonAlpha = 0xCC;
+constexpr SkAlpha kButtonIconAlpha = 0xDD;
 
 // Total width reserved for the button column to the right of the card.
 constexpr int kButtonColumnWidth = 56;  // kButtonSize + gap
@@ -84,16 +89,28 @@ class HoverImageButton : public views::ImageButton {
   METADATA_HEADER(HoverImageButton, views::ImageButton)
 
  public:
-  HoverImageButton() = default;
+  explicit HoverImageButton(const gfx::VectorIcon& icon) : icon_(icon) {}
   ~HoverImageButton() override = default;
 
+  void OnThemeChanged() override {
+    views::ImageButton::OnThemeChanged();
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(
+                      *icon_,
+                      SkColorSetA(avora::WindowTheme::PaletteFor(this).text,
+                                  kButtonIconAlpha),
+                      AvoraLinkPreviewView::kButtonIconSize));
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
+    const avora::SpaceThemePalette& palette =
+        avora::WindowTheme::PaletteFor(this);
     const gfx::Rect bounds = GetLocalBounds();
     const float r = bounds.width() / 2.0f;
-    SkColor bg = kButtonBg;
+    SkColor bg = SkColorSetA(palette.surface, kButtonAlpha);
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      bg = kButtonHoverBg;
+      bg = palette.tab_hover;
     }
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
@@ -101,6 +118,9 @@ class HoverImageButton : public views::ImageButton {
     flags.setStyle(cc::PaintFlags::kFill_Style);
     canvas->DrawRoundRect(bounds, r, flags);
   }
+
+ private:
+  const raw_ref<const gfx::VectorIcon> icon_;
 };
 
 BEGIN_METADATA(HoverImageButton)
@@ -320,13 +340,10 @@ void AvoraLinkPreviewView::BuildUI() {
   // bounds so the native platform window cannot occlude them.  Each button
   // needs its own compositing layer to paint above the backdrop layer which
   // covers the full overlay area.
-  auto close_btn = std::make_unique<HoverImageButton>();
+  auto close_btn =
+      std::make_unique<HoverImageButton>(vector_icons::kCloseIcon);
   close_btn->SetPaintToLayer();
   close_btn->layer()->SetFillsBoundsOpaquely(false);
-  close_btn->SetImageModel(
-      views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(
-          vector_icons::kCloseIcon, kButtonIconColor, kButtonIconSize));
   close_btn->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   close_btn->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   close_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
@@ -335,13 +352,9 @@ void AvoraLinkPreviewView::BuildUI() {
       &AvoraLinkPreviewView::OnCloseClicked, weak_factory_.GetWeakPtr()));
   close_button_ = AddChildView(std::move(close_btn));
 
-  auto open_btn = std::make_unique<HoverImageButton>();
+  auto open_btn = std::make_unique<HoverImageButton>(kOpenInFullIcon);
   open_btn->SetPaintToLayer();
   open_btn->layer()->SetFillsBoundsOpaquely(false);
-  open_btn->SetImageModel(
-      views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(
-          kOpenInFullIcon, kButtonIconColor, kButtonIconSize));
   open_btn->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   open_btn->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   open_btn->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));

@@ -1,3 +1,17 @@
+# Space themes and the palette worked out from them.  Kept apart from the rest
+# of Avora so the colour mixers in //chrome/browser/ui/color can use it.
+source_set("space_theme") {
+  sources = [
+    "avora_space_theme.cc",
+    "avora_space_theme.h",
+  ]
+  deps = [
+    "//base",
+    "//skia",
+    "//ui/gfx:color_utils",
+  ]
+}
+
 source_set("avora") {
   sources = [
     "avora_tab_guid.cc",
@@ -101,7 +115,10 @@ source_set("avora") {
     sources += [ "sync/avora_device_name.cc" ]
   }
 
-  public_deps = [ "//chrome/browser/autocomplete" ]
+  public_deps = [
+    ":space_theme",
+    "//chrome/browser/autocomplete",
+  ]
 
   deps = [
     "//base",
@@ -162,6 +179,7 @@ source_set("unit_tests") {
     "avora_pinned_folders_unittest.cc",
     "avora_pinned_items_unittest.cc",
     "avora_space_icons_unittest.cc",
+    "avora_space_theme_unittest.cc",
   ]
 
   deps = [
@@ -169,7 +187,7 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/test:test_support",
-    "//testing/gtest",
+    "//testing/gtest",    "//ui/gfx",
   ]
 }
 
@@ -178,6 +196,7 @@ source_set("sync_unit_tests") {
 
   sources = [
     "sync/avora_fractional_index_unittest.cc",
+    "sync/avora_shared_models_unittest.cc",
     "sync/avora_shared_rows_unittest.cc",
     "sync/avora_shared_store_unittest.cc",
     "sync/avora_supabase_client_unittest.cc",

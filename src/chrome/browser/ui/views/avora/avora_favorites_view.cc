@@ -23,6 +23,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -210,8 +211,9 @@ void FavoriteButton::SetActive(bool active) {
 }
 
 void FavoriteButton::OnPaintBackground(gfx::Canvas* canvas) {
-  constexpr SkColor kBgNormal = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
-  constexpr SkColor kBgHovered = SkColorSetARGB(0x33, 0xFF, 0xFF, 0xFF);
+  const SkColor wash = avora::WindowTheme::PaletteFor(this).wash;
+  const SkColor bg_normal = SkColorSetA(wash, 0x1A);
+  const SkColor bg_hovered = SkColorSetA(wash, 0x33);
   constexpr SkColor kBgActive = SkColorSetARGB(0x40, 0x6E, 0xA8, 0xFF);
   constexpr SkColor kBgActiveHovered = SkColorSetARGB(0x59, 0x6E, 0xA8, 0xFF);
   constexpr SkColor kBorderActive = SkColorSetARGB(0x90, 0x6E, 0xA8, 0xFF);
@@ -225,7 +227,7 @@ void FavoriteButton::OnPaintBackground(gfx::Canvas* canvas) {
   if (is_active_) {
     fill_color = hovered ? kBgActiveHovered : kBgActive;
   } else {
-    fill_color = hovered ? kBgHovered : kBgNormal;
+    fill_color = hovered ? bg_hovered : bg_normal;
   }
 
   cc::PaintFlags fill_flags;

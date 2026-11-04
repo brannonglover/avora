@@ -84,6 +84,7 @@
 #endif
 #include "chrome/browser/ui/views/avora/avora_style_ai_key_dialog.h"
 #include "chrome/browser/ui/views/avora/avora_tab_sync_watcher.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -5528,6 +5529,11 @@ void BrowserView::AddedToWidget() {
   // can get it later when all we have is a native view.
   GetWidget()->SetNativeWindowProperty(Profile::kProfileKey,
                                        browser_->GetProfile());
+
+  // The window takes its active Space's theme (see avora_window_theme.h).
+  if (avora_window_space_state_) {
+    avora::WindowTheme::Attach(avora_window_space_state_.get(), GetWidget());
+  }
 
 #if defined(USE_AURA)
   // Stow a pointer to the browser's profile onto the window handle so

@@ -31,6 +31,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -63,13 +64,12 @@ namespace avora {
 namespace {
 
 // The panel borrows the sidebar's bubble palette so it reads as part of the
-// same surface as the manage bubble and the Space editor.
-constexpr SkColor kPanelBg = SkColorSetRGB(0x22, 0x28, 0x2E);
-constexpr SkColor kPrimaryText = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kSecondaryText = SkColorSetARGB(0x88, 0xED, 0xF2, 0xF5);
-constexpr SkColor kIconColor = SkColorSetARGB(0xBB, 0xED, 0xF2, 0xF5);
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x18, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kSeparatorColor = SkColorSetARGB(0x22, 0xFF, 0xFF, 0xFF);
+// same surface as the manage bubble and the Space editor: the window
+// palette's surface, with its text and wash at these alphas.
+constexpr SkAlpha kSecondaryTextAlpha = 0x88;
+constexpr SkAlpha kIconAlpha = 0xBB;
+constexpr SkAlpha kRowHoverAlpha = 0x18;
+constexpr SkAlpha kSeparatorAlpha = 0x22;
 constexpr SkColor kFailedText = SkColorSetRGB(0xE8, 0x7A, 0x7A);
 
 constexpr int kRowHeight = 48;
@@ -109,6 +109,18 @@ constexpr char kFolderIconPath[] =
 constexpr char kTrashIconPath[] =
     "M10 11v6 M14 11v6 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M3 6h18 M8 6V4"
     "a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2";
+
+SkColor SecondaryText(const SpaceThemePalette& palette) {
+  return SkColorSetA(palette.text, kSecondaryTextAlpha);
+}
+
+SkColor IconColor(const views::View* view) {
+  return SkColorSetA(WindowTheme::PaletteFor(view).text, kIconAlpha);
+}
+
+SkColor RowHoverColor(const views::View* view) {
+  return SkColorSetA(WindowTheme::PaletteFor(view).wash, kRowHoverAlpha);
+}
 
 gfx::FontList PanelFont(int size, gfx::Font::Weight weight) {
   return gfx::FontList({std::string("system-ui")}, gfx::Font::NORMAL, size,
@@ -243,11 +255,11 @@ class PanelIconButton : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      FillRoundRect(canvas, GetLocalBounds(), kRowHoverBg, 6);
+      FillRoundRect(canvas, GetLocalBounds(), RowHoverColor(this), 6);
     }
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kActionGlyphSize, kActionGlyphSize));
-    PaintLucidePathData(canvas, glyph, path_data_, kIconColor);
+    PaintLucidePathData(canvas, glyph, path_data_, IconColor(this));
   }
 
  private:
@@ -276,10 +288,11 @@ class DownloadStatusGlyph : public views::View {
 
   void OnPaint(gfx::Canvas* canvas) override {
     std::string_view path = kFileIconPath;
-    SkColor color = kIconColor;
+    SkColor color = IconColor(this);
     if (failed_ || state_ == download::DownloadItem::CANCELLED) {
       path = kAlertIconPath;
-      color = failed_ ? kFailedText : kSecondaryText;
+      color = failed_ ? kFailedText
+                      : SecondaryText(WindowTheme::PaletteFor(this));
     } else if (state_ == download::DownloadItem::IN_PROGRESS) {
       path = kDownloadIconPath;
     }
@@ -305,7 +318,7 @@ class PanelGlyph : public views::View {
   }
 
   void OnPaint(gfx::Canvas* canvas) override {
-    PaintLucidePathData(canvas, GetLocalBounds(), path_data_, kIconColor);
+    PaintLucidePathData(canvas, GetLocalBounds(), path_data_, IconColor(this));
   }
 
  private:
@@ -316,11 +329,13 @@ BEGIN_METADATA(PanelGlyph)
 END_METADATA
 
 // A small label introducing one part of the panel's list.
-std::unique_ptr<views::Label> MakeSectionHeader(const std::u16string& text) {
+std::unique_ptr<views::Label> MakeSectionHeader(
+    const std::u16string& text,
+    const SpaceThemePalette& palette) {
   auto label = std::make_unique<views::Label>(
       text, views::Label::CustomFont{
                 PanelFont(kStatusFontSize, gfx::Font::Weight::MEDIUM)});
-  label->SetEnabledColor(kSecondaryText);
+  label->SetEnabledColor(SecondaryText(palette));
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_MIDDLE);
   label->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, kRowHPad)));
@@ -339,6 +354,7 @@ class FileRowView : public views::Button {
 
   FileRowView(Profile* profile,
               const DownloadsFolderEntry& entry,
+              const SpaceThemePalette& palette,
               TrashCallback on_trash)
       : views::Button(base::BindRepeating(&FileRowView::OnPressed,
                                           base::Unretained(this))),
@@ -372,7 +388,7 @@ class FileRowView : public views::Button {
     auto name_label = std::make_unique<views::Label>(
         name, views::Label::CustomFont{
                   PanelFont(kFileNameFontSize, gfx::Font::Weight::NORMAL)});
-    name_label->SetEnabledColor(kPrimaryText);
+    name_label->SetEnabledColor(palette.text);
     name_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     name_label->SetElideBehavior(gfx::ELIDE_MIDDLE);
     text_column->AddChildView(std::move(name_label));
@@ -380,7 +396,7 @@ class FileRowView : public views::Button {
     auto detail_label = std::make_unique<views::Label>(
         detail, views::Label::CustomFont{
                     PanelFont(kStatusFontSize, gfx::Font::Weight::NORMAL)});
-    detail_label->SetEnabledColor(kSecondaryText);
+    detail_label->SetEnabledColor(SecondaryText(palette));
     detail_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     detail_label->SetElideBehavior(gfx::ELIDE_TAIL);
     text_column->AddChildView(std::move(detail_label));
@@ -409,7 +425,8 @@ class FileRowView : public views::Button {
   void OnPaintBackground(gfx::Canvas* canvas) override {
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      FillRoundRect(canvas, GetLocalBounds(), kRowHoverBg, kRowCornerRadius);
+      FillRoundRect(canvas, GetLocalBounds(), RowHoverColor(this),
+                    kRowCornerRadius);
     }
   }
 
@@ -440,11 +457,12 @@ class FileRowView : public views::Button {
 BEGIN_METADATA(FileRowView)
 END_METADATA
 
-std::unique_ptr<views::View> MakeSeparator() {
+std::unique_ptr<views::View> MakeSeparator(const SpaceThemePalette& palette) {
   auto separator = std::make_unique<views::View>();
   separator->SetPreferredSize(
       gfx::Size(DownloadsPanelView::kPanelWidth, kSeparatorHeight));
-  separator->SetBackground(views::CreateSolidBackground(kSeparatorColor));
+  separator->SetBackground(views::CreateSolidBackground(
+      SkColorSetA(palette.wash, kSeparatorAlpha)));
   return separator;
 }
 
@@ -499,10 +517,12 @@ class DownloadRowView : public views::Button {
   METADATA_HEADER(DownloadRowView, views::Button)
 
  public:
-  explicit DownloadRowView(download::DownloadItem* item)
+  DownloadRowView(download::DownloadItem* item,
+                  const SpaceThemePalette& palette)
       : views::Button(base::BindRepeating(&DownloadRowView::OnPressed,
                                           base::Unretained(this))),
-        item_(item) {
+        item_(item),
+        secondary_text_(SecondaryText(palette)) {
     SetPreferredSize(gfx::Size(DownloadsPanelView::kPanelWidth, kRowHeight));
     SetFocusBehavior(FocusBehavior::ALWAYS);
 
@@ -524,7 +544,7 @@ class DownloadRowView : public views::Button {
     auto name = std::make_unique<views::Label>(
         std::u16string(), views::Label::CustomFont{PanelFont(
                               kNameFontSize, gfx::Font::Weight::MEDIUM)});
-    name->SetEnabledColor(kPrimaryText);
+    name->SetEnabledColor(palette.text);
     name->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     name->SetElideBehavior(gfx::ELIDE_MIDDLE);
     name_label_ = text_column->AddChildView(std::move(name));
@@ -532,7 +552,7 @@ class DownloadRowView : public views::Button {
     auto status = std::make_unique<views::Label>(
         std::u16string(), views::Label::CustomFont{PanelFont(
                               kStatusFontSize, gfx::Font::Weight::NORMAL)});
-    status->SetEnabledColor(kSecondaryText);
+    status->SetEnabledColor(secondary_text_);
     status->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     status->SetElideBehavior(gfx::ELIDE_TAIL);
     status_label_ = text_column->AddChildView(std::move(status));
@@ -569,7 +589,7 @@ class DownloadRowView : public views::Button {
     name_label_->SetText(name);
     status_label_->SetText(status);
     status_label_->SetEnabledColor(IsFailed(item_) ? kFailedText
-                                                   : kSecondaryText);
+                                                   : secondary_text_);
     glyph_->SetDownloadState(item_->GetState(), IsFailed(item_));
 
     reveal_button_->SetVisible(
@@ -596,7 +616,8 @@ class DownloadRowView : public views::Button {
   void OnPaintBackground(gfx::Canvas* canvas) override {
     if (GetState() == views::Button::STATE_HOVERED ||
         GetState() == views::Button::STATE_PRESSED) {
-      FillRoundRect(canvas, GetLocalBounds(), kRowHoverBg, kRowCornerRadius);
+      FillRoundRect(canvas, GetLocalBounds(), RowHoverColor(this),
+                    kRowCornerRadius);
     }
   }
 
@@ -649,6 +670,7 @@ class DownloadRowView : public views::Button {
   }
 
   raw_ptr<download::DownloadItem> item_;
+  const SkColor secondary_text_;
 
   raw_ptr<DownloadStatusGlyph> glyph_ = nullptr;
   raw_ptr<views::Label> name_label_ = nullptr;
@@ -663,8 +685,9 @@ END_METADATA
 // --- DownloadsPanelView -----------------------------------------------------
 
 DownloadsPanelView::DownloadsPanelView(Profile* profile,
-                                       BrowserWindowInterface* browser)
-    : profile_(profile), browser_(browser) {
+                                       BrowserWindowInterface* browser,
+                                       const SpaceThemePalette& palette)
+    : profile_(profile), browser_(browser), palette_(palette) {
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(6, 0), 0));
   layout->set_cross_axis_alignment(
@@ -691,7 +714,7 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   auto title = std::make_unique<views::Label>(
       u"Downloads", views::Label::CustomFont{PanelFont(
                         kNameFontSize, gfx::Font::Weight::MEDIUM)});
-  title->SetEnabledColor(kPrimaryText);
+  title->SetEnabledColor(palette_.text);
   title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   views::View* title_raw = header->AddChildView(std::move(title));
   header_layout->SetFlexForView(title_raw, 1);
@@ -729,7 +752,8 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   contents_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kStretch);
 
-  active_header_ = contents->AddChildView(MakeSectionHeader(u"In progress"));
+  active_header_ =
+      contents->AddChildView(MakeSectionHeader(u"In progress", palette_));
 
   auto list = std::make_unique<views::View>();
   auto* list_layout = list->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -739,7 +763,8 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   list_ = contents->AddChildView(std::move(list));
 
   files_header_ =
-      contents->AddChildView(MakeSectionHeader(PrettyDirectory(folder_)));
+      contents->AddChildView(MakeSectionHeader(PrettyDirectory(folder_),
+                                               palette_));
   files_header_->SetTooltipText(folder_.LossyDisplayName());
 
   auto files = std::make_unique<views::View>();
@@ -753,7 +778,7 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   auto status = std::make_unique<views::Label>(
       u"Loading…", views::Label::CustomFont{PanelFont(
                         kStatusFontSize, gfx::Font::Weight::NORMAL)});
-  status->SetEnabledColor(kSecondaryText);
+  status->SetEnabledColor(SecondaryText(palette_));
   status->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   status->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(10, kRowHPad)));
   files_status_ = contents->AddChildView(std::move(status));
@@ -765,14 +790,14 @@ DownloadsPanelView::DownloadsPanelView(Profile* profile,
   // holds the history, including files saved somewhere other than this
   // folder.  Without a window to navigate, the row is simply absent.
   if (browser_) {
-    AddChildView(MakeSeparator());
+    AddChildView(MakeSeparator(palette_));
     auto all = std::make_unique<views::LabelButton>(
         base::BindRepeating(&DownloadsPanelView::ShowAllDownloads,
                             weak_factory_.GetWeakPtr()),
         u"Show download history");
-    all->SetTextColor(views::Button::STATE_NORMAL, kSecondaryText);
-    all->SetTextColor(views::Button::STATE_HOVERED, kPrimaryText);
-    all->SetTextColor(views::Button::STATE_PRESSED, kPrimaryText);
+    all->SetTextColor(views::Button::STATE_NORMAL, SecondaryText(palette_));
+    all->SetTextColor(views::Button::STATE_HOVERED, palette_.text);
+    all->SetTextColor(views::Button::STATE_PRESSED, palette_.text);
     all->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     all->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, kRowHPad)));
     all->SetPreferredSize(gfx::Size(kPanelWidth, kHeaderHeight));
@@ -908,7 +933,7 @@ void DownloadsPanelView::RebuildList() {
     item->AddObserver(this);
     observed_items_.push_back(item);
     rows_[item] =
-        list_->AddChildView(std::make_unique<DownloadRowView>(item));
+        list_->AddChildView(std::make_unique<DownloadRowView>(item, palette_));
   }
 
   if (active_header_) {
@@ -945,7 +970,7 @@ void DownloadsPanelView::OnFolderScanned(DownloadsFolderListing listing) {
   files_list_->RemoveAllChildViews();
   for (const DownloadsFolderEntry& entry : listing.entries) {
     files_list_->AddChildView(std::make_unique<FileRowView>(
-        profile_, entry,
+        profile_, entry, palette_,
         base::BindRepeating(&DownloadsPanelView::TrashFile,
                             weak_factory_.GetWeakPtr())));
   }
@@ -1053,14 +1078,16 @@ void ShowDownloadsPanel(views::View* anchor,
   delegate->SetTitle(u"");
   delegate->SetShowTitle(false);
   delegate->SetShowCloseButton(false);
-  delegate->SetBackgroundColor(kPanelBg);
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(anchor);
+  delegate->SetBackgroundColor(palette.surface);
 
   delegate->SetContentsView(
-      std::make_unique<DownloadsPanelView>(profile, browser));
+      std::make_unique<DownloadsPanelView>(profile, browser, palette));
 
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(delegate),
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  avora::WindowTheme::MatchColorMode(widget);
   widget->Show();
 }
 

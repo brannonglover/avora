@@ -108,6 +108,9 @@ class AvoraSidebarView : public views::View,
   // that should act as a window caption (draggable title bar).
   bool IsPositionInWindowCaption(const gfx::Point& point) const;
 
+  // views::View:
+  void OnThemeChanged() override;
+
   // views::TextfieldController:
   bool HandleKeyEvent(views::Textfield* sender,
                       const ui::KeyEvent& key_event) override;

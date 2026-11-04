@@ -153,6 +153,7 @@ class FolderHeaderView : public PinnedRowView,
   void BeginRename();
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
 
@@ -214,6 +215,7 @@ class FolderTabRow : public PinnedRowView {
   void SetFavicon(const gfx::ImageSkia& icon);
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -229,6 +231,7 @@ class FolderTabRow : public PinnedRowView {
   std::string url_;
   std::string title_;
   raw_ptr<views::ImageView> favicon_view_ = nullptr;
+  raw_ptr<views::Label> title_label_ = nullptr;
   // By value, not by const&: running this destroys the row that owns
   // item_id_ (see OnMousePressed).
   base::RepeatingCallback<void(std::string)> on_click_;
@@ -343,6 +346,7 @@ class PinnedTabRow : public PinnedRowView,
   void CommitRename();
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;

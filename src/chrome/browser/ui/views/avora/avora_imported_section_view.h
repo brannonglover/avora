@@ -72,6 +72,7 @@ class ImportedLinkRow : public views::View {
   void SetFavicon(const gfx::ImageSkia& icon);
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
@@ -116,6 +117,7 @@ class ImportedFolderRow : public views::View {
   ~ImportedFolderRow() override;
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -126,6 +128,7 @@ class ImportedFolderRow : public views::View {
   std::string item_id_;
   bool expanded_ = true;
   bool hovered_ = false;
+  raw_ptr<views::Label> label_ = nullptr;
   base::RepeatingCallback<void(const std::string&, const std::string&)>
       on_toggle_;
 };
@@ -144,6 +147,7 @@ class ImportedSectionHeader : public views::View {
   void SetExpanded(bool expanded);
 
   // views::View:
+  void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -175,10 +179,12 @@ class ImportedSourceHeader : public views::View {
   const std::string& source_id() const { return source_id_; }
 
   // views::View:
+  void OnThemeChanged() override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
 
  private:
   std::string source_id_;
+  raw_ptr<views::Label> label_ = nullptr;
   ContextCallback on_context_;
 };
 

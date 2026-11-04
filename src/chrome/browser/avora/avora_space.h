@@ -6,6 +6,7 @@
 #include <string>
 
 #include "base/values.h"
+#include "chrome/browser/avora/avora_space_theme.h"
 #include "third_party/skia/include/core/SkColor.h"
 
 namespace avora {
@@ -37,6 +38,10 @@ struct Space {
   // Accent colour as "#RRGGBB".  Drives the Space's icon colour and its
   // highlight in the Spaces bar.
   std::string accent_color;
+
+  // How the Space tints the window's chrome.  Empty keeps Avora's default
+  // look.  See avora_space_theme.h.
+  SpaceTheme theme;
 
   bool is_active = false;
 

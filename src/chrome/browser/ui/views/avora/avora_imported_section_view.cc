@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
@@ -83,11 +84,12 @@ class ImportedLinkMenuDelegate : public ui::SimpleMenuModel::Delegate {
 // and source headers use smaller/lighter text; link rows use the standard
 // favicon + title pattern at reduced height.
 
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kLabelColor = SkColorSetARGB(0xE0, 0xED, 0xF2, 0xF5);
-constexpr SkColor kSubtleColor = SkColorSetARGB(0x80, 0xED, 0xF2, 0xF5);
-constexpr SkColor kChevronColor = SkColorSetARGB(0xB0, 0xED, 0xF2, 0xF5);
-constexpr SkColor kSourceLabelColor = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
+// Alphas over the window palette's wash (the hover) and text (the rest).
+constexpr SkAlpha kRowHoverAlpha = 0x1A;
+constexpr SkAlpha kLabelAlpha = 0xE0;
+constexpr SkAlpha kSubtleAlpha = 0x80;
+constexpr SkAlpha kChevronAlpha = 0xB0;
+constexpr SkAlpha kSourceLabelAlpha = 0x99;
 
 constexpr int kHPadding = AvoraImportedSectionView::kHPadding;
 constexpr int kFaviconSize = AvoraImportedSectionView::kFaviconSize;
@@ -102,7 +104,12 @@ std::string FolderKey(const std::string& source_id,
   return source_id + ":" + item_id;
 }
 
-void PaintChevron(gfx::Canvas* canvas,
+SkColor TextColor(const views::View* view, SkAlpha alpha) {
+  return SkColorSetA(avora::WindowTheme::PaletteFor(view).text, alpha);
+}
+
+void PaintChevron(const views::View* view,
+                  gfx::Canvas* canvas,
                   int x,
                   int y,
                   bool expanded) {
@@ -122,16 +129,18 @@ void PaintChevron(gfx::Canvas* canvas,
 
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
-  flags.setColor(kChevronColor);
+  flags.setColor(TextColor(view, kChevronAlpha));
   flags.setStyle(cc::PaintFlags::kFill_Style);
   canvas->DrawPath(builder.detach(), flags);
 }
 
-void PaintHoverBackground(gfx::Canvas* canvas,
+void PaintHoverBackground(const views::View* view,
+                          gfx::Canvas* canvas,
                           const gfx::Rect& bounds) {
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
-  flags.setColor(kRowHoverBg);
+  flags.setColor(SkColorSetA(avora::WindowTheme::PaletteFor(view).wash,
+                             kRowHoverAlpha));
   flags.setStyle(cc::PaintFlags::kFill_Style);
   canvas->DrawRoundRect(gfx::RectF(bounds), 6.0f, flags);
 }
@@ -170,7 +179,6 @@ ImportedLinkRow::ImportedLinkRow(const std::string& source_id,
 
   auto label = std::make_unique<views::Label>(
       base::UTF8ToUTF16(title.empty() ? url : title));
-  label->SetEnabledColor(kLabelColor);
   label->SetFontList(gfx::FontList({"system-ui"}, gfx::Font::NORMAL, 12,
                                    gfx::Font::Weight::NORMAL));
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
@@ -180,6 +188,11 @@ ImportedLinkRow::ImportedLinkRow(const std::string& source_id,
 }
 
 ImportedLinkRow::~ImportedLinkRow() = default;
+
+void ImportedLinkRow::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  title_label_->SetEnabledColor(TextColor(this, kLabelAlpha));
+}
 
 void ImportedLinkRow::SetFavicon(const gfx::ImageSkia& icon) {
   if (favicon_view_) {
@@ -192,7 +205,7 @@ void ImportedLinkRow::SetFavicon(const gfx::ImageSkia& icon) {
 
 void ImportedLinkRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (hovered_) {
-    PaintHoverBackground(canvas, GetLocalBounds());
+    PaintHoverBackground(this, canvas, GetLocalBounds());
   }
 }
 
@@ -328,20 +341,24 @@ ImportedFolderRow::ImportedFolderRow(
   AddChildView(std::move(spacer));
 
   auto label = std::make_unique<views::Label>(base::UTF8ToUTF16(title));
-  label->SetEnabledColor(kLabelColor);
   label->SetFontList(gfx::FontList({"system-ui"}, gfx::Font::NORMAL, 12,
                                    gfx::Font::Weight::MEDIUM));
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetElideBehavior(gfx::ELIDE_TAIL);
-  AddChildView(std::move(label));
-  layout->SetFlexForView(children().back(), 1);
+  label_ = AddChildView(std::move(label));
+  layout->SetFlexForView(label_, 1);
 }
 
 ImportedFolderRow::~ImportedFolderRow() = default;
 
+void ImportedFolderRow::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(TextColor(this, kLabelAlpha));
+}
+
 void ImportedFolderRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (hovered_) {
-    PaintHoverBackground(canvas, GetLocalBounds());
+    PaintHoverBackground(this, canvas, GetLocalBounds());
   }
   // Paint the disclosure chevron.
   const int left_pad = GetLayoutManager()
@@ -350,7 +367,7 @@ void ImportedFolderRow::OnPaintBackground(gfx::Canvas* canvas) {
                                  .left()
                            : kHPadding;
   const int chevron_y = (height() - kChevronSize) / 2;
-  PaintChevron(canvas, left_pad, chevron_y, expanded_);
+  PaintChevron(this, canvas, left_pad, chevron_y, expanded_);
 }
 
 bool ImportedFolderRow::OnMousePressed(const ui::MouseEvent& event) {
@@ -396,7 +413,6 @@ ImportedSectionHeader::ImportedSectionHeader(
   AddChildView(std::move(spacer));
 
   auto lbl = std::make_unique<views::Label>(u"Imported");
-  lbl->SetEnabledColor(kSubtleColor);
   lbl->SetFontList(gfx::FontList({"system-ui"}, gfx::Font::NORMAL, 11,
                                   gfx::Font::Weight::MEDIUM));
   lbl->SetHorizontalAlignment(gfx::ALIGN_LEFT);
@@ -406,6 +422,11 @@ ImportedSectionHeader::ImportedSectionHeader(
 
 ImportedSectionHeader::~ImportedSectionHeader() = default;
 
+void ImportedSectionHeader::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(TextColor(this, kSubtleAlpha));
+}
+
 void ImportedSectionHeader::SetExpanded(bool expanded) {
   expanded_ = expanded;
   SchedulePaint();
@@ -413,10 +434,10 @@ void ImportedSectionHeader::SetExpanded(bool expanded) {
 
 void ImportedSectionHeader::OnPaintBackground(gfx::Canvas* canvas) {
   if (hovered_) {
-    PaintHoverBackground(canvas, GetLocalBounds());
+    PaintHoverBackground(this, canvas, GetLocalBounds());
   }
   const int chevron_y = (height() - kChevronSize) / 2;
-  PaintChevron(canvas, kHPadding, chevron_y, expanded_);
+  PaintChevron(this, canvas, kHPadding, chevron_y, expanded_);
 }
 
 bool ImportedSectionHeader::OnMousePressed(const ui::MouseEvent& event) {
@@ -480,16 +501,20 @@ ImportedSourceHeader::ImportedSourceHeader(const std::string& source_id,
   }
 
   auto lbl = std::make_unique<views::Label>(base::UTF8ToUTF16(text));
-  lbl->SetEnabledColor(kSourceLabelColor);
   lbl->SetFontList(gfx::FontList({"system-ui"}, gfx::Font::NORMAL, 10,
                                   gfx::Font::Weight::MEDIUM));
   lbl->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   lbl->SetElideBehavior(gfx::ELIDE_TAIL);
-  AddChildView(std::move(lbl));
-  layout->SetFlexForView(children().back(), 1);
+  label_ = AddChildView(std::move(lbl));
+  layout->SetFlexForView(label_, 1);
 }
 
 ImportedSourceHeader::~ImportedSourceHeader() = default;
+
+void ImportedSourceHeader::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(TextColor(this, kSourceLabelAlpha));
+}
 
 bool ImportedSourceHeader::OnMousePressed(const ui::MouseEvent& event) {
   if (event.IsOnlyRightMouseButton() && on_context_) {

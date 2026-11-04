@@ -29,7 +29,8 @@ bool ParseDigits(std::string_view text, size_t pos, size_t count, int* out) {
 
 const std::vector<std::string_view>& ContentColumns(SharedTable table) {
   static const base::NoDestructor<std::vector<std::string_view>> kSpaces(
-      std::vector<std::string_view>{"name", "icon", "color", "position"});
+      std::vector<std::string_view>{"name", "icon", "color", "theme",
+                                    "position"});
   static const base::NoDestructor<std::vector<std::string_view>> kItems(
       std::vector<std::string_view>{
           "space_id", "kind", "parent_id", "url", "title", "favicon_url",

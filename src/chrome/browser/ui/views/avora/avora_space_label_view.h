@@ -40,6 +40,9 @@ class AvoraSpaceLabelView : public views::View,
 
   SpaceManager* GetSpaceManager() const { return space_manager_.get(); }
 
+  // views::View:
+  void OnThemeChanged() override;
+
   // SpaceManagerObserver:
   void OnSpacesChanged() override;
   void OnActiveSpaceChanged(const std::string& space_id) override;

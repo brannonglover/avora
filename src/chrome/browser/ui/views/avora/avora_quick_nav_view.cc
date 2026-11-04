@@ -11,6 +11,7 @@
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/vector_icons/vector_icons.h"
@@ -42,20 +43,20 @@ namespace avora {
 namespace {
 
 // ── Colour palette ──────────────────────────────────────────────────────────
+// The backdrop dims the page, whatever the window's theme.
 constexpr SkColor kBackdropColor = SkColorSetARGB(0x44, 0x10, 0x10, 0x18);
 
-constexpr SkColor kCardBg = SkColorSetARGB(0xDD, 0x1E, 0x22, 0x2A);
-constexpr SkColor kCardBorder = SkColorSetARGB(0x30, 0xFF, 0xFF, 0xFF);
-
-constexpr SkColor kInputBg = SkColorSetRGB(0x14, 0x17, 0x1C);
+// The card is the window palette's surface, translucent over the blurred
+// backdrop, and its input sits in the sidebar's colour.  Before windows had
+// themes they were the near shades #1E222A and #14171C, and titles #E0E4E8.
+constexpr SkAlpha kCardAlpha = 0xDD;
+constexpr SkAlpha kCardBorderAlpha = 0x30;
 constexpr SkColor kInputBorderFocused = SkColorSetARGB(0x66, 0x6E, 0xA1, 0xF7);
-constexpr SkColor kInputText = SkColorSetRGB(0xED, 0xF2, 0xF5);
 
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x18, 0xFF, 0xFF, 0xFF);
+constexpr SkAlpha kRowHoverAlpha = 0x18;
 constexpr SkColor kRowSelectedBg = SkColorSetARGB(0x30, 0x6E, 0xA1, 0xF7);
 constexpr SkColor kRowSelectedBorder = SkColorSetARGB(0x55, 0x6E, 0xA1, 0xF7);
-constexpr SkColor kTitleColor = SkColorSetRGB(0xE0, 0xE4, 0xE8);
-constexpr SkColor kDomainColor = SkColorSetARGB(0x77, 0xED, 0xF2, 0xF5);
+constexpr SkAlpha kDomainAlpha = 0x77;
 
 constexpr int kBackdropBlurRadius = 12;
 constexpr float kBackdropBlurQuality = 0.33f;
@@ -67,6 +68,11 @@ constexpr int kRowIconGap = 12;
 constexpr int kListTopPadding = 16;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// Domains, and the search glyph, are the palette's text at kDomainAlpha.
+SkColor DomainColor(const views::View* view) {
+  return SkColorSetA(WindowTheme::PaletteFor(view).text, kDomainAlpha);
+}
 
 std::string StripUrlPrefix(const std::string& url_str) {
   GURL url(url_str);
@@ -122,10 +128,6 @@ class InputWrapper : public views::View {
 
  public:
   InputWrapper() {
-    SetBackground(std::make_unique<RoundedBackground>(
-        kInputBg, kInputBorderFocused,
-        AvoraQuickNavView::kInputCornerRadius));
-
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
         gfx::Insets::VH(0, 10), kRowIconGap));
@@ -134,6 +136,13 @@ class InputWrapper : public views::View {
   }
 
   ~InputWrapper() override = default;
+
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    SetBackground(std::make_unique<RoundedBackground>(
+        WindowTheme::PaletteFor(this).sidebar_top, kInputBorderFocused,
+        AvoraQuickNavView::kInputCornerRadius));
+  }
 };
 
 BEGIN_METADATA(InputWrapper)
@@ -172,10 +181,6 @@ class ResultRowView : public views::Button {
     icon->SetPreferredSize(gfx::Size(kFaviconSize, kFaviconSize));
     icon->SetHorizontalAlignment(views::ImageView::Alignment::kCenter);
     icon->SetVerticalAlignment(views::ImageView::Alignment::kCenter);
-    if (is_search_) {
-      icon->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kSearchIcon, kDomainColor, kFaviconSize));
-    }
     icon_view_ = AddChildView(std::move(icon));
 
     // Title label.
@@ -184,7 +189,6 @@ class ResultRowView : public views::Button {
         views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                                 gfx::Font::NORMAL, 13,
                                                 gfx::Font::Weight::MEDIUM)});
-    title_label->SetEnabledColor(kTitleColor);
     title_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     title_label->SetElideBehavior(gfx::ELIDE_TAIL);
     title_label_ = AddChildView(std::move(title_label));
@@ -196,7 +200,6 @@ class ResultRowView : public views::Button {
         views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                                 gfx::Font::NORMAL, 12,
                                                 gfx::Font::Weight::NORMAL)});
-    detail_label->SetEnabledColor(kDomainColor);
     detail_label->SetHorizontalAlignment(gfx::ALIGN_RIGHT);
     detail_label->SetVisible(!detail.empty());
     detail_label_ = AddChildView(std::move(detail_label));
@@ -207,6 +210,16 @@ class ResultRowView : public views::Button {
   }
 
   ~ResultRowView() override = default;
+
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    title_label_->SetEnabledColor(WindowTheme::PaletteFor(this).text);
+    detail_label_->SetEnabledColor(DomainColor(this));
+    if (is_search_) {
+      icon_view_->SetImage(ui::ImageModel::FromVectorIcon(
+          vector_icons::kSearchIcon, DomainColor(this), kFaviconSize));
+    }
+  }
 
   // Identity of the row, and the string committed when it is chosen: the
   // destination URL for navigations, the raw query for searches.
@@ -257,7 +270,8 @@ class ResultRowView : public views::Button {
                GetState() == views::Button::STATE_PRESSED) {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      flags.setColor(kRowHoverBg);
+      flags.setColor(
+          SkColorSetA(WindowTheme::PaletteFor(this).wash, kRowHoverAlpha));
       flags.setStyle(cc::PaintFlags::kFill_Style);
       canvas->DrawRoundRect(GetLocalBounds(), r, flags);
     }
@@ -569,8 +583,7 @@ void AvoraQuickNavView::BuildCard() {
   card->layer()->SetRoundedCornerRadius(
       gfx::RoundedCornersF(kCardCornerRadius));
 
-  card->SetBackground(std::make_unique<RoundedBackground>(
-      kCardBg, kCardBorder, kCardCornerRadius));
+  // The card's fill follows the theme; see OnThemeChanged().
 
   auto* card_layout =
       card->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -588,8 +601,6 @@ void AvoraQuickNavView::BuildCard() {
   auto input_icon = std::make_unique<views::ImageView>();
   input_icon->SetImageSize(gfx::Size(kInputFaviconSize, kInputFaviconSize));
   input_icon->SetPreferredSize(gfx::Size(kInputFaviconSize, kInputFaviconSize));
-  input_icon->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
   input_icon->SetVisible(true);
   input_favicon_ = input_wrapper->AddChildView(std::move(input_icon));
 
@@ -597,8 +608,6 @@ void AvoraQuickNavView::BuildCard() {
   field->SetFontList(gfx::FontList({std::string("system-ui")},
                                     gfx::Font::NORMAL, 15,
                                     gfx::Font::Weight::NORMAL));
-  field->SetColor(kInputText);
-  field->SetBackgroundColor(kInputBg);
   field->SetBorder(nullptr);
   field->SetPlaceholderText(u"Search or enter a URL\u2026");
   field->set_controller(this);
@@ -1010,8 +1019,24 @@ void AvoraQuickNavView::ResetInputIcon() {
     return;
   }
   input_favicon_->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kSearchIcon, kDomainColor, kInputFaviconSize));
+      vector_icons::kSearchIcon, DomainColor(this), kInputFaviconSize));
   input_favicon_->SetVisible(true);
+}
+
+void AvoraQuickNavView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  // Children hear of the change first, so the textfield has already reset its
+  // text colour from Chromium's colour provider; this puts the palette's back.
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(this);
+  card_->SetBackground(std::make_unique<RoundedBackground>(
+      SkColorSetA(palette.surface, kCardAlpha),
+      SkColorSetA(palette.wash, kCardBorderAlpha), kCardCornerRadius));
+  input_field_->SetColor(palette.text);
+  input_field_->SetBackgroundColor(palette.sidebar_top);
+  // Only the search glyph is drawn in the palette; a favicon stays as it is.
+  if (input_favicon_url_.empty()) {
+    ResetInputIcon();
+  }
 }
 
 BEGIN_METADATA(AvoraQuickNavView)

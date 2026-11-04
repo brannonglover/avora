@@ -10,6 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "chrome/browser/avora/avora_space_theme.h"
 #include "components/download/public/common/download_item.h"
 #include "content/public/browser/download_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -81,7 +82,11 @@ class DownloadsPanelView : public views::View,
   // Downloads folder can hold thousands of files, and a row is a view.
   static constexpr size_t kMaxFileRows = 300;
 
-  DownloadsPanelView(Profile* profile, BrowserWindowInterface* browser);
+  // |palette| is the anchor window's: rows are built before they are in the
+  // panel's widget, and so before they could look it up themselves.
+  DownloadsPanelView(Profile* profile,
+                     BrowserWindowInterface* browser,
+                     const SpaceThemePalette& palette);
   DownloadsPanelView(const DownloadsPanelView&) = delete;
   DownloadsPanelView& operator=(const DownloadsPanelView&) = delete;
   ~DownloadsPanelView() override;
@@ -140,6 +145,8 @@ class DownloadsPanelView : public views::View,
   raw_ptr<BrowserWindowInterface> browser_;
 
   raw_ptr<content::DownloadManager> manager_ = nullptr;
+
+  const SpaceThemePalette palette_;
 
   // The folder the files list shows: where downloads are saved.
   base::FilePath folder_;

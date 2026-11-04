@@ -394,6 +394,36 @@ void SpaceManager::SetSpaceAccentColor(const std::string& id,
   NotifySpacesChanged();
 }
 
+void SpaceManager::SetSpaceTheme(const std::string& id,
+                                 const SpaceTheme& theme,
+                                 const std::string& accent_color) {
+  RefreshCacheIfNeeded();
+  auto spaces = cached_spaces_;
+  bool changed = false;
+  for (auto& space : spaces) {
+    if (space.id != id) {
+      continue;
+    }
+    if (space.theme != theme) {
+      space.theme = theme;
+      changed = true;
+    }
+    if (!accent_color.empty()) {
+      const std::string accent = NormalizeSpaceAccentColor(accent_color);
+      if (space.accent_color != accent) {
+        space.accent_color = accent;
+        changed = true;
+      }
+    }
+    break;
+  }
+  if (!changed) {
+    return;
+  }
+  SaveSpaces(spaces);
+  NotifySpacesChanged();
+}
+
 void SpaceManager::UpdateSpace(const std::string& id,
                                const std::string& name,
                                const std::string& icon,

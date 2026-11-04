@@ -10,6 +10,7 @@
 #include "base/supports_user_data.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -51,10 +52,11 @@ constexpr Quote kQuotes[] = {
 };
 
 // The content card's own colouring and corner, so the quote reads as the page
-// having been set aside rather than as a dialog on top of it.
-constexpr SkColor kBackgroundColor = SkColorSetRGB(0x16, 0x19, 0x1E);
-constexpr SkColor kQuoteColor = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kAttributionColor = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
+// having been set aside rather than as a dialog on top of it: the window
+// palette's sidebar fill (a shade off the #16191E it had before windows had
+// themes), with the quote in its text and the attribution in its text at this
+// alpha.
+constexpr SkAlpha kAttributionAlpha = 0x99;
 constexpr float kCornerRadius = 10.0f;
 
 // Display sizes: the quote is the only thing on screen, so it is set large
@@ -143,7 +145,6 @@ AvoraParkedPinView::AvoraParkedPinView(TabStripModel* tab_strip)
           DisplayFont(kQuoteFontSize, gfx::Font::Weight::MEDIUM)});
   quote->SetMultiLine(true);
   quote->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-  quote->SetEnabledColor(kQuoteColor);
   quote->SetAutoColorReadabilityEnabled(false);
   quote_label_ = column->AddChildView(std::move(quote));
 
@@ -152,7 +153,6 @@ AvoraParkedPinView::AvoraParkedPinView(TabStripModel* tab_strip)
       views::Label::CustomFont{
           DisplayFont(kAttributionFontSize, gfx::Font::Weight::NORMAL)});
   attribution->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-  attribution->SetEnabledColor(kAttributionColor);
   attribution->SetAutoColorReadabilityEnabled(false);
   attribution_label_ = column->AddChildView(std::move(attribution));
 
@@ -171,11 +171,19 @@ AvoraParkedPinView::~AvoraParkedPinView() {
   }
 }
 
+void AvoraParkedPinView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(this);
+  quote_label_->SetEnabledColor(palette.text);
+  attribution_label_->SetEnabledColor(
+      SkColorSetA(palette.text, kAttributionAlpha));
+}
+
 void AvoraParkedPinView::OnPaintBackground(gfx::Canvas* canvas) {
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
   flags.setStyle(cc::PaintFlags::kFill_Style);
-  flags.setColor(kBackgroundColor);
+  flags.setColor(WindowTheme::PaletteFor(this).sidebar_top);
   canvas->DrawRect(GetLocalBounds(), flags);
 }
 

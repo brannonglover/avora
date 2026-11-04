@@ -53,6 +53,9 @@ class AvoraToastView : public views::View,
   // Fades the toast out early.
   void Hide();
 
+  // views::View:
+  void OnThemeChanged() override;
+
   // ui::ImplicitAnimationObserver:
   void OnImplicitAnimationsCompleted() override;
 

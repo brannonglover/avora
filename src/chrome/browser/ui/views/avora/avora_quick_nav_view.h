@@ -96,6 +96,7 @@ class AvoraQuickNavView : public views::View,
   bool OnKeyPressed(const ui::KeyEvent& event) override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void VisibilityChanged(views::View* starting_from, bool is_visible) override;
+  void OnThemeChanged() override;
 
   // views::TextfieldController:
   bool HandleKeyEvent(views::Textfield* sender,

@@ -14,7 +14,9 @@
 #include "base/strings/utf_string_conversions.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/avora/avora_space_icons.h"
+#include "chrome/browser/avora/avora_space_theme.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -44,12 +46,15 @@ namespace avora {
 
 namespace {
 
-constexpr SkColor kBubbleBg = SkColorSetRGB(0x1B, 0x1F, 0x26);
-constexpr SkColor kFieldBg = SkColorSetRGB(0x26, 0x2C, 0x34);
-constexpr SkColor kPrimaryText = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kSecondaryText = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
-constexpr SkColor kHoverBg = SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kSelectionRing = SkColorSetARGB(0xFF, 0xFF, 0xFF, 0xFF);
+// The editor paints in the palette of the window it opened from (see
+// avora_window_theme.h); these are the alphas it lays over that palette.
+constexpr SkAlpha kSecondaryTextAlpha = 0x99;
+constexpr SkAlpha kHoverAlpha = 0x1A;
+constexpr SkAlpha kSelectionRingAlpha = 0x66;
+constexpr SkAlpha kIconGlyphAlpha = 0xCC;
+
+// An icon shows in this when its Space's accent can't be read.
+constexpr SkColor kFallbackAccent = SkColorSetRGB(0xED, 0xF2, 0xF5);
 
 constexpr int kContentWidth = 300;
 constexpr int kGridColumns = 8;
@@ -153,6 +158,7 @@ class IconGridButton : public views::Button {
   }
 
   void PaintButtonContents(gfx::Canvas* canvas) override {
+    const SpaceThemePalette& palette = WindowTheme::PaletteFor(this);
     const bool hovered = GetState() == views::Button::STATE_HOVERED ||
                          GetState() == views::Button::STATE_PRESSED;
     if (selected_) {
@@ -162,18 +168,20 @@ class IconGridButton : public views::Button {
       ring.setAntiAlias(true);
       ring.setStyle(cc::PaintFlags::kStroke_Style);
       ring.setStrokeWidth(1.5f);
-      ring.setColor(SkColorSetA(kSelectionRing, 0x66));
+      ring.setColor(SkColorSetA(palette.text, kSelectionRingAlpha));
       gfx::RectF inset(GetLocalBounds());
       inset.Inset(0.75f);
       canvas->DrawRoundRect(inset, kIconButtonRadius, ring);
     } else if (hovered) {
-      FillRoundRect(canvas, GetLocalBounds(), kHoverBg, kIconButtonRadius);
+      FillRoundRect(canvas, GetLocalBounds(),
+                    SkColorSetA(palette.wash, kHoverAlpha), kIconButtonRadius);
     }
 
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kIconGlyphSize, kIconGlyphSize));
     PaintLucideIcon(canvas, glyph, icon_id_,
-                    selected_ ? accent_ : SkColorSetA(kPrimaryText, 0xCC));
+                    selected_ ? accent_
+                              : SkColorSetA(palette.text, kIconGlyphAlpha));
   }
 
  private:
@@ -246,8 +254,10 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
   METADATA_HEADER(SpaceEditorView, views::View)
 
  public:
-  explicit SpaceEditorView(const SpaceEditorFields& initial)
-      : icon_(NormalizeSpaceIconId(initial.icon)),
+  SpaceEditorView(const SpaceEditorFields& initial,
+                  const SpaceThemePalette& palette)
+      : palette_(palette),
+        icon_(NormalizeSpaceIconId(initial.icon)),
         accent_color_(NormalizeSpaceAccentColor(initial.accent_color)) {
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), kRowGap));
@@ -272,6 +282,19 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
   void FocusNameField() {
     name_field_->RequestFocus();
     name_field_->SelectAll(true);
+  }
+
+  // views::View:
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    // Textfield takes its text colour from Chromium's colour provider when
+    // its own theme changes, which runs before this; the palette goes back.
+    for (views::Textfield* field : {name_field_.get(), search_field_.get()}) {
+      if (field) {
+        field->SetColor(palette_.text);
+        field->SetBackgroundColor(palette_.raised);
+      }
+    }
   }
 
   // views::TextfieldController:
@@ -314,8 +337,8 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
     field->SetText(base::UTF8ToUTF16(name));
     field->SetPlaceholderText(u"Space name");
     field->SetFontList(UiFont(13, gfx::Font::Weight::MEDIUM));
-    field->SetColor(kPrimaryText);
-    field->SetBackgroundColor(kFieldBg);
+    field->SetColor(palette_.text);
+    field->SetBackgroundColor(palette_.raised);
     field->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(7, 10)));
     field->GetViewAccessibility().SetName(u"Space name");
     name_field_ = row->AddChildView(std::move(field));
@@ -337,7 +360,7 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
           std::make_unique<AccentSwatchButton>(
               base::BindRepeating(&SpaceEditorView::OnAccentSelected,
                                   base::Unretained(this), color),
-              color, ParseSpaceAccentColor(color, kPrimaryText),
+              color, ParseSpaceAccentColor(color, kFallbackAccent),
               color == accent_color_)));
     }
     return row;
@@ -348,8 +371,8 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
     field->SetController(this);
     field->SetPlaceholderText(u"Search icons");
     field->SetFontList(UiFont(12, gfx::Font::Weight::NORMAL));
-    field->SetColor(kPrimaryText);
-    field->SetBackgroundColor(kFieldBg);
+    field->SetColor(palette_.text);
+    field->SetBackgroundColor(palette_.raised);
     field->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 10)));
     field->GetViewAccessibility().SetName(u"Search icons");
     search_field_ = field.get();
@@ -420,7 +443,7 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
       auto empty = std::make_unique<views::Label>(
           u"No icons match that search",
           views::Label::CustomFont{UiFont(12, gfx::Font::Weight::NORMAL)});
-      empty->SetEnabledColor(kSecondaryText);
+      empty->SetEnabledColor(SkColorSetA(palette_.text, kSecondaryTextAlpha));
       empty->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       grid_container_->AddChildView(std::move(empty));
     }
@@ -437,12 +460,12 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
            base::ToLowerASCII(icon.category).find(query) != std::string::npos;
   }
 
-  static std::unique_ptr<views::Label> MakeSectionLabel(
-      std::string_view category) {
+  std::unique_ptr<views::Label> MakeSectionLabel(
+      std::string_view category) const {
     auto label = std::make_unique<views::Label>(
         base::UTF8ToUTF16(category),
         views::Label::CustomFont{UiFont(11, gfx::Font::Weight::MEDIUM)});
-    label->SetEnabledColor(kSecondaryText);
+    label->SetEnabledColor(SkColorSetA(palette_.text, kSecondaryTextAlpha));
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(4, 2, 0, 0)));
     return label;
@@ -456,7 +479,7 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
   }
 
   SkColor AccentColor() const {
-    return ParseSpaceAccentColor(accent_color_, kPrimaryText);
+    return ParseSpaceAccentColor(accent_color_, kFallbackAccent);
   }
 
   void OnIconSelected(const std::string& icon_id) {
@@ -485,6 +508,8 @@ class SpaceEditorView : public views::View, public views::TextfieldController {
   std::vector<raw_ptr<IconGridButton>> icon_buttons_;
   std::vector<raw_ptr<AccentSwatchButton>> swatch_buttons_;
 
+  // The palette of the window the editor opened from.
+  const SpaceThemePalette palette_;
   std::string icon_;
   std::string accent_color_;
 };
@@ -509,7 +534,8 @@ void ShowSpaceEditorBubble(
   delegate->SetTitle(title);
   delegate->SetShowTitle(true);
   delegate->SetShowCloseButton(false);
-  delegate->SetBackgroundColor(kBubbleBg);
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(anchor_view);
+  delegate->SetBackgroundColor(palette.surface);
   delegate->set_margins(gfx::Insets::VH(12, 16));
   delegate->set_fixed_width(kContentWidth + 32);
   delegate->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
@@ -518,7 +544,7 @@ void ShowSpaceEditorBubble(
   delegate->SetButtonLabel(ui::mojom::DialogButton::kCancel, u"Cancel");
 
   auto* editor = delegate->SetContentsView(
-      std::make_unique<SpaceEditorView>(initial_fields));
+      std::make_unique<SpaceEditorView>(initial_fields, palette));
 
   delegate->SetAcceptCallback(base::BindOnce(
       [](SpaceEditorView* editor,
@@ -532,6 +558,7 @@ void ShowSpaceEditorBubble(
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(delegate),
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  avora::WindowTheme::MatchColorMode(widget);
   widget->Show();
   editor->FocusNameField();
 }

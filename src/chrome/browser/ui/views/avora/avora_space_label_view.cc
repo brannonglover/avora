@@ -7,6 +7,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/font_list.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -25,7 +26,8 @@ namespace {
 constexpr int kRowHeight = 28;
 constexpr int kHorizontalInset = 16;
 constexpr int kFontSize = 12;
-constexpr SkColor kTextColor = SkColorSetARGB(0x80, 0xED, 0xF2, 0xF5);
+// The window palette's text at this alpha.
+constexpr SkAlpha kTextAlpha = 0x80;
 
 }  // namespace
 
@@ -44,7 +46,6 @@ AvoraSpaceLabelView::AvoraSpaceLabelView(BrowserWindowInterface* browser,
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                              gfx::Font::NORMAL, kFontSize,
                                              gfx::Font::Weight::MEDIUM)});
-  label->SetEnabledColor(kTextColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   // This label paints over VerticalTabStripRegionView's non-opaque layer with
   // no opaque background in between, so subpixel anti-aliasing would sample
@@ -74,6 +75,12 @@ AvoraSpaceLabelView::~AvoraSpaceLabelView() {
   if (space_manager_) {
     space_manager_->RemoveObserver(this);
   }
+}
+
+void AvoraSpaceLabelView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(
+      SkColorSetA(WindowTheme::PaletteFor(this).text, kTextAlpha));
 }
 
 void AvoraSpaceLabelView::OnSpacesChanged() {

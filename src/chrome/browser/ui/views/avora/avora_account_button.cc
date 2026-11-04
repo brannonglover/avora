@@ -25,6 +25,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/views/avora/avora_lucide_icon.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -71,15 +72,15 @@ constexpr int kButtonCornerRadius = 8;
 // The person sits above every Space, so the avatar takes no Space's accent.
 constexpr SkColor kAvatarFill = SkColorSetRGB(0x5B, 0x6B, 0x7D);
 constexpr SkColor kAvatarText = SK_ColorWHITE;
-constexpr SkColor kButtonHoverBg = SkColorSetARGB(0x14, 0xFF, 0xFF, 0xFF);
+// The button's hover: the window palette's wash at this alpha.
+constexpr SkAlpha kButtonHoverAlpha = 0x14;
 
-// The menu matches the Manage bubble (AvoraSidebarView), its sibling.
-constexpr SkColor kMenuBg = SkColorSetRGB(0x22, 0x28, 0x2E);
-constexpr SkColor kSectionText = SkColorSetARGB(0x88, 0xED, 0xF2, 0xF5);
-constexpr SkColor kRowText = SkColorSetRGB(0xED, 0xF2, 0xF5);
-constexpr SkColor kRowSubText = SkColorSetARGB(0x99, 0xED, 0xF2, 0xF5);
-constexpr SkColor kRowHoverBg = SkColorSetARGB(0x18, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kRowIconColor = SkColorSetARGB(0xBB, 0xED, 0xF2, 0xF5);
+// The menu matches the Manage bubble (AvoraSidebarView), its sibling: the
+// palette's surface, with its text and wash at these alphas.
+constexpr SkAlpha kSectionTextAlpha = 0x88;
+constexpr SkAlpha kRowSubTextAlpha = 0x99;
+constexpr SkAlpha kRowHoverAlpha = 0x18;
+constexpr SkAlpha kRowIconAlpha = 0xBB;
 constexpr int kMenuWidth = 260;
 constexpr int kRowHeight = 36;
 constexpr int kTwoLineRowHeight = 46;
@@ -93,8 +94,8 @@ constexpr char kChevronLeftIconPath[] = "m15 18-6-6 6-6";
 constexpr int kBackButtonSize = 24;
 constexpr int kFieldHeight = 32;
 constexpr int kPrimaryButtonHeight = 32;
-constexpr SkColor kFieldBg = SkColorSetRGB(0x18, 0x1C, 0x20);
-constexpr SkColor kFieldBorder = SkColorSetARGB(0x33, 0xED, 0xF2, 0xF5);
+// Fields sit in the sidebar's colour, outlined in the palette's text.
+constexpr SkAlpha kFieldBorderAlpha = 0x33;
 constexpr SkColor kPrimaryButtonBg = SkColorSetRGB(0x3B, 0x82, 0xF6);
 constexpr SkColor kPrimaryButtonHoverBg = SkColorSetRGB(0x2F, 0x6F, 0xE0);
 constexpr SkColor kErrorText = SkColorSetRGB(0xFF, 0x8A, 0x80);
@@ -110,6 +111,18 @@ constexpr char kExtensionsUrl[] = "chrome://extensions/";
 gfx::FontList SystemFont(int size, gfx::Font::Weight weight) {
   return gfx::FontList({std::string("system-ui")}, gfx::Font::NORMAL, size,
                        weight);
+}
+
+SkColor RowSubText(const SpaceThemePalette& palette) {
+  return SkColorSetA(palette.text, kRowSubTextAlpha);
+}
+
+SkColor RowIconColor(const SpaceThemePalette& palette) {
+  return SkColorSetA(palette.text, kRowIconAlpha);
+}
+
+SkColor RowHoverColor(const views::View* view) {
+  return SkColorSetA(WindowTheme::PaletteFor(view).wash, kRowHoverAlpha);
 }
 
 // ── The OS account, read once per run and shared by every window ──
@@ -233,7 +246,8 @@ std::unique_ptr<views::Label> MakeLabel(const std::u16string& text,
 }
 
 // One row of the menu: an icon, a title with an optional second line, and a
-// check when it is the current choice.
+// check when it is the current choice.  |palette| is the anchor window's: rows
+// are built before they are in the menu's widget.
 class MenuRow : public views::Button {
   METADATA_HEADER(MenuRow, views::Button)
 
@@ -242,7 +256,8 @@ class MenuRow : public views::Button {
           const ui::ImageModel& icon,
           const std::u16string& title,
           const std::u16string& subtitle,
-          bool checked)
+          bool checked,
+          const SpaceThemePalette& palette)
       : views::Button(std::move(callback)) {
     SetPreferredSize(gfx::Size(
         kMenuWidth, subtitle.empty() ? kRowHeight : kTwoLineRowHeight));
@@ -267,10 +282,10 @@ class MenuRow : public views::Button {
     text->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), 1));
     text->AddChildView(
-        MakeLabel(title, 13, gfx::Font::Weight::NORMAL, kRowText));
+        MakeLabel(title, 13, gfx::Font::Weight::NORMAL, palette.text));
     if (!subtitle.empty()) {
-      text->AddChildView(
-          MakeLabel(subtitle, 11, gfx::Font::Weight::NORMAL, kRowSubText));
+      text->AddChildView(MakeLabel(subtitle, 11, gfx::Font::Weight::NORMAL,
+                                   RowSubText(palette)));
     }
     layout->SetFlexForView(AddChildView(std::move(text)), 1);
 
@@ -289,7 +304,8 @@ class MenuRow : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     if (check_) {
       gfx::Rect glyph = check_->bounds();
-      PaintLucidePathData(canvas, glyph, kCheckIconPath, kRowIconColor);
+      PaintLucidePathData(canvas, glyph, kCheckIconPath,
+                          RowIconColor(WindowTheme::PaletteFor(this)));
     }
   }
 
@@ -303,7 +319,7 @@ class MenuRow : public views::Button {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
-    flags.setColor(kRowHoverBg);
+    flags.setColor(RowHoverColor(this));
     canvas->DrawRoundRect(bounds, 6, flags);
   }
 
@@ -314,8 +330,11 @@ class MenuRow : public views::Button {
 BEGIN_METADATA(MenuRow)
 END_METADATA
 
-std::unique_ptr<views::View> MakeSectionLabel(const std::u16string& text) {
-  auto label = MakeLabel(text, 11, gfx::Font::Weight::MEDIUM, kSectionText);
+std::unique_ptr<views::View> MakeSectionLabel(
+    const std::u16string& text,
+    const SpaceThemePalette& palette) {
+  auto label = MakeLabel(text, 11, gfx::Font::Weight::MEDIUM,
+                         SkColorSetA(palette.text, kSectionTextAlpha));
   label->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(6, 12, 4, 12)));
   return label;
 }
@@ -403,12 +422,13 @@ std::u16string Ago(base::Time when) {
 // The menu's line on whether the account's shared tabs are in sync, and the
 // colour to draw it in.
 std::pair<std::u16string, SkColor> SyncLine(
-    const sync::TabSyncService::Status& status) {
+    const sync::TabSyncService::Status& status,
+    const SpaceThemePalette& palette) {
   if (status.upload_failing) {
     return {u"Tabs couldn't sync. Avora will keep trying.", kWarningText};
   }
   if (status.last_upload.is_null()) {
-    return {u"Syncing tabs\u2026", kRowSubText};
+    return {u"Syncing tabs\u2026", RowSubText(palette)};
   }
   const std::u16string count =
       status.uploaded_tab_count == 1
@@ -444,12 +464,13 @@ class BackButton : public views::Button {
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
       flags.setStyle(cc::PaintFlags::kFill_Style);
-      flags.setColor(kRowHoverBg);
+      flags.setColor(RowHoverColor(this));
       canvas->DrawRoundRect(GetLocalBounds(), 6, flags);
     }
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kRowIconSize, kRowIconSize));
-    PaintLucidePathData(canvas, glyph, kChevronLeftIconPath, kRowText);
+    PaintLucidePathData(canvas, glyph, kChevronLeftIconPath,
+                        WindowTheme::PaletteFor(this).text);
   }
 };
 
@@ -495,6 +516,22 @@ class PrimaryButton : public views::LabelButton {
 BEGIN_METADATA(PrimaryButton)
 END_METADATA
 
+// The field on a sign-in page.  Textfield::OnThemeChanged() takes its text
+// colour from Chromium's colour provider, which knows nothing of the palette,
+// so the palette's goes back on after it.
+class StepField : public views::Textfield {
+  METADATA_HEADER(StepField, views::Textfield)
+
+ public:
+  void OnThemeChanged() override {
+    views::Textfield::OnThemeChanged();
+    SetColor(WindowTheme::PaletteFor(this).text);
+  }
+};
+
+BEGIN_METADATA(StepField)
+END_METADATA
+
 // The parts of a sign-in page the account menu reaches into after building it.
 struct StepParts {
   raw_ptr<views::Textfield> field = nullptr;
@@ -516,12 +553,16 @@ class AccountMenuView : public views::View,
   METADATA_HEADER(AccountMenuView, views::View)
 
  public:
+  // |palette| is the anchor window's.  Pages are built before they are in the
+  // menu's widget, and so before PaletteFor() could find it from them.
   AccountMenuView(Profile* profile,
                   BrowserWindowInterface* browser,
-                  WindowSpaceState* window_space_state)
+                  WindowSpaceState* window_space_state,
+                  const SpaceThemePalette& palette)
       : profile_(profile),
         browser_(browser),
-        window_space_state_(window_space_state) {
+        window_space_state_(window_space_state),
+        palette_(palette) {
     // The sliding pages draw on layers of their own; this one clips them to
     // the bubble.
     SetPaintToLayer();
@@ -769,16 +810,17 @@ class AccountMenuView : public views::View,
       text->SetLayoutManager(std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
       text->AddChildView(MakeLabel(signed_in ? name : u"Not signed in", 14,
-                                   gfx::Font::Weight::MEDIUM, kRowText));
+                                   gfx::Font::Weight::MEDIUM, palette_.text));
       if (!subtitle.empty()) {
         text->AddChildView(MakeLabel(subtitle, 12, gfx::Font::Weight::NORMAL,
-                                     kRowSubText));
+                                     RowSubText(palette_)));
       }
       // Signed in, whether the account's shared tabs are in sync -- the only
       // sign that signing in did anything.
       if (signed_in) {
-        sync_line = text->AddChildView(MakeLabel(
-            std::u16string(), 11, gfx::Font::Weight::NORMAL, kRowSubText));
+        sync_line = text->AddChildView(
+            MakeLabel(std::u16string(), 11, gfx::Font::Weight::NORMAL,
+                      RowSubText(palette_)));
         sync_line->SetMultiLine(true);
       }
       header_layout->SetFlexForView(header->AddChildView(std::move(text)), 1);
@@ -789,20 +831,20 @@ class AccountMenuView : public views::View,
       // Signing out, and how the sync is doing, stay on the settings page.
       page->AddChildView(std::make_unique<MenuRow>(
           CloseThen(OpenUrl(kAccountSettingsUrl)),
-          RowIcon("user", kRowIconColor), u"Avora Account", std::u16string(),
-          /*checked=*/false));
+          RowIcon("user", RowIconColor(palette_)), u"Avora Account",
+          std::u16string(), /*checked=*/false, palette_));
     } else {
       page->AddChildView(std::make_unique<MenuRow>(
           base::BindRepeating(&AccountMenuView::StartSignIn,
                               base::Unretained(this)),
-          RowIcon("user", kRowIconColor), u"Sign in to Avora…",
-          std::u16string(), /*checked=*/false));
+          RowIcon("user", RowIconColor(palette_)), u"Sign in to Avora…",
+          std::u16string(), /*checked=*/false, palette_));
     }
 
     // The identities they browse as: one per Space.
     if (profile_ && profile_->GetPrefs()) {
       page->AddChildView(MakeSeparator());
-      page->AddChildView(MakeSectionLabel(u"Identities"));
+      page->AddChildView(MakeSectionLabel(u"Identities", palette_));
 
       const SpaceManager space_manager(profile_->GetPrefs());
       const BrowserProfileStore profile_store(profile_->GetPrefs());
@@ -825,17 +867,19 @@ class AccountMenuView : public views::View,
             base::UTF8ToUTF16(space.name),
             isolated ? u"Signed in separately"
                      : u"Shares the default browser session",
-            space.id == active_space_id));
+            space.id == active_space_id, palette_));
       }
     }
 
     page->AddChildView(MakeSeparator());
     page->AddChildView(std::make_unique<MenuRow>(
-        CloseThen(OpenUrl(kSettingsUrl)), RowIcon("settings", kRowIconColor),
-        u"Avora Settings", std::u16string(), /*checked=*/false));
+        CloseThen(OpenUrl(kSettingsUrl)),
+        RowIcon("settings", RowIconColor(palette_)), u"Avora Settings",
+        std::u16string(), /*checked=*/false, palette_));
     page->AddChildView(std::make_unique<MenuRow>(
-        CloseThen(OpenUrl(kExtensionsUrl)), RowIcon("puzzle", kRowIconColor),
-        u"Manage Extensions", std::u16string(), /*checked=*/false));
+        CloseThen(OpenUrl(kExtensionsUrl)),
+        RowIcon("puzzle", RowIconColor(palette_)), u"Manage Extensions",
+        std::u16string(), /*checked=*/false, palette_));
 
     ShowPage(Page::kMenu, std::move(page), slide);
     sync_line_ = sync_line;
@@ -847,7 +891,7 @@ class AccountMenuView : public views::View,
     if (!sync_line_ || !service) {
       return;
     }
-    const auto [text, color] = SyncLine(service->GetStatus());
+    const auto [text, color] = SyncLine(service->GetStatus(), palette_);
     if (sync_line_->GetText() == text) {
       return;
     }
@@ -902,20 +946,22 @@ class AccountMenuView : public views::View,
         views::BoxLayout::CrossAxisAlignment::kCenter);
     header->AddChildView(std::make_unique<BackButton>(std::move(on_back)));
     header->AddChildView(
-        MakeLabel(title, 14, gfx::Font::Weight::MEDIUM, kRowText));
+        MakeLabel(title, 14, gfx::Font::Weight::MEDIUM, palette_.text));
     page->AddChildView(std::move(header));
 
-    auto explanation_label =
-        MakeLabel(explanation, 12, gfx::Font::Weight::NORMAL, kRowSubText);
+    auto explanation_label = MakeLabel(explanation, 12,
+                                       gfx::Font::Weight::NORMAL,
+                                       RowSubText(palette_));
     explanation_label->SetMultiLine(true);
     explanation_label->SizeToFit(kMenuWidth - 24);
     page->AddChildView(std::move(explanation_label));
 
+    // The text colour is StepField's own to set.
     field->SetFontList(SystemFont(13, gfx::Font::Weight::NORMAL));
-    field->SetColor(kRowText);
-    field->SetBackgroundColor(kFieldBg);
+    field->SetBackgroundColor(palette_.sidebar_top);
     field->SetBorder(views::CreatePaddedBorder(
-        views::CreateRoundedRectBorder(1, 6, kFieldBorder),
+        views::CreateRoundedRectBorder(
+            1, 6, SkColorSetA(palette_.text, kFieldBorderAlpha)),
         gfx::Insets::VH(6, 8)));
     field->SetPreferredSize(gfx::Size(kMenuWidth - 24, kFieldHeight));
     field->set_controller(this);
@@ -934,7 +980,7 @@ class AccountMenuView : public views::View,
   }
 
   void ShowEmailPage(Slide slide) {
-    auto field = std::make_unique<views::Textfield>();
+    auto field = std::make_unique<StepField>();
     field->SetTextInputType(ui::TEXT_INPUT_TYPE_EMAIL);
     field->SetPlaceholderText(u"you@example.com");
     field->GetViewAccessibility().SetName(u"Email");
@@ -958,7 +1004,7 @@ class AccountMenuView : public views::View,
     const std::string email = service ? service->GetStatus().email : "";
 
     StepParts parts;
-    auto field = std::make_unique<views::Textfield>();
+    auto field = std::make_unique<StepField>();
     field->SetTextInputType(ui::TEXT_INPUT_TYPE_NUMBER);
     field->SetPlaceholderText(u"123456");
     field->GetViewAccessibility().SetName(u"Code");
@@ -1045,7 +1091,8 @@ class AccountMenuView : public views::View,
       return;
     }
     message_label_->SetText(message);
-    message_label_->SetEnabledColor(is_error ? kErrorText : kRowSubText);
+    message_label_->SetEnabledColor(is_error ? kErrorText
+                                             : RowSubText(palette_));
     message_label_->SizeToFit(kMenuWidth - 24);
     message_label_->SetVisible(!message.empty());
     PreferredSizeChanged();
@@ -1060,6 +1107,7 @@ class AccountMenuView : public views::View,
   raw_ptr<Profile> profile_;
   raw_ptr<BrowserWindowInterface> browser_;
   raw_ptr<WindowSpaceState> window_space_state_;
+  const SpaceThemePalette palette_;
 
   Page page_ = Page::kMenu;
   raw_ptr<views::View> current_page_ = nullptr;
@@ -1143,7 +1191,8 @@ void AccountButton::PaintButtonContents(gfx::Canvas* canvas) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
-    flags.setColor(kButtonHoverBg);
+    flags.setColor(
+        SkColorSetA(WindowTheme::PaletteFor(this).wash, kButtonHoverAlpha));
     canvas->DrawRoundRect(GetLocalBounds(), kButtonCornerRadius, flags);
   }
   gfx::Rect avatar(GetLocalBounds());
@@ -1200,13 +1249,15 @@ void AccountButton::ShowMenu() {
   delegate->SetTitle(u"");
   delegate->SetShowTitle(false);
   delegate->SetShowCloseButton(false);
-  delegate->SetBackgroundColor(kMenuBg);
+  const SpaceThemePalette& palette = WindowTheme::PaletteFor(this);
+  delegate->SetBackgroundColor(palette.surface);
   delegate->SetContentsView(std::make_unique<AccountMenuView>(
-      profile_, browser_, window_space_state_));
+      profile_, browser_, window_space_state_, palette));
 
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(delegate),
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  avora::WindowTheme::MatchColorMode(widget);
   menu_widget_ = widget->GetWeakPtr();
   widget->Show();
 }

@@ -23,6 +23,7 @@ base::DictValue Space::ToDict() const {
       .Set("profile_id", profile_id)
       .Set("order", order)
       .Set("color", accent_color)
+      .Set("theme", theme.Serialize())
       .Set("is_active", is_active);
 }
 
@@ -53,6 +54,9 @@ Space Space::FromDict(const base::DictValue& dict) {
         static_cast<tab_groups::TabGroupColorId>(*legacy_color));
   } else {
     space.accent_color = kDefaultSpaceAccentColor;
+  }
+  if (const std::string* val = dict.FindString("theme")) {
+    space.theme = SpaceTheme::Parse(*val);
   }
   if (std::optional<bool> val = dict.FindBool("is_active")) {
     space.is_active = *val;

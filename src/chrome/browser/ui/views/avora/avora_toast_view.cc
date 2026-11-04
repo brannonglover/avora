@@ -9,6 +9,7 @@
 
 #include "base/functional/bind.h"
 #include "base/time/time.h"
+#include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -39,16 +40,16 @@ namespace avora {
 namespace {
 
 // ── Colour palette ──────────────────────────────────────────────────────────
-// The Avora surface set: the sidebar bubble's background, Avora's accent blue
-// for the icon chip, and the shared foreground text colour.
-// Opaque and near-black so the card reads as chrome floating above the page
-// rather than as part of it, whatever the site behind it looks like.
-constexpr SkColor kCardBg = SkColorSetRGB(0x14, 0x16, 0x1C);
+// The window palette's sidebar fill and text for the card, and Avora's accent
+// blue for the icon chip.
+// The card is opaque, in the sidebar's own colour, so it reads as chrome
+// floating above the page rather than as part of it, whatever the site behind
+// it looks like.  (It was a shade darker than the sidebar, #14161C, with text
+// a shade brighter, #F5F8FA, before windows had themes.)
 constexpr SkColor kAccent = SkColorSetRGB(0x6E, 0xA1, 0xF7);
 // An accent rim plus a light inner highlight keeps the edge legible against
 // both dark and light pages.
 constexpr SkColor kCardBorder = SkColorSetARGB(0x66, 0x6E, 0xA1, 0xF7);
-constexpr SkColor kTextColor = SkColorSetRGB(0xF5, 0xF8, 0xFA);
 // The glyph sits on a solid accent chip -- the strongest cue that something
 // happened.
 constexpr SkColor kChipBg = kAccent;
@@ -104,7 +105,7 @@ class CardBackground : public views::Background {
     cc::PaintFlags fill_flags;
     fill_flags.setAntiAlias(true);
     fill_flags.setStyle(cc::PaintFlags::kFill_Style);
-    fill_flags.setColor(kCardBg);
+    fill_flags.setColor(WindowTheme::PaletteFor(view).sidebar_top);
     fill_flags.setLooper(gfx::CreateShadowDrawLooper(shadows));
     canvas->DrawRoundRect(card, kCornerRadius, fill_flags);
 
@@ -169,7 +170,6 @@ AvoraToastView::AvoraToastView() {
       views::Label::CustomFont{gfx::FontList({std::string("system-ui")},
                                              gfx::Font::NORMAL, 14,
                                              gfx::Font::Weight::SEMIBOLD)});
-  label->SetEnabledColor(kTextColor);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label_ = AddChildView(std::move(label));
 }
@@ -178,6 +178,11 @@ AvoraToastView::~AvoraToastView() {
   // Stop observing before the layer animator tears down.
   StopObservingImplicitAnimations();
   layer()->GetAnimator()->AbortAllAnimations();
+}
+
+void AvoraToastView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(WindowTheme::PaletteFor(this).text);
 }
 
 void AvoraToastView::Show(const std::u16string& message,
