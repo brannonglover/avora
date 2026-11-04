@@ -1340,7 +1340,7 @@ Chromium is unable to recover your settings.
 
       <!-- NTP strings -->
       <message name="IDS_NTP_CUSTOMIZE_TOOLBAR_CATEGORY_YOUR_CHROME" desc="The label for the category of actions that involve your Chrome data, such as opening the password manager or clearing browsing data.">
-        Your Chromium
+        Your Avora
       </message>
       <if expr="_is_chrome_for_testing_branded">
         <then>
@@ -1580,7 +1580,7 @@ Chromium is unable to recover your settings.
         Sign in to Chromium
       </message>
       <message name="IDS_PROFILE_MENU_PLACEHOLDER_PROFILE_NAME" desc="Placeholder profile name, used when the user did not enter a name for their profile.">
-        Your Chromium
+        Your Avora
       </message>
       <if expr="not use_titlecase">
         <message name="IDS_PROFILE_MENU_SIGN_OUT_WHEN_SIGNIN_PENDING" desc="The text label of the Sign out of Chromium button in the Profile Menu when the user is in sign in pending state.">

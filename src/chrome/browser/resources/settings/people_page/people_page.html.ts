@@ -90,19 +90,24 @@ export function getHtml(this: SettingsPeoplePageElement) {
           </div>
         </cr-link-row>
 
+        <!-- Avora: Chromium sync and Google services both need Google
+             accounts and API keys Avora doesn't have, so neither row shows.
+             Avora's own account and tab sync live at chrome://avora-settings.
+             The rows stay in the DOM because focusConfig and the subpage
+             routes still name them. -->
         <cr-link-row id="sync-setup"
             label="$i18n{syncAndNonPersonalizedServices}"
             .subLabel="${this.getSyncAndNonPersonalizedServicesSubtext_()}"
             @click="${this.onSyncClick_}"
             role-description="$i18n{subpageArrowRoleDescription}"
-            ?hidden="${this.shouldHideSyncSetupLinkRow_()}">
+            hidden>
         </cr-link-row>
 
         <cr-link-row id="google-services"
             label="$i18n{googleServicesPageTitle}"
             @click="${this.onGoogleServicesClick_}"
             role-description="$i18n{subpageArrowRoleDescription}"
-            ?hidden="${!this.shouldHideSyncSetupLinkRow_()}">
+            hidden>
         </cr-link-row>
 
 <if expr="not is_chromeos">

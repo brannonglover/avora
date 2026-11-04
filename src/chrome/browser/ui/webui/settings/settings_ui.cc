@@ -659,9 +659,9 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
   // Within the AI subpage are separate sections for Glic and for all other AI
   // features, the visibility of these are separately controlled but we want to
   // show the subpage if any of the AI features or Glic are enabled.
-  html_source->AddBoolean("showAiPage", show_glic_section ||
-                                            show_ai_features_section ||
-                                            enable_ai_mode_search);
+  // Avora: no "AI in Chrome" page.  Its features (Gemini, AI mode, history
+  // search, help me write) all run on Google's servers.
+  html_source->AddBoolean("showAiPage", false);
   html_source->AddBoolean("showAiPageAiFeatureSection",
                           show_ai_features_section);
 
@@ -913,9 +913,6 @@ void SettingsUI::UpdateShowGlicState() {
   base::DictValue update;
   update.Set("showGlicSettings", show_glic);
   update.Set("glicDisallowedByAdmin", enablement.DisallowedByAdmin());
-  if (show_glic) {
-    update.Set("showAiPage", true);
-  }
 
   content::WebUIDataSource::Update(
       web_ui()->GetWebContents()->GetBrowserContext(),

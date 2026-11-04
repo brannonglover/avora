@@ -456,9 +456,11 @@ suite('SyncSettings', function() {
   });
 
   test('ShowCorrectSyncRow', async function() {
-    assertTrue(isChildVisible(peoplePage, '#sync-setup'));
-    assertFalse(isChildVisible(peoplePage, '#sync-status'));
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
     assertFalse(isChildVisible(peoplePage, '#google-services'));
+    assertFalse(isChildVisible(peoplePage, '#sync-setup'));
+    assertFalse(isChildVisible(peoplePage, '#sync-status'));
 
     // Make sures the subpage opens even when logged out or has errors.
     await simulateSyncStatus({
@@ -541,8 +543,9 @@ suite('PeoplePageAccountSettings', function() {
     assertFalse(isChildVisible(peoplePage, '#profile-row'));
     assertTrue(isChildVisible(peoplePage, '#account-subpage-row'));
 
-    // There is a link to the Google services, not to the sync settings.
-    assertTrue(isChildVisible(peoplePage, '#google-services'));
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
+    assertFalse(isChildVisible(peoplePage, '#google-services'));
     assertFalse(isChildVisible(peoplePage, '#sync-setup'));
 
     // <if expr="not is_chromeos">
@@ -570,9 +573,10 @@ suite('PeoplePageAccountSettings', function() {
     // </if>
 
     assertFalse(isChildVisible(peoplePage, '#account-subpage-row'));
-    // There is a link to the sync settings, not to the Google services.
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
     assertFalse(isChildVisible(peoplePage, '#google-services'));
-    assertTrue(isChildVisible(peoplePage, '#sync-setup'));
+    assertFalse(isChildVisible(peoplePage, '#sync-setup'));
 
     // <if expr="not is_chromeos">
     // The other rows are shown correctly.
@@ -680,8 +684,9 @@ suite('PeoplePageAccountSettings', function() {
     assertFalse(isChildVisible(peoplePage, '#profile-row'));
     assertFalse(isChildVisible(peoplePage, '#account-subpage-row'));
 
-    // There is a link to the Google services, not to the sync settings.
-    assertTrue(isChildVisible(peoplePage, '#google-services'));
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
+    assertFalse(isChildVisible(peoplePage, '#google-services'));
     assertFalse(isChildVisible(peoplePage, '#sync-setup'));
 
     // The other rows are shown/hidden correctly.
@@ -700,8 +705,9 @@ suite('PeoplePageAccountSettings', function() {
     assertFalse(isChildVisible(peoplePage, '#profile-row'));
     assertFalse(isChildVisible(peoplePage, '#account-subpage-row'));
 
-    // There is a link to the Google services, not to the sync settings.
-    assertTrue(isChildVisible(peoplePage, '#google-services'));
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
+    assertFalse(isChildVisible(peoplePage, '#google-services'));
     assertFalse(isChildVisible(peoplePage, '#sync-setup'));
 
     // The other rows are shown/hidden correctly.
@@ -719,8 +725,9 @@ suite('PeoplePageAccountSettings', function() {
     // The first item should be an account card.
     assertTrue(isChildVisible(peoplePage, 'settings-sync-account-control'));
 
-    // There is a link to the Google services, not to the sync settings.
-    assertTrue(isChildVisible(peoplePage, '#google-services'));
+    // Avora: neither the Google services row nor the sync row shows; see
+    // chrome/browser/resources/settings/people_page/people_page.html.ts.
+    assertFalse(isChildVisible(peoplePage, '#google-services'));
     assertFalse(isChildVisible(peoplePage, '#sync-setup'));
 
     // The other rows are shown/hidden correctly.
