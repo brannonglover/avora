@@ -456,6 +456,12 @@ void AvoraMiniToolbarView::BeginEditingAddress() {
   if (!address_field_ || !address_label_ || !contents) {
     return;
   }
+  // Already editing (Cmd-L pressed again): reselect what the user has typed
+  // rather than throwing it away for the page's URL.
+  if (address_field_->GetVisible() && address_field_->HasFocus()) {
+    address_field_->SelectAll(false);
+    return;
+  }
   const GURL url = contents->GetVisibleURL();
   address_field_->SetText(url.is_valid() ? base::UTF8ToUTF16(url.spec())
                                          : std::u16string());

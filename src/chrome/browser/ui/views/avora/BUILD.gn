@@ -195,4 +195,9 @@ source_set("browser_tests") {
     "//ui/views",
     "//ui/views:test_support",
   ]
+
+  if (is_mac) {
+    sources += [ "avora_mini_window_keyboard_browsertest.mm" ]
+    deps += [ "//ui/events:test_support" ]
+  }
 }

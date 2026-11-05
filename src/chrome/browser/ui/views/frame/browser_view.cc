@@ -7014,6 +7014,15 @@ void BrowserView::ShowAvoraQuickNav() {
 }
 
 void BrowserView::ShowAvoraQuickNavWithURL() {
+  // Avora: the mini window has no quick-nav overlay -- it is built only for
+  // tabbed windows -- so Cmd-L used to land here and do nothing.  Its address
+  // chip is the location bar it has, and editing that is what Cmd-L means
+  // there.  Both Cmd-L entry points (the Mac menu and the accelerator) funnel
+  // through here.
+  if (avora_mini_toolbar_) {
+    avora_mini_toolbar_->BeginEditingAddress();
+    return;
+  }
   if (!avora_quick_nav_) {
     return;
   }
