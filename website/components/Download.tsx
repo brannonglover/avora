@@ -15,7 +15,7 @@ export function Download() {
         <h2>Move in. It takes a minute.</h2>
       </header>
 
-      <DownloadButton />
+      <DownloadButton placement="download-section" />
 
       <a className="release-link" href={`/releases#${releaseAnchor(version)}`}>
         What&apos;s new in Avora {version}

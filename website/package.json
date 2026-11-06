@@ -6,11 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "dmg": "bash scripts/package-dmg.sh"
+    "dmg": "bash scripts/package-dmg.sh",
+    "dashboard": "node scripts/posthog-dashboard.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.65.0",
     "next": "16.4.3",
+    "posthog-js": "1.438.21",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

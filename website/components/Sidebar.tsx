@@ -14,7 +14,8 @@ import {
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
-import { downloadUrl } from "@/lib/release";
+import { downloadUrl, version } from "@/lib/release";
+import { trackDownload } from "@/lib/analytics";
 
 const SECTIONS: { id: string; label: string; icon: LucideIcon }[] = [
   { id: "overview", label: "Overview", icon: Sparkles },
@@ -100,7 +101,12 @@ export function Sidebar({ page = "home" }: { page?: "home" | "releases" }) {
         </ul>
       </nav>
 
-      <a className="sidebar-download" href={downloadUrl} download>
+      <a
+        className="sidebar-download"
+        href={downloadUrl}
+        download
+        onClick={() => trackDownload("sidebar", version)}
+      >
         <ArrowDownToLine size={16} aria-hidden="true" />
         Download
       </a>

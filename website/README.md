@@ -82,6 +82,27 @@ change to `releases.json` there.
   app at launch, even though it passes notarization. The development profile
   doesn't list it.
 
+## Analytics
+
+PostHog counts page views and clicks on the three Download buttons, as a
+`download_clicked` event with `placement` (`hero`, `download-section` or
+`sidebar`) and `version`. It only runs when `NEXT_PUBLIC_POSTHOG_KEY` is set: in
+Vercel for the live site, and in `.env.local` if you want local visits counted.
+Events go through `/ingest` on the site, which `next.config.ts` forwards to
+PostHog, so ad blockers don't hide most visitors. The project is assumed to be
+in PostHog's US region; `lib/posthog-hosts.ts` says what to change for EU.
+
+The site shares Glover Labs' one PostHog project (350420) with Cavaro, since
+the plan allows only one, so `NEXT_PUBLIC_POSTHOG_KEY` is that project's `phc_`
+key. `npm run dashboard` creates the "Avora downloads" dashboard there, or
+updates it after you change an insight in `scripts/posthog-dashboard.mjs`. Every
+chart is limited to events from www.avorabrowser.com, so Cavaro's traffic and
+local visits don't count. It reads the personal API key from
+`~/.config/posthog/personal-key`, or from `.env.local`.
+
+A click is intent, not a finished download, since the DMG comes from GitHub
+Releases. GitHub's own count is on each release asset's `download_count`.
+
 ## Screenshots
 
 Everything in `public/shots` is a real capture of `Avora.app`, taken from a

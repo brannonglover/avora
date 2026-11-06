@@ -9,3 +9,4 @@ chromium/
 
 # Legacy CEF build artifacts
 native/
+.vercel

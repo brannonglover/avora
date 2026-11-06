@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine } from "lucide-react";
 import { downloadUrl, minimumMacOS, sizeLabel, version } from "@/lib/release";
+import { trackDownload, type DownloadPlacement } from "@/lib/analytics";
 
 type Fit = "ok" | "not-mac" | "intel";
 
@@ -30,7 +31,7 @@ const WARNINGS: Record<Exclude<Fit, "ok">, string> = {
   intel: "This Mac looks Intel-based. Avora needs Apple silicon for now.",
 };
 
-export function DownloadButton() {
+export function DownloadButton({ placement }: { placement: DownloadPlacement }) {
   const [fit, setFit] = useState<Fit>("ok");
 
   useEffect(() => {
@@ -39,7 +40,12 @@ export function DownloadButton() {
 
   return (
     <div className="download">
-      <a className="download-button" href={downloadUrl} download>
+      <a
+        className="download-button"
+        href={downloadUrl}
+        download
+        onClick={() => trackDownload(placement, version)}
+      >
         <ArrowDownToLine size={20} aria-hidden="true" />
         Download for Mac
       </a>

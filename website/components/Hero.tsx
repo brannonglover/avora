@@ -18,7 +18,7 @@ export function Hero() {
           Spaces and sign-ins, and tells you exactly why a page looks the way
           it does.
         </p>
-        <DownloadButton />
+        <DownloadButton placement="hero" />
       </div>
 
       <Image
