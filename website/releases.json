@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.1.1",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.1.1-arm64.dmg",
+    "sizeBytes": 190698375,
+    "sha256": "6436ef030d55a23f50e941f968c6cf2c335400e0c16b0f31248970f9d381ca36",
+    "notarized": true,
+    "edSignature": "cIqO2lZF1ZcGagrDQHoQuFn5TfPv2aH2wa/EeJhyUCC+FV5lnLGWAJNHZfCkga7qshyy0CD18j+mB7zZ3Wo0Aw==",
+    "gitSha": "85cbeefd132066c6cdffbee8faa7752e1341cf74",
+    "title": null,
+    "bullets": [
+      "Stop a closed tab's thumbnail node corrupting memory.",
+      "Let Cmd-L edit the mini window's address."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-09T14:26:03.687Z",
+    "publishedAt": "2026-11-09T14:27:12.933Z"
+  },
+  {
     "version": "1.1.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.1.0-arm64.dmg",
