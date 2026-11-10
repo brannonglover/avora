@@ -1,5 +1,26 @@
 [
   {
+    "version": "1.2.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.2.0-arm64.dmg",
+    "sizeBytes": 190701808,
+    "sha256": "868062b8ebd1a5f0c1f44417f31ba3f83b343367165e53076f7fda7ce988b25a",
+    "notarized": true,
+    "edSignature": "3b5TtRTcrJnJ5dgqcM4Zq5EaOf2ggS/fwhQ4KPSleKJkIsaSXsRQbAbQtRxuWYyMm0FvtLqD6dUl+vkZPsMqAg==",
+    "gitSha": "1341fd74dfbcea70d808cd89ce235404b8f8c935",
+    "title": null,
+    "bullets": [
+      "The open pinned tab is now highlighted, styled the same as an open daily tab",
+      "Remove a pin whose tab is closed with the x that appears when you hover it",
+      "Unpinning a tab that's open in another window now moves it to that window's daily list instead of hiding it",
+      "Opening a closed pin no longer jumps the side nav to the bottom of the daily list",
+      "Removing a Favorite returns its open tab to the daily list instead of hiding it"
+    ],
+    "status": "published",
+    "createdAt": "2026-11-10T20:40:14.470Z",
+    "publishedAt": "2026-11-10T20:47:48.406Z"
+  },
+  {
     "version": "1.1.1",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.1.1-arm64.dmg",
