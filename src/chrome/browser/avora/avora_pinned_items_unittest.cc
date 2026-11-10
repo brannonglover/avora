@@ -116,6 +116,74 @@ TEST_F(PinnedItemsManagerTest, InsertPinnedItemAtDuplicateUrlIsNoOp) {
   EXPECT_THAT(manager_->GetPinnedItems(), SizeIs(1));
 }
 
+// ── Edit URL ────────────────────────────────────────────────────────────────
+
+TEST_F(PinnedItemsManagerTest, FixupPinnedItemUrlActsLikeTheOmnibox) {
+  // A bare host is upgraded the way a typed navigation would be.
+  EXPECT_EQ(PinnedItemsManager::FixupPinnedItemUrl("example.com"),
+            GURL("https://example.com/"));
+  EXPECT_EQ(PinnedItemsManager::FixupPinnedItemUrl("  example.com/a b  "),
+            GURL("https://example.com/a%20b"));
+  // A scheme the user typed is kept, and so is plain http on hosts that are
+  // usually meant that way.
+  EXPECT_EQ(PinnedItemsManager::FixupPinnedItemUrl("http://example.com"),
+            GURL("http://example.com/"));
+  EXPECT_EQ(PinnedItemsManager::FixupPinnedItemUrl("localhost:3000"),
+            GURL("http://localhost:3000/"));
+  EXPECT_EQ(PinnedItemsManager::FixupPinnedItemUrl("192.168.1.1"),
+            GURL("http://192.168.1.1/"));
+
+  EXPECT_FALSE(PinnedItemsManager::FixupPinnedItemUrl("").is_valid());
+  EXPECT_FALSE(PinnedItemsManager::FixupPinnedItemUrl("   ").is_valid());
+  EXPECT_FALSE(
+      PinnedItemsManager::FixupPinnedItemUrl("javascript:alert(1)").is_valid());
+}
+
+TEST_F(PinnedItemsManagerTest, SetPinnedItemUrlKeepsTheItem) {
+  manager_->AddPinnedItem("https://a.com", "A");
+  const std::string id =
+      manager_->AddPinnedItem("https://mail.example.com/u/0", "Inbox");
+  manager_->AddPinnedItem("https://c.com", "C");
+
+  EXPECT_TRUE(manager_->SetPinnedItemUrl(id, "www.example.org/u/1"));
+
+  const auto items = manager_->GetPinnedItems();
+  ASSERT_THAT(items, SizeIs(3));
+  EXPECT_EQ(items[1].id, id);
+  EXPECT_EQ(items[1].url, "https://www.example.org/u/1");
+  // The old title named the old page.
+  EXPECT_EQ(items[1].title, "example.org/u/1");
+  EXPECT_EQ(manager_->GetPinnedItemIdForUrl("https://www.example.org/u/1"),
+            id);
+  EXPECT_FALSE(manager_->IsPinned("https://mail.example.com/u/0"));
+}
+
+TEST_F(PinnedItemsManagerTest, SetPinnedItemUrlRejectsBadInput) {
+  const std::string id = manager_->AddPinnedItem("https://a.com/", "A");
+  manager_->AddPinnedItem("https://b.com/", "B");
+  const int notifications = observer_.change_count();
+
+  EXPECT_FALSE(manager_->SetPinnedItemUrl(id, ""));
+  EXPECT_FALSE(manager_->SetPinnedItemUrl(id, "javascript:void(0)"));
+  // Another pin in the Space is already there.
+  EXPECT_FALSE(manager_->SetPinnedItemUrl(id, "b.com"));
+  EXPECT_FALSE(manager_->SetPinnedItemUrl("no-such-id", "c.com"));
+  // Unchanged is fine, and writes nothing.
+  EXPECT_TRUE(manager_->SetPinnedItemUrl(id, "https://a.com"));
+
+  EXPECT_EQ(manager_->GetPinnedItemUrlById(id), "https://a.com/");
+  EXPECT_EQ(manager_->GetPinnedItemById(id)->title, "A");
+  EXPECT_EQ(observer_.change_count(), notifications);
+}
+
+TEST_F(PinnedItemsManagerTest, SetPinnedItemUrlSurvivesRestart) {
+  const std::string id = manager_->AddPinnedItem("https://a.com/", "A");
+  ASSERT_TRUE(manager_->SetPinnedItemUrl(id, "b.com/x"));
+
+  SimulateRestart();
+  EXPECT_EQ(manager_->GetPinnedItemUrlById(id), "https://b.com/x");
+}
+
 // ── Remove / reorder ─────────────────────────────────────────────────────────
 
 TEST_F(PinnedItemsManagerTest, RemovePinnedItem) {

@@ -178,8 +178,24 @@ void SyncTabGuidToAllEntries(content::WebContents* contents) {
   if (content::NavigationEntry* pending = controller.GetPendingEntry()) {
     SetTabGuidOnNavigationEntry(pending, guid);
   }
+  // The session service writes an entry when it commits, which is usually
+  // before the GUID gets here: a new tab is given its GUID after its first
+  // load starts, and every later page commits without one.  Stamping the
+  // entry in memory does not reach the session file, so a tab restored before
+  // anything rewrote the whole file came back with no GUID -- a new identity,
+  // with its Space and its pinned item forgotten.  Re-announcing the entry has
+  // it written again, GUID included.  Only for entries that lacked it, so a
+  // repeat sync writes nothing.
+  const bool initial_blank = controller.IsInitialBlankNavigation();
   for (int i = 0; i < controller.GetEntryCount(); ++i) {
-    SetTabGuidOnNavigationEntry(controller.GetEntryAtIndex(i), guid);
+    content::NavigationEntry* entry = controller.GetEntryAtIndex(i);
+    if (GetTabGuidFromNavigationEntry(entry) == guid) {
+      continue;
+    }
+    SetTabGuidOnNavigationEntry(entry, guid);
+    if (!initial_blank) {
+      controller.NotifyEntryChanged(entry);
+    }
   }
 }
 

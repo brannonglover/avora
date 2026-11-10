@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -47,6 +48,7 @@ class BoxLayout;
 class ImageView;
 class Label;
 class Textfield;
+class Widget;
 }  // namespace views
 
 namespace avora {
@@ -494,6 +496,35 @@ class AvoraPinnedSectionView : public views::View,
   PinnedFoldersManager* GetFoldersManager() const;
   PinnedItemsManager* GetPinnedItemsManager() const;
 
+  // "Edit URL…" on a pinned row's context menu: asks for a new target for
+  // the pinned item |item_id|, prefilled with the current one, and hands what
+  // the user saves to EditPinnedItemUrl().  |item_id| is by value: the menu
+  // that calls this is gone by the time it runs.
+  void ShowPinnedItemUrlDialog(std::string item_id);
+
+  // Points the pinned item |item_id| at |input| (fixed up and validated by
+  // PinnedItemsManager::SetPinnedItemUrl()), keeping its id, place, folder
+  // and name.  An open tab of it, in any window, that is still sitting on
+  // the old target is moved to the new one -- it was showing "the pin", and
+  // the pin is now somewhere else.  One that has browsed away is left where
+  // it is; its return-to-pin favicon now leads to the new target.  Returns
+  // whether the edit was accepted.
+  bool EditPinnedItemUrl(const std::string& item_id, std::string_view input);
+
+  // The context menu a right-click on a live pinned row (|contents|), or on
+  // a pinned item with no live tab (|item_id|), would show -- built but not
+  // run, since running one enters a nested native menu loop on macOS that a
+  // test cannot drive.
+  ui::MenuModel* BuildPinnedTabContextMenuForTesting(
+      content::WebContents* contents);
+  ui::MenuModel* BuildPersistentPinnedItemContextMenuForTesting(
+      const std::string& item_id);
+
+  // The open "Edit URL" dialog, or null.
+  views::Widget* pinned_url_dialog_for_testing() const {
+    return pinned_url_dialog_.get();
+  }
+
   // Drag-and-drop support: highlight a folder during tab drag.
   void SetDragActive(bool active);
   void SetDropHighlighted(bool highlighted);
@@ -641,6 +672,14 @@ class AvoraPinnedSectionView : public views::View,
                            const gfx::Point& screen_point);
   void LoadFavicon(FolderTabRow* row);
 
+  // Each context menu is built into |context_menu_model_| by its Build*
+  // method, then shown by RunContextMenu(), so a test can inspect the menu
+  // without running it.
+  void RunContextMenu(const gfx::Point& screen_point);
+  void BuildFolderItemContextMenu(const std::string& item_id);
+  void BuildPersistentPinnedItemContextMenu(const std::string& item_id);
+  void BuildPinnedTabContextMenu(content::WebContents* contents);
+
   // Context menu for an unmaterialized folder member (a FolderTabRow with a
   // non-empty folder_id): "Remove from Folder" moves the item back to
   // top-level (MoveItemToFolder(item_id, "")) without touching any live tab
@@ -746,6 +785,10 @@ class AvoraPinnedSectionView : public views::View,
   // they have to outlive the menu just as the parent model does.
   std::unique_ptr<ui::SimpleMenuModel> move_to_space_submenu_;
   std::unique_ptr<views::MenuRunner> context_menu_runner_;
+
+  // The "Edit URL" dialog while it is open.  One at a time: a second "Edit
+  // URL…" while one is showing closes the first.
+  base::WeakPtr<views::Widget> pinned_url_dialog_;
 
   base::CancelableTaskTracker cancelable_task_tracker_;
 

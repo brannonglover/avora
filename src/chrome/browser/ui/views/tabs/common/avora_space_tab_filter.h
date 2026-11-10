@@ -373,7 +373,8 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
                                    const SidebarItem& state,
                                    TabStripModel* model,
                                    int index,
-                                   std::set<std::string>* claimed_favorites);
+                                   std::set<std::string>* claimed_favorites,
+                                   std::set<std::string>* claimed_pinned_items);
   void MirrorTabGuidOntoContents(tabs::TabInterface* tab);
 
   // ── Cross-window daily tab sync ──

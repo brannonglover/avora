@@ -37,7 +37,8 @@ enum class SidebarItemType {
   kFavoriteTabState = 3,
 
   // Durable runtime state for a logical tab, keyed by the tab's Avora GUID.
-  // |id| is the GUID; |favorite_id| links a Favorite-backed tab when set.
+  // |id| is the GUID; |favorite_id| links a Favorite-backed tab when set,
+  // and |pinned_item_id| a pinned item's tab.
   kTabState = 4,
 };
 
@@ -57,6 +58,12 @@ struct SidebarItem {
   // When |type| is kTabState and this tab backs a Favorite, holds the
   // Favorite's id.  Empty for ordinary daily tabs.
   std::string favorite_id;
+
+  // When |type| is kTabState and this tab is a pinned item's, holds the
+  // kPinned item's id.  The tab is free to browse away from the item's URL,
+  // so after a restart the id is the only reliable link back to its row.
+  // Empty for ordinary daily tabs.
+  std::string pinned_item_id;
 
   SidebarItemType type = SidebarItemType::kToday;
 
@@ -123,6 +130,14 @@ class SidebarItemStore {
   void SetItemType(const std::string& id, SidebarItemType type);
 
   void SetItemTitle(const std::string& id, const std::string& title);
+
+  // Changes an item's URL and title in place, in a single write, keeping
+  // its id, type, Space and order -- so whatever refers to the item by id (a
+  // folder, a live tab's marker, a custom name) still finds it.  Stores |url|
+  // verbatim; validating it is the caller's job.
+  void SetItemUrlAndTitle(const std::string& id,
+                          const std::string& url,
+                          const std::string& title);
 
   // Reorders an item within its (space, type) section.
   void ReorderItem(const std::string& id, int new_order);

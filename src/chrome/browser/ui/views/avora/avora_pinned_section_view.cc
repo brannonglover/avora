@@ -12,6 +12,7 @@
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
@@ -30,6 +31,7 @@
 #include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_url_dialog.h"
 #include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -69,6 +71,7 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 namespace avora {
@@ -83,6 +86,7 @@ constexpr int kContextMenuUnpinTabId = 5;
 constexpr int kContextMenuMoveToSpaceId = 6;
 constexpr int kContextMenuImportBookmarksId = 7;
 constexpr int kContextMenuImportArcId = 8;
+constexpr int kContextMenuEditUrlId = 9;
 
 // Command ids for the "Move to Space" submenu, one per destination Space.
 // Menus dispatch by command id across the whole hierarchy, so this range has
@@ -383,23 +387,26 @@ class FolderContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
   base::OnceClosure on_add_folder_;
 };
 
-// Context menu delegate for a tab row within a folder.
-// Context menu delegate for standalone pinned tab "Unpin Tab" + "New Folder",
-// plus "Remove from Folder" when the tab backs a folder member (the model
-// only ever adds that menu item when relevant; the closure itself is cheap
-// to always bind).  Also serves the rows with no live tab, which bind a null
-// |on_add_folder| and never add that item.
+// Context menu delegate for every pinned row: "Edit URL…", "Unpin Tab" and
+// "New Folder", plus "Remove from Folder" when the tab backs a folder member
+// (the model only ever adds that menu item when relevant; the closure itself
+// is cheap to always bind).  Also serves the rows with no live tab, which
+// bind a null |on_add_folder| and never add that item.
 class PinnedTabContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
-  PinnedTabContextMenuDelegate(base::OnceClosure on_unpin,
+  PinnedTabContextMenuDelegate(base::OnceClosure on_edit_url,
+                               base::OnceClosure on_unpin,
                                base::OnceClosure on_add_folder,
                                base::OnceClosure on_remove_from_folder)
-      : on_unpin_(std::move(on_unpin)),
+      : on_edit_url_(std::move(on_edit_url)),
+        on_unpin_(std::move(on_unpin)),
         on_add_folder_(std::move(on_add_folder)),
         on_remove_from_folder_(std::move(on_remove_from_folder)) {}
 
   void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id == kContextMenuUnpinTabId && on_unpin_) {
+    if (command_id == kContextMenuEditUrlId && on_edit_url_) {
+      std::move(on_edit_url_).Run();
+    } else if (command_id == kContextMenuUnpinTabId && on_unpin_) {
       std::move(on_unpin_).Run();
     } else if (command_id == kContextMenuAddFolderId && on_add_folder_) {
       std::move(on_add_folder_).Run();
@@ -410,6 +417,7 @@ class PinnedTabContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
   }
 
  private:
+  base::OnceClosure on_edit_url_;
   base::OnceClosure on_unpin_;
   base::OnceClosure on_add_folder_;
   base::OnceClosure on_remove_from_folder_;
@@ -2884,7 +2892,24 @@ void AvoraPinnedSectionView::OnFolderItemContextMenu(
     const std::string& folder_id,
     const std::string& item_id,
     const gfx::Point& screen_point) {
+  BuildFolderItemContextMenu(item_id);
+  RunContextMenu(screen_point);
+}
+
+void AvoraPinnedSectionView::RunContextMenu(const gfx::Point& screen_point) {
+  context_menu_runner_ = std::make_unique<views::MenuRunner>(
+      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+  context_menu_runner_->RunMenuAt(GetWidget(), nullptr,
+                                  gfx::Rect(screen_point, gfx::Size()),
+                                  views::MenuAnchorPosition::kTopLeft,
+                                  ui::mojom::MenuSourceType::kMouse);
+}
+
+void AvoraPinnedSectionView::BuildFolderItemContextMenu(
+    const std::string& item_id) {
   context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
+      base::BindOnce(&AvoraPinnedSectionView::ShowPinnedItemUrlDialog,
+                     weak_factory_.GetWeakPtr(), item_id),
       base::BindOnce(&AvoraPinnedSectionView::RemovePersistentPinnedItem,
                      weak_factory_.GetWeakPtr(), item_id),
       /*on_add_folder=*/base::OnceClosure(),
@@ -2900,6 +2925,7 @@ void AvoraPinnedSectionView::OnFolderItemContextMenu(
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
+  context_menu_model_->AddItem(kContextMenuEditUrlId, u"Edit URL…");
   context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin");
   context_menu_model_->AddItem(kContextMenuRemoveFromFolderId,
                                u"Remove from Folder");
@@ -2918,13 +2944,6 @@ void AvoraPinnedSectionView::OnFolderItemContextMenu(
                                     u"Move to Space",
                                     move_to_space_submenu_.get());
   }
-
-  context_menu_runner_ = std::make_unique<views::MenuRunner>(
-      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-  context_menu_runner_->RunMenuAt(GetWidget(), nullptr,
-                                  gfx::Rect(screen_point, gfx::Size()),
-                                  views::MenuAnchorPosition::kTopLeft,
-                                  ui::mojom::MenuSourceType::kMouse);
 }
 
 void AvoraPinnedSectionView::OnPinnedTabClicked(
@@ -3081,7 +3100,12 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
   if (!tab_strip_model_ || !contents) {
     return;
   }
+  BuildPinnedTabContextMenu(contents);
+  RunContextMenu(screen_point);
+}
 
+void AvoraPinnedSectionView::BuildPinnedTabContextMenu(
+    content::WebContents* contents) {
   // Live rows in section 2 (folder members) and section 1 (top-level) both
   // reach this same handler -- see Rebuild() -- so whether "Remove from
   // Folder" belongs on this menu is a live lookup, not something the row
@@ -3093,6 +3117,10 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
           : std::string();
 
   context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
+      // A tab with no kPinned record (natively pinned, never backfilled) has
+      // no persisted target to edit, so the item is left off its menu below.
+      base::BindOnce(&AvoraPinnedSectionView::ShowPinnedItemUrlDialog,
+                     weak_factory_.GetWeakPtr(), item_id),
       base::BindOnce(
           [](base::WeakPtr<AvoraPinnedSectionView> view,
              content::WebContents* wc) {
@@ -3119,6 +3147,9 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
+  if (!item_id.empty()) {
+    context_menu_model_->AddItem(kContextMenuEditUrlId, u"Edit URL…");
+  }
   context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin Tab");
   if (!folder_id.empty()) {
     context_menu_model_->AddItem(kContextMenuRemoveFromFolderId,
@@ -3137,13 +3168,6 @@ void AvoraPinnedSectionView::OnPinnedTabContextMenu(
 
   context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   context_menu_model_->AddItem(kContextMenuAddFolderId, u"New Folder");
-
-  context_menu_runner_ = std::make_unique<views::MenuRunner>(
-      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-  context_menu_runner_->RunMenuAt(GetWidget(), nullptr,
-                                  gfx::Rect(screen_point, gfx::Size()),
-                                  views::MenuAnchorPosition::kTopLeft,
-                                  ui::mojom::MenuSourceType::kMouse);
 }
 
 void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
@@ -3152,14 +3176,22 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
   if (!pinned_items_manager_ || item_id.empty()) {
     return;
   }
+  BuildPersistentPinnedItemContextMenu(item_id);
+  RunContextMenu(screen_point);
+}
 
+void AvoraPinnedSectionView::BuildPersistentPinnedItemContextMenu(
+    const std::string& item_id) {
   context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
+      base::BindOnce(&AvoraPinnedSectionView::ShowPinnedItemUrlDialog,
+                     weak_factory_.GetWeakPtr(), item_id),
       base::BindOnce(&AvoraPinnedSectionView::RemovePersistentPinnedItem,
                      weak_factory_.GetWeakPtr(), item_id),
       /*on_add_folder=*/base::OnceClosure(),
       /*on_remove_from_folder=*/base::OnceClosure());
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
+  context_menu_model_->AddItem(kContextMenuEditUrlId, u"Edit URL…");
   context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin");
 
   // No live tab exists for this row, so the item's own Space is the only
@@ -3173,13 +3205,141 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
                                     u"Move to Space",
                                     move_to_space_submenu_.get());
   }
+}
 
-  context_menu_runner_ = std::make_unique<views::MenuRunner>(
-      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-  context_menu_runner_->RunMenuAt(GetWidget(), nullptr,
-                                  gfx::Rect(screen_point, gfx::Size()),
-                                  views::MenuAnchorPosition::kTopLeft,
-                                  ui::mojom::MenuSourceType::kMouse);
+ui::MenuModel* AvoraPinnedSectionView::BuildPinnedTabContextMenuForTesting(
+    content::WebContents* contents) {
+  BuildPinnedTabContextMenu(contents);
+  return context_menu_model_.get();
+}
+
+ui::MenuModel*
+AvoraPinnedSectionView::BuildPersistentPinnedItemContextMenuForTesting(
+    const std::string& item_id) {
+  BuildPersistentPinnedItemContextMenu(item_id);
+  return context_menu_model_.get();
+}
+
+void AvoraPinnedSectionView::ShowPinnedItemUrlDialog(std::string item_id) {
+  if (!pinned_items_manager_ || !GetWidget() || item_id.empty()) {
+    return;
+  }
+  const std::string current_url =
+      pinned_items_manager_->GetPinnedItemUrlById(item_id);
+  if (current_url.empty()) {
+    return;  // Unpinned elsewhere while the menu was open.
+  }
+  if (pinned_url_dialog_) {
+    pinned_url_dialog_->CloseNow();
+  }
+
+  // Checked against the manager on each keystroke rather than against a
+  // snapshot: another window can pin or unpin things while this is open.
+  auto validate = base::BindRepeating(
+      [](base::WeakPtr<AvoraPinnedSectionView> view, const std::string& id,
+         const std::u16string& text) -> std::optional<std::u16string> {
+        if (!view || !view->pinned_items_manager_) {
+          return u"This pin is no longer available.";
+        }
+        using Check = PinnedItemsManager::UrlEditCheck;
+        switch (view->pinned_items_manager_->CheckPinnedItemUrl(
+            id, base::UTF16ToUTF8(text))) {
+          case Check::kOk:
+          case Check::kUnchanged:
+            return std::nullopt;
+          case Check::kInvalidUrl:
+            // An empty field is not worth an error message; Save is simply
+            // off until there is something to save.
+            return base::TrimWhitespace(text, base::TRIM_ALL).empty()
+                       ? std::u16string()
+                       : u"Enter a valid web address.";
+          case Check::kAlreadyPinned:
+            return u"Another pin in this Space already opens this page.";
+          case Check::kNoSuchItem:
+            return u"This pin is no longer available.";
+        }
+        return std::nullopt;
+      },
+      weak_factory_.GetWeakPtr(), item_id);
+  auto save = base::BindOnce(
+      [](base::WeakPtr<AvoraPinnedSectionView> view, const std::string& id,
+         const std::u16string& text) {
+        if (view) {
+          view->EditPinnedItemUrl(id, base::UTF16ToUTF8(text));
+        }
+      },
+      weak_factory_.GetWeakPtr(), item_id);
+
+  pinned_url_dialog_ =
+      ShowPinnedUrlDialog(GetWidget()->GetNativeWindow(),
+                          base::UTF8ToUTF16(current_url), std::move(validate),
+                          std::move(save))
+          ->GetWeakPtr();
+}
+
+bool AvoraPinnedSectionView::EditPinnedItemUrl(const std::string& item_id,
+                                               std::string_view input) {
+  if (!pinned_items_manager_ || !browser_ || item_id.empty()) {
+    return false;
+  }
+  using Check = PinnedItemsManager::UrlEditCheck;
+  const Check check = pinned_items_manager_->CheckPinnedItemUrl(item_id, input);
+  if (check == Check::kUnchanged) {
+    return true;
+  }
+  if (check != Check::kOk) {
+    return false;
+  }
+  const GURL old_target(pinned_items_manager_->GetPinnedItemUrlById(item_id));
+
+  // A name the user gave the pin before names were keyed by item id is still
+  // filed under the old target, which is about to stop being the pin's URL.
+  // Re-file it under the id first, so the name survives the edit.
+  if (folders_manager_) {
+    const std::string name =
+        folders_manager_->GetCustomTitleForItem(item_id, old_target.spec());
+    if (!name.empty() &&
+        folders_manager_->GetCustomTitleForItem(item_id, std::string())
+            .empty()) {
+      folders_manager_->SetCustomTitleForItem(item_id, std::string(), name);
+    }
+  }
+
+  // Which of the pin's open tabs are showing the old target, decided before
+  // the write: afterwards every one of them would read as "away".  Any window
+  // of this profile can have the pin open -- materialization is per window --
+  // and the edit is to the pin, not to this window's copy of it.
+  std::vector<base::WeakPtr<content::WebContents>> on_old_target;
+  Profile* const profile = browser_->GetProfile();
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* window) {
+        TabStripModel* model = window->GetTabStripModel();
+        if (window->GetProfile() != profile || !model) {
+          return true;
+        }
+        for (int i = 0; i < model->count(); ++i) {
+          content::WebContents* contents = model->GetWebContentsAt(i);
+          if (contents && GetPinnedItemIdForTab(contents) == item_id &&
+              IsAtPinnedTarget(old_target, contents->GetLastCommittedURL())) {
+            on_old_target.push_back(contents->GetWeakPtr());
+          }
+        }
+        return true;
+      });
+
+  // Rebuilds this section, and every other window's, with the new target.
+  if (!pinned_items_manager_->SetPinnedItemUrl(item_id, input)) {
+    return false;
+  }
+
+  // An ordinary navigation, as the return-to-pin favicon makes, so Back
+  // still reaches the page the tab was showing.
+  for (const auto& contents : on_old_target) {
+    if (contents) {
+      ReturnTabToPinnedTarget(pinned_items_manager_.get(), contents.get());
+    }
+  }
+  return true;
 }
 
 void AvoraPinnedSectionView::RemovePersistentPinnedItem(std::string item_id) {

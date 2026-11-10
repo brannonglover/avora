@@ -48,6 +48,8 @@ void AdoptTabGuidFromController(content::WebContents* contents);
 
 // Mirrors the WebContents GUID onto every navigation entry so session save
 // round-trips regardless of which entry falls inside the persist window.
+// Committed entries that gain the GUID here are re-sent to the session
+// service, which wrote them before they had it.
 void SyncTabGuidToAllEntries(content::WebContents* contents);
 
 // Preserves tab identity when discard swaps in a fresh WebContents.

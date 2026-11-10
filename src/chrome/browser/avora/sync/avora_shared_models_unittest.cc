@@ -107,5 +107,37 @@ TEST_F(AvoraSharedModelsTest, MissingThemeColumnKeepsTheTheme) {
   EXPECT_EQ(models.space_manager().GetSpaceById(id)->theme, theme);
 }
 
+// A pin whose URL was edited on another device ("Edit URL…") changes in
+// place.  Replacing it would mint a new id, and the folder, custom name and
+// open tab that refer to the old one here would lose it.
+TEST_F(AvoraSharedModelsTest, RemoteUrlEditKeepsTheItem) {
+  SharedModels models(&prefs_, base::DoNothing());
+  SharedStore store(&prefs_);
+  const std::string space = models.space_manager().CreateSpace("Work");
+  store.Link(SharedTable::kSpaces, "remote-space", space);
+  SidebarItemStore items(&prefs_);
+  const std::string id = items.AddItem(space, SidebarItemType::kPinned,
+                                       "https://old.example/", "Old");
+  store.Link(SharedTable::kItems, "remote-item", id);
+
+  std::optional<base::Value> rows = base::JSONReader::Read(
+      R"([{"id": "remote-item", "space_id": "remote-space",
+           "kind": "pinned", "parent_id": null,
+           "url": "https://new.example/inbox", "title": "new.example/inbox",
+           "position": "a0", "updated_at": "2026-11-10T16:00:00+00:00",
+           "updated_by": "phone", "deleted_at": null}])",
+      0);
+  models.Apply(store, {},
+               store.MergeFromServer(SharedTable::kItems,
+                                     std::move(*rows).TakeList()));
+
+  const SidebarItem* item = items.GetItemById(id);
+  ASSERT_TRUE(item);
+  EXPECT_EQ(item->url, "https://new.example/inbox");
+  EXPECT_EQ(item->title, "new.example/inbox");
+  EXPECT_EQ(item->type, SidebarItemType::kPinned);
+  EXPECT_EQ(items.GetItems(space, SidebarItemType::kPinned).size(), 1u);
+}
+
 }  // namespace
 }  // namespace avora::sync

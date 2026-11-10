@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "components/prefs/pref_service.h"
+#include "url/gurl.h"
 
 class PrefRegistrySimple;
 
@@ -104,6 +106,46 @@ class PinnedItemsManager : public SidebarItemStore::Observer,
                                  const std::string& title);
 
   void RemovePinnedItem(const std::string& id);
+
+  // What a pinned item's target becomes when the user types |input| as its
+  // URL: trimmed and fixed up the way the omnibox fixes up a typed URL, so
+  // "example.com" works, with a bare host upgraded to https (a pin is a
+  // destination, and the omnibox would upgrade the typed navigation too).
+  // Invalid when |input| does not name somewhere a pin can point: empty,
+  // unparseable, or a javascript: URL.
+  static GURL FixupPinnedItemUrl(std::string_view input);
+
+  // Whether the pinned item |id| can be pointed at what
+  // FixupPinnedItemUrl() makes of |input|, and if not, why.  The edit dialog
+  // asks this on every keystroke, so Save is never offered for something
+  // SetPinnedItemUrl() would refuse.
+  enum class UrlEditCheck {
+    kOk,
+    // |input| fixes up to the URL the item already has.
+    kUnchanged,
+    // Empty, unparseable, or a javascript: URL.
+    kInvalidUrl,
+    // Another pinned item in the same Space already has that URL --
+    // AddPinnedItem refuses the same duplicate.
+    kAlreadyPinned,
+    // |id| is gone, or is not a pinned item.
+    kNoSuchItem,
+  };
+  UrlEditCheck CheckPinnedItemUrl(const std::string& id,
+                                  std::string_view input) const;
+
+  // Points the pinned item |id| at what FixupPinnedItemUrl() makes of
+  // |input|.  The id, Space, order and folder membership are unchanged, so a
+  // live tab materializing the item stays linked to it and simply has a new
+  // target to return to (it is not navigated here).  The stored title is
+  // replaced with the new URL's display form, since the old one named the
+  // old page; a name the user gave the pin is kept separately and survives.
+  //
+  // Returns true when the item now has that URL, including when it already
+  // did (nothing is written then).  Returns false, changing nothing, for
+  // anything CheckPinnedItemUrl() rejects.
+  bool SetPinnedItemUrl(const std::string& id, std::string_view input);
+
   void MovePinnedItem(int from_index, int to_index);
 
   // Assigns order by position for every id listed, in the active Space --

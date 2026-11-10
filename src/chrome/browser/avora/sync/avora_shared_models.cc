@@ -250,11 +250,6 @@ void SharedModels::ApplyItems(SharedStore& store,
     touched.insert({StringColumn(row, "space_id"), StringColumn(row, "kind")});
     const std::string title = StringColumn(row, "title");
 
-    if (existing && existing->url != url) {
-      // The store has no URL setter: replace the item and relink.
-      RemoveItem(*existing);
-      existing.reset();
-    }
     if (!existing) {
       const std::string created = item_store_.AddItem(space_id, *type, url, title);
       store.Link(SharedTable::kItems, row.id, created);
@@ -266,7 +261,12 @@ void SharedModels::ApplyItems(SharedStore& store,
     if (existing->type != *type) {
       item_store_.SetItemType(local, *type);
     }
-    if (existing->title != title) {
+    if (existing->url != url) {
+      // Edited elsewhere (a pin's "Edit URL…").  Changed in place: replacing
+      // the item would give it a new id, dropping its folder membership,
+      // its custom name and the link to any tab open for it here.
+      item_store_.SetItemUrlAndTitle(local, url, title);
+    } else if (existing->title != title) {
       item_store_.SetItemTitle(local, title);
     }
   }

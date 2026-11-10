@@ -712,7 +712,8 @@ void AvoraSpaceTabFilter::AssignTabFromPersistedState(
     const SidebarItem& state,
     TabStripModel* model,
     int index,
-    std::set<std::string>* claimed_favorites) {
+    std::set<std::string>* claimed_favorites,
+    std::set<std::string>* claimed_pinned_items) {
   if (!tab || !tab->GetContents() || state.space_id.empty()) {
     return;
   }
@@ -727,6 +728,24 @@ void AvoraSpaceTabFilter::AssignTabFromPersistedState(
     MarkFavoriteTab(contents, state.favorite_id, model->IsTabPinned(index));
     claimed_favorites->insert(state.favorite_id);
   }
+
+  // Reconnected by id, not by URL: a pinned item's tab is free to browse
+  // away from the item's target, and a redirect (a sign-in page, a renamed
+  // wiki page) moves it on its own.  AdoptPinnedItemTabs() could only match
+  // it again while it still sat on the exact target, so any other page came
+  // back as a daily tab beside the pin's own row.
+  if (!state.pinned_item_id.empty() && claimed_pinned_items &&
+      !claimed_pinned_items->count(state.pinned_item_id) &&
+      !IsPinnedItemTab(contents) && item_store_) {
+    const SidebarItem* pinned = item_store_->GetItemById(state.pinned_item_id);
+    // Unpinned while Avora was closed (or on another device), or moved to
+    // another Space: the tab is an ordinary daily tab now.
+    if (pinned && pinned->type == SidebarItemType::kPinned &&
+        pinned->space_id == state.space_id) {
+      MarkPinnedItemTab(contents, state.pinned_item_id);
+      claimed_pinned_items->insert(state.pinned_item_id);
+    }
+  }
 }
 
 void AvoraSpaceTabFilter::RestoreTagsFromGuid() {
@@ -737,6 +756,14 @@ void AvoraSpaceTabFilter::RestoreTagsFromGuid() {
 
   EnsureTabStateClaimsLoaded();
   std::set<std::string> claimed_favorites;
+  // A pinned item has at most one tab per window.
+  std::set<std::string> claimed_pinned_items;
+  for (int i = 0; i < model->count(); ++i) {
+    content::WebContents* contents = model->GetWebContentsAt(i);
+    if (contents && IsPinnedItemTab(contents)) {
+      claimed_pinned_items.insert(GetPinnedItemIdForTab(contents));
+    }
+  }
 
   for (int i = 0; i < model->count(); ++i) {
     tabs::TabInterface* tab = model->GetTabAtIndex(i);
@@ -759,7 +786,8 @@ void AvoraSpaceTabFilter::RestoreTagsFromGuid() {
       continue;
     }
 
-    AssignTabFromPersistedState(tab, it->second, model, i, &claimed_favorites);
+    AssignTabFromPersistedState(tab, it->second, model, i, &claimed_favorites,
+                                &claimed_pinned_items);
     claimed_tab_guids_.insert(guid);
     tab_state_claims_by_guid_.erase(it);
   }
@@ -1138,6 +1166,9 @@ void AvoraSpaceTabFilter::SyncTabsToStore() {
     item.type = SidebarItemType::kTabState;
     if (IsFavoriteTab(tab->GetContents())) {
       item.favorite_id = GetFavoriteIdForTab(tab->GetContents());
+    }
+    if (IsPinnedItemTab(tab->GetContents())) {
+      item.pinned_item_id = GetPinnedItemIdForTab(tab->GetContents());
     }
     items.push_back(std::move(item));
   }

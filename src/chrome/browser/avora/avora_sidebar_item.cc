@@ -50,6 +50,7 @@ base::DictValue SidebarItem::ToDict() const {
       .Set("url", url)
       .Set("title", title)
       .Set("favorite_id", favorite_id)
+      .Set("pinned_item_id", pinned_item_id)
       .Set("type", TypeToInt(type))
       .Set("order", order)
       .Set("created_at", base::TimeToValue(created_at))
@@ -72,6 +73,9 @@ SidebarItem SidebarItem::FromDict(const base::DictValue& dict) {
   }
   if (const std::string* val = dict.FindString("favorite_id")) {
     item.favorite_id = *val;
+  }
+  if (const std::string* val = dict.FindString("pinned_item_id")) {
+    item.pinned_item_id = *val;
   }
   if (std::optional<int> val = dict.FindInt("type")) {
     item.type = IntToType(*val);
@@ -303,6 +307,22 @@ void SidebarItemStore::SetItemTitle(const std::string& id,
   auto items = cached_;
   for (auto& item : items) {
     if (item.id == id) {
+      item.title = title;
+      break;
+    }
+  }
+  Save(items);
+  NotifyChanged();
+}
+
+void SidebarItemStore::SetItemUrlAndTitle(const std::string& id,
+                                          const std::string& url,
+                                          const std::string& title) {
+  RefreshCacheIfNeeded();
+  auto items = cached_;
+  for (auto& item : items) {
+    if (item.id == id) {
+      item.url = url;
       item.title = title;
       break;
     }
