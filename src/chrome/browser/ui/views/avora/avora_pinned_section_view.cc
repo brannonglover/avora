@@ -9,6 +9,7 @@
 #include <set>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
@@ -1366,12 +1367,33 @@ void PinnedTabRow::CommitRename() {
   UpdateCloseButtonVisibility();
   InvalidateLayout();
 
-  // Persist the title to prefs.  SetCustomTabTitle no longer triggers
-  // Rebuild(), so calling synchronously is safe and makes the rename
-  // feel instant.
+  // Persist the title to prefs.  The pref write reaches Rebuild()
+  // synchronously, which deletes this row, so nothing may touch a member
+  // after Run().  Both callers survive that: Textfield::OnKeyPressed checks a
+  // weak pointer after HandleKeyEvent(), and View::Blur() a ViewTracker after
+  // OnBlur().
   if (on_rename_ && contents_ && !new_title.empty()) {
     on_rename_.Run(contents_, new_title);
   }
+}
+
+std::optional<PinnedTabRow::SuspendedRename> PinnedTabRow::SuspendRename() {
+  if (!is_renaming_ || !rename_field_) {
+    return std::nullopt;
+  }
+  is_renaming_ = false;
+  static_cast<RenameTextfield*>(rename_field_.get())->ClearOnBlur();
+  return SuspendedRename{std::u16string(rename_field_->GetText()),
+                         rename_field_->GetSelectedRange()};
+}
+
+void PinnedTabRow::ResumeRename(const SuspendedRename& rename) {
+  StartRename();
+  if (!is_renaming_) {
+    return;
+  }
+  rename_field_->SetText(rename.text);
+  rename_field_->SetSelectedRange(rename.selection);
 }
 
 bool PinnedTabRow::HandleKeyEvent(views::Textfield* sender,
@@ -1705,7 +1727,47 @@ void AvoraPinnedSectionView::Rebuild() {
     rebuild_pending_ = true;
     return;
   }
+  if (rebuilding_) {
+    rebuild_again_ = true;
+    return;
+  }
+  base::AutoReset<bool> rebuilding(&rebuilding_, true);
 
+  // Any tab update in the Space rebuilds every row, so one can land while
+  // the user is typing a new name for a pin.  Carry the rename across onto
+  // the redrawn row for the same tab instead of letting the field's blur
+  // commit the half-typed name mid-teardown -- that commit writes prefs,
+  // which rebuilt again from inside RemoveAllChildViews() and crashed.
+  content::WebContents* renaming_contents = nullptr;
+  std::optional<PinnedTabRow::SuspendedRename> rename;
+  for (views::View* child : children()) {
+    auto* row = views::AsViewClass<PinnedTabRow>(child);
+    if (row && (rename = row->SuspendRename())) {
+      renaming_contents = row->web_contents();
+      break;
+    }
+  }
+
+  do {
+    rebuild_again_ = false;
+    RebuildRows();
+  } while (rebuild_again_);
+
+  if (!rename) {
+    return;
+  }
+  // Compared, never dereferenced: if the tab went away, nothing matches and
+  // the rename simply ends.
+  for (views::View* child : children()) {
+    auto* row = views::AsViewClass<PinnedTabRow>(child);
+    if (row && row->web_contents() == renaming_contents) {
+      row->ResumeRename(*rename);
+      break;
+    }
+  }
+}
+
+void AvoraPinnedSectionView::RebuildRows() {
   RemoveAllChildViews();
 
   const std::string active_space = folders_manager_->GetActiveSpaceId();

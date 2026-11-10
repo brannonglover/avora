@@ -3,6 +3,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_PINNED_SECTION_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AVORA_AVORA_PINNED_SECTION_VIEW_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/range/range.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/button/image_button.h"
@@ -355,6 +357,21 @@ class PinnedTabRow : public PinnedRowView,
   void StartRename();
   void CommitRename();
 
+  // An in-progress rename, lifted off a row that Rebuild() is about to delete
+  // and put back on the row it draws for the same tab.
+  struct SuspendedRename {
+    std::u16string text;
+    gfx::Range selection;
+  };
+  // Ends a rename without committing it, and without letting the textfield's
+  // blur commit it either: removing the focused field blurs it, and a commit
+  // from inside Rebuild()'s RemoveAllChildViews() would rebuild again while
+  // the first one is still tearing the rows down.  Empty when no rename is
+  // in progress.
+  std::optional<SuspendedRename> SuspendRename();
+  // Reopens the rename with the text and selection SuspendRename() captured.
+  void ResumeRename(const SuspendedRename& rename);
+
   // Whether this row's tab is the window's active tab.  Painted with the same
   // fill a daily tab wears when active, so the selection reads the same in
   // either list.
@@ -530,6 +547,9 @@ class AvoraPinnedSectionView : public views::View,
   void EndRowDrag(bool commit);
 
  private:
+  // One pass of Rebuild(): deletes every row and draws them again.
+  void RebuildRows();
+
   // Where a dragged row would land: a position within |folder_id| (empty for
   // top-level), counted with the dragged item already taken out of that
   // container -- what MoveItemToFolderAt() expects.  A top-level drop reads
@@ -766,6 +786,13 @@ class AvoraPinnedSectionView : public views::View,
   // delete the very row the user is holding, so the request is folded into
   // the rebuild that follows the drop.
   bool rebuild_pending_ = false;
+
+  // True while Rebuild() runs.  Something it sets off that asks for another
+  // rebuild only sets |rebuild_again_|, and Rebuild() goes round again once
+  // the current pass is done, rather than tearing down rows it is still in
+  // the middle of removing or adding.
+  bool rebuilding_ = false;
+  bool rebuild_again_ = false;
 
   base::WeakPtrFactory<AvoraPinnedSectionView> weak_factory_{this};
 };

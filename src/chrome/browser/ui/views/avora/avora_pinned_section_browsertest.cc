@@ -18,6 +18,8 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/canvas.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/range/range.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
@@ -55,6 +57,15 @@ class AvoraPinnedSectionBrowserTest : public InProcessBrowserTest {
 
   PinnedTabRow* RowFor(content::WebContents* contents) {
     return FindRow(BrowserView::GetBrowserViewForBrowser(browser()), contents);
+  }
+
+  static views::Textfield* RenameFieldOf(PinnedTabRow* row) {
+    for (views::View* child : row->children()) {
+      if (auto* field = views::AsViewClass<views::Textfield>(child)) {
+        return field;
+      }
+    }
+    return nullptr;
   }
 };
 
@@ -110,6 +121,43 @@ IN_PROC_BROWSER_TEST_F(AvoraPinnedSectionBrowserTest,
   EXPECT_EQ(SK_ColorTRANSPARENT, bitmap.getColor(inset - 1, mid_y));
   EXPECT_EQ(SK_ColorTRANSPARENT,
             bitmap.getColor(row->width() - inset, mid_y));
+}
+
+// Any tab update in the Space rebuilds the section, so one can land while a
+// pin is being renamed.  Removing the focused rename field used to blur it,
+// the blur committed the half-typed name, and the commit's pref write
+// rebuilt again from inside the first rebuild's RemoveAllChildViews() --
+// a CHECK in LayoutManagerBase::ViewRemoved.  The rename now rides across
+// the rebuild onto the redrawn row, uncommitted.
+IN_PROC_BROWSER_TEST_F(AvoraPinnedSectionBrowserTest,
+                       RebuildMidRenameKeepsTheRename) {
+  TabStripModel* model = browser()->GetTabStripModel();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), TestURL("a.test")));
+  content::WebContents* pinned = model->GetActiveWebContents();
+  model->SetTabPinned(model->active_index(), true);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return RowFor(pinned); }));
+
+  PinnedTabRow* row = RowFor(pinned);
+  auto* section = views::AsViewClass<AvoraPinnedSectionView>(row->parent());
+  ASSERT_TRUE(section);
+  row->StartRename();
+  views::Textfield* field = RenameFieldOf(row);
+  ASSERT_TRUE(field);
+  ASSERT_TRUE(field->HasFocus());
+  field->SetText(u"Half-typed");
+  field->SetSelectedRange(gfx::Range(4));
+
+  section->Rebuild();
+
+  PinnedTabRow* redrawn = RowFor(pinned);
+  ASSERT_TRUE(redrawn);
+  EXPECT_NE(row, redrawn);
+  views::Textfield* redrawn_field = RenameFieldOf(redrawn);
+  ASSERT_TRUE(redrawn_field);
+  EXPECT_TRUE(redrawn_field->GetVisible());
+  EXPECT_TRUE(redrawn_field->HasFocus());
+  EXPECT_EQ(u"Half-typed", redrawn_field->GetText());
+  EXPECT_EQ(gfx::Range(4), redrawn_field->GetSelectedRange());
 }
 
 }  // namespace avora
