@@ -927,6 +927,31 @@ void AvoraSpaceTabFilter::AdoptFavoriteTabs() {
   }
 }
 
+bool AvoraSpaceTabFilter::ReleaseOrphanedFavoriteTabs() {
+  TabStripModel* model = GetModel();
+  if (!item_store_ || !model) {
+    return false;
+  }
+
+  bool released = false;
+  for (int i = 0; i < model->count(); ++i) {
+    content::WebContents* contents = model->GetWebContentsAt(i);
+    if (!contents || !IsFavoriteTab(contents)) {
+      continue;
+    }
+    const SidebarItem* item =
+        item_store_->GetItemById(GetFavoriteIdForTab(contents));
+    if (item && item->type == SidebarItemType::kFavorite) {
+      continue;
+    }
+    // Nothing to unwind on the tab itself: a Favorite never pins the tab it
+    // adopts, so whatever pinned state the tab has is the user's own.
+    UnmarkFavoriteTab(contents);
+    released = true;
+  }
+  return released;
+}
+
 void AvoraSpaceTabFilter::AdoptPinnedItemTabs() {
   TabStripModel* model = GetModel();
   if (!item_store_ || !model) {
@@ -1501,8 +1526,15 @@ void AvoraSpaceTabFilter::OnLiveFolderTabMarkChanged(
 void AvoraSpaceTabFilter::OnSidebarItemsChanged() {
   // Only the visibility rules are re-run: the store is the source of truth
   // for what is pinned, and nothing here writes back to it, so this cannot
-  // feed itself.
+  // feed itself.  Releasing a removed Favorite's tab only clears WebContents
+  // user data, which writes nothing to the store either.
+  const bool released = ReleaseOrphanedFavoriteTabs();
   ApplyVisibility();
+  if (released) {
+    // The released tab is a daily tab again, and the other windows' daily
+    // lists have to learn about it; the sync pass works from IsDailyTab().
+    ScheduleDailyTabSync();
+  }
 }
 
 void AvoraSpaceTabFilter::ApplyVisibility() {

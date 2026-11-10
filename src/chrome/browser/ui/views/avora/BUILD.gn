@@ -156,6 +156,8 @@ source_set("browser_tests") {
     "avora_mini_window_identity_browsertest.cc",
     "avora_mini_window_lifecycle_browsertest.cc",
     "avora_mini_window_toolbar_browsertest.cc",
+    "avora_pinned_section_browsertest.cc",
+    "avora_pinned_unpin_browsertest.cc",
     "avora_quick_nav_browsertest.cc",
     "avora_side_by_side_browsertest.cc",
     "avora_style_ai_settings_browsertest.cc",

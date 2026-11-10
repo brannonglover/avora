@@ -208,7 +208,8 @@ class FolderTabRow : public PinnedRowView {
               base::RepeatingCallback<void(std::string)> on_click,
               base::RepeatingCallback<void(const std::string&,
                                            const std::string&,
-                                           const gfx::Point&)> on_context);
+                                           const gfx::Point&)> on_context,
+              base::RepeatingCallback<void(std::string)> on_remove);
   ~FolderTabRow() override;
 
   const std::string& url() const { return url_; }
@@ -226,18 +227,27 @@ class FolderTabRow : public PinnedRowView {
   void PerformClickAction() override;
 
  private:
+  // Runs |on_remove_| for this row's item.  Bound into the "x" button.
+  void RemoveItem();
+
+  // The "x" shows while the row is hovered, as a daily tab's does.
+  void UpdateRemoveButtonVisibility();
+
   std::string folder_id_;
   std::string item_id_;
   std::string url_;
   std::string title_;
   raw_ptr<views::ImageView> favicon_view_ = nullptr;
   raw_ptr<views::Label> title_label_ = nullptr;
+  raw_ptr<views::Button> remove_button_ = nullptr;
   // By value, not by const&: running this destroys the row that owns
   // item_id_ (see OnMousePressed).
   base::RepeatingCallback<void(std::string)> on_click_;
   base::RepeatingCallback<void(const std::string&, const std::string&,
                                const gfx::Point&)>
       on_context_;
+  // Unpins the item outright.  Same by-value reasoning as |on_click_|.
+  base::RepeatingCallback<void(std::string)> on_remove_;
 };
 
 // The favicon slot of a live pinned row, and the row's entire "this tab is
@@ -345,6 +355,12 @@ class PinnedTabRow : public PinnedRowView,
   void StartRename();
   void CommitRename();
 
+  // Whether this row's tab is the window's active tab.  Painted with the same
+  // fill a daily tab wears when active, so the selection reads the same in
+  // either list.
+  void SetActive(bool active);
+  bool is_active() const { return is_active_; }
+
   // views::View:
   void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
@@ -387,6 +403,7 @@ class PinnedTabRow : public PinnedRowView,
   base::RepeatingCallback<void(content::WebContents*)> on_close_;
   GURL target_url_;
   bool is_renaming_ = false;
+  bool is_active_ = false;
 };
 
 // The unified pinned section view showing both standalone pinned tabs
@@ -445,6 +462,10 @@ class AvoraPinnedSectionView : public views::View,
 
   // Rebuild the view from the current folders data and pinned tabs.
   void Rebuild();
+
+  // Marks the row whose tab is the strip's active tab, and only that one.
+  // Cheap: touches no layout, so it runs on every activation change.
+  void UpdateActiveRow();
 
   // Adds an empty folder to the active Space and drops its header row
   // straight into inline rename, so the user names it in place rather than
@@ -612,6 +633,14 @@ class AvoraPinnedSectionView : public views::View,
   // window (the top-level rows built by section 1b of Rebuild()).
   void OnPersistentPinnedItemContextMenu(const std::string& item_id,
                                          const gfx::Point& screen_point);
+
+  // Unpins a persisted pinned item that has no live tab in this window: the
+  // "x" on its row, and "Unpin" on its context menu.  Removes the kPinned
+  // record and its folder membership, and releases any tab another window
+  // still materializes it in to that window's daily list, as "Unpin Tab"
+  // does for a live row.  |item_id| is by value: this rebuilds the section
+  // and deletes the row that supplied it.
+  void RemovePersistentPinnedItem(std::string item_id);
 
   // Builds the "Move to Space" submenu for |current_space_id|, or nullptr
   // when there is nowhere to move to (a single Space).  The returned model

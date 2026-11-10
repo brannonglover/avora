@@ -7,6 +7,7 @@
 #include "base/run_loop.h"
 #include "base/test/run_until.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/avora/avora_favorites.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_tab_guid.h"
 #include "chrome/browser/avora/avora_tab_space.h"
@@ -17,6 +18,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/avora/avora_favorite_tab_marker.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/navigation_controller.h"
@@ -350,6 +352,43 @@ IN_PROC_BROWSER_TEST_F(AvoraDailyTabSyncBrowserTest,
     std::ranges::sort(urls);
     EXPECT_EQ((std::vector<GURL>{a, b}), urls);
   }
+}
+
+// Removing a Favorite hands its tab back to the daily list.  The Favorite's
+// mark is what keeps the tab out of that list, so if removing the record
+// left the mark behind, the tab would vanish from the sidebar entirely with
+// its page still open.  The other windows prove it is a daily tab again:
+// they are only ever sent daily tabs.
+IN_PROC_BROWSER_TEST_F(AvoraDailyTabSyncBrowserTest,
+                       RemovingAFavoriteReturnsItsTabToTheDailyList) {
+  const GURL a = TestURL("a.test");
+  const GURL fav = TestURL("fav.test");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a));
+
+  FavoritesManager favorites(browser()->GetProfile()->GetPrefs());
+  favorites.AddFavorite(fav.spec(), "Fav");
+  ASSERT_TRUE(favorites.IsFavorited(fav.spec()));
+
+  // A tab on the Favorite's URL is claimed by it.
+  content::WebContents* fav_tab = OpenBackgroundTab(browser(), fav);
+  ASSERT_TRUE(fav_tab);
+  ASSERT_TRUE(base::test::RunUntil([&] { return IsFavoriteTab(fav_tab); }));
+
+  // A new window gets the daily list, which the Favorite's tab is not on.
+  BrowserWindowInterface* second = OpenNewWindow(browser());
+  ASSERT_TRUE(second);
+  ASSERT_TRUE(WaitForTabIn(second, a));
+  base::RunLoop().RunUntilIdle();
+  ASSERT_FALSE(FindTab(second, fav));
+
+  favorites.RemoveFavorite(fav.spec());
+  EXPECT_FALSE(favorites.IsFavorited(fav.spec()));
+
+  // The same tab, page intact, is a daily tab again.
+  EXPECT_EQ(fav_tab, FindTab(browser(), fav));
+  EXPECT_FALSE(IsFavoriteTab(fav_tab));
+  EXPECT_EQ(ActiveSpace(browser()), GetTabSpaceId(fav_tab));
+  EXPECT_TRUE(WaitForTabIn(second, fav));
 }
 
 }  // namespace avora

@@ -15,10 +15,11 @@
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/avora/avora_tab_site_instance.h"
 #include "chrome/browser/avora/avora_tab_space.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/avora/avora_import_provenance.h"
 #include "chrome/browser/avora/import/arc_sidebar_parser.h"
 #include "chrome/browser/avora/import/avora_import_coordinator.h"
@@ -36,7 +37,9 @@
 #include "components/favicon_base/favicon_callback.h"
 #include "components/favicon_base/favicon_types.h"
 #include "cc/paint/paint_flags.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
 #include "skia/ext/image_operations.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
@@ -118,6 +121,40 @@ SkColor LabelColor(const views::View* view) {
   return SkColorSetA(avora::WindowTheme::PaletteFor(view).text, kLabelAlpha);
 }
 
+// A pinned tab's row is drawn exactly as a daily tab is (TabView painted by
+// VerticalTabStyleViews, coloured by avora_color_mixer.cc), so the two lists
+// read as one: the same rounded pill, inset from the sidebar's edges by the
+// strip's horizontal padding, filled with the palette's tab_active when the
+// tab is active and tab_hover under the pointer.  The section spans the
+// sidebar's full width while daily tabs are laid out inside that padding,
+// which is why the inset is applied here.
+//
+// Must match VerticalTabStyleViews::GetCornerRadius().
+constexpr float kTabPillRadius = 12.0f;
+
+void PaintTabPill(gfx::Canvas* canvas, const views::View* row, SkColor color) {
+  gfx::Rect pill = row->GetLocalBounds();
+  pill.Inset(gfx::Insets::VH(
+      0, GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding)));
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setStyle(cc::PaintFlags::kFill_Style);
+  flags.setColor(color);
+  canvas->DrawRoundRect(pill, kTabPillRadius, flags);
+}
+
+// A daily tab's title colours (kColorTabForeground*FrameActive in
+// avora_color_mixer.cc): full emphasis when active, the text colour at 0xCC
+// otherwise.
+SkColor TabTitleColor(const views::View* row, bool active) {
+  const avora::SpaceThemePalette& palette =
+      avora::WindowTheme::PaletteFor(row);
+  if (active) {
+    return palette.dark ? SK_ColorWHITE : SK_ColorBLACK;
+  }
+  return SkColorSetA(palette.text, 0xCC);
+}
+
 // The dragged row, drawn as a card lifted off the list: an inset rounded
 // rect with a soft shadow and a thin accent edge, in the same blue the
 // section already uses to say "this is where it goes".
@@ -184,21 +221,29 @@ gfx::Insets AwayShadowPadding() {
 // pin stays, only its live tab goes.
 constexpr char kCloseTabIconPath[] = "M5 12h14";
 
+// Lucide "x": what a pinned row with no live tab shows in the same place.
+// There is no tab left to close there, so the only thing it can mean is
+// getting rid of the pin itself -- which is exactly what an "x" says.
+constexpr char kUnpinIconPath[] = "M18 6 6 18 M6 6l12 12";
+
 // Same glyph size as the daily tab's close "x", inside a larger square hit
 // target, so the two controls are interchangeable at a glance.
 constexpr int kCloseGlyphSize = 14;
 constexpr int kCloseButtonSize = 24;
 
-// The minus button on a live pinned row.
+// The trailing hover button on a pinned row: the minus on a live row, the
+// "x" on a row with no live tab.
 class PinnedRowCloseButton : public views::Button {
   METADATA_HEADER(PinnedRowCloseButton, views::Button)
 
  public:
-  explicit PinnedRowCloseButton(PressedCallback callback)
-      : views::Button(std::move(callback)) {
+  PinnedRowCloseButton(PressedCallback callback,
+                       const char* icon_path,
+                       const std::u16string& label)
+      : views::Button(std::move(callback)), icon_path_(icon_path) {
     SetPreferredSize(gfx::Size(kCloseButtonSize, kCloseButtonSize));
-    SetTooltipText(u"Close Tab");
-    GetViewAccessibility().SetName(u"Close Tab");
+    SetTooltipText(label);
+    GetViewAccessibility().SetName(label);
     // As TabCloseButton: reachable by assistive tech, but not a Tab stop of
     // its own in every row of the sidebar.
     SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
@@ -215,8 +260,11 @@ class PinnedRowCloseButton : public views::Button {
     }
     gfx::Rect glyph(GetLocalBounds());
     glyph.ClampToCenteredSize(gfx::Size(kCloseGlyphSize, kCloseGlyphSize));
-    PaintLucidePathData(canvas, glyph, kCloseTabIconPath, LabelColor(this));
+    PaintLucidePathData(canvas, glyph, icon_path_, LabelColor(this));
   }
+
+ private:
+  const char* const icon_path_;
 };
 
 BEGIN_METADATA(PinnedRowCloseButton)
@@ -335,25 +383,11 @@ class FolderContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
 };
 
 // Context menu delegate for a tab row within a folder.
-class TabRowContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
- public:
-  explicit TabRowContextMenuDelegate(base::OnceClosure on_remove)
-      : on_remove_(std::move(on_remove)) {}
-
-  void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id == kContextMenuRemoveFromFolderId && on_remove_) {
-      std::move(on_remove_).Run();
-    }
-  }
-
- private:
-  base::OnceClosure on_remove_;
-};
-
 // Context menu delegate for standalone pinned tab "Unpin Tab" + "New Folder",
 // plus "Remove from Folder" when the tab backs a folder member (the model
 // only ever adds that menu item when relevant; the closure itself is cheap
-// to always bind).
+// to always bind).  Also serves the rows with no live tab, which bind a null
+// |on_add_folder| and never add that item.
 class PinnedTabContextMenuDelegate : public ui::SimpleMenuModel::Delegate {
  public:
   PinnedTabContextMenuDelegate(base::OnceClosure on_unpin,
@@ -802,25 +836,33 @@ FolderTabRow::FolderTabRow(
     const std::string& title,
     base::RepeatingCallback<void(std::string)> on_click,
     base::RepeatingCallback<void(const std::string&, const std::string&,
-                                 const gfx::Point&)> on_context)
+                                 const gfx::Point&)> on_context,
+    base::RepeatingCallback<void(std::string)> on_remove)
     : folder_id_(folder_id),
       item_id_(item_id),
       url_(url),
       title_(title),
       on_click_(std::move(on_click)),
-      on_context_(std::move(on_context)) {
+      on_context_(std::move(on_context)),
+      on_remove_(std::move(on_remove)) {
   SetPreferredSize(gfx::Size(0, 32));
 
   // Indent only for a real folder member.  A top-level item with no live
   // tab is also rendered with this row type (Rebuild() section 1b, folder_id
   // empty); indenting it too would make it read as a child of whatever row
-  // happens to precede it.
+  // happens to precede it.  The trailing padding gives back the "x" button's
+  // hit-target margin, as PinnedTabRow does for its minus, so the two glyphs
+  // line up down the section.
+  const int remove_inset =
+      on_remove_ ? (kCloseButtonSize - kCloseGlyphSize) / 2 : 0;
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
-      gfx::Insets::VH(0, AvoraPinnedSectionView::kHPadding +
-                             (folder_id.empty()
-                                  ? 0
-                                  : AvoraPinnedSectionView::kIndent)),
+      gfx::Insets::TLBR(0,
+                        AvoraPinnedSectionView::kHPadding +
+                            (folder_id.empty()
+                                 ? 0
+                                 : AvoraPinnedSectionView::kIndent),
+                        0, AvoraPinnedSectionView::kHPadding - remove_inset),
       8));
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
@@ -847,15 +889,46 @@ FolderTabRow::FolderTabRow(
   title_label_ = AddChildView(std::move(label));
   layout->SetFlexForView(title_label_, 1);
 
+  // "x" (hidden until hovered).  A press on it is the button's own, so it
+  // never reaches PinnedRowView as the start of a materialize or a drag.
+  if (on_remove_) {
+    remove_button_ = AddChildView(std::make_unique<PinnedRowCloseButton>(
+        base::BindRepeating(&FolderTabRow::RemoveItem, base::Unretained(this)),
+        kUnpinIconPath, u"Unpin"));
+    remove_button_->SetVisible(false);
+  }
+
   SetTooltipText(base::UTF8ToUTF16(title.empty() ? url : title));
   SetNotifyEnterExitOnChild(true);
 }
 
 FolderTabRow::~FolderTabRow() = default;
 
+void FolderTabRow::RemoveItem() {
+  if (!on_remove_) {
+    return;
+  }
+  // Removing the item rebuilds the section and deletes this row: copy what
+  // the call needs and touch nothing afterwards.
+  auto on_remove = on_remove_;
+  const std::string item_id = item_id_;
+  on_remove.Run(item_id);
+}
+
+void FolderTabRow::UpdateRemoveButtonVisibility() {
+  if (!remove_button_) {
+    return;
+  }
+  const bool visible = IsMouseHovered();
+  if (remove_button_->GetVisible() != visible) {
+    remove_button_->SetVisible(visible);
+    InvalidateLayout();
+  }
+}
+
 void FolderTabRow::OnThemeChanged() {
   PinnedRowView::OnThemeChanged();
-  title_label_->SetEnabledColor(LabelColor(this));
+  title_label_->SetEnabledColor(TabTitleColor(this, /*active=*/false));
 }
 
 void FolderTabRow::SetFavicon(const gfx::ImageSkia& icon) {
@@ -874,13 +947,9 @@ void FolderTabRow::OnPaintBackground(gfx::Canvas* canvas) {
     PaintLiftedRowBackground(canvas, GetLocalBounds());
     return;
   }
-  // Subtle hover-style background.
+  // Hovered the way a daily tab is.
   if (IsMouseHovered()) {
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(RowHoverColor(this));
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
+    PaintTabPill(canvas, this, avora::WindowTheme::PaletteFor(this).tab_hover);
   }
 }
 
@@ -916,10 +985,12 @@ void FolderTabRow::PerformClickAction() {
 }
 
 void FolderTabRow::OnMouseEntered(const ui::MouseEvent& event) {
+  UpdateRemoveButtonVisibility();
   SchedulePaint();
 }
 
 void FolderTabRow::OnMouseExited(const ui::MouseEvent& event) {
+  UpdateRemoveButtonVisibility();
   SchedulePaint();
 }
 
@@ -1124,7 +1195,8 @@ PinnedTabRow::PinnedTabRow(
   // never reaches PinnedRowView as the start of an activation or a drag.
   if (on_close_) {
     close_button_ = AddChildView(std::make_unique<PinnedRowCloseButton>(
-        base::BindRepeating(&PinnedTabRow::CloseTab, base::Unretained(this))));
+        base::BindRepeating(&PinnedTabRow::CloseTab, base::Unretained(this)),
+        kCloseTabIconPath, u"Close Tab"));
     close_button_->SetVisible(false);
   }
 
@@ -1146,8 +1218,8 @@ PinnedTabRow::~PinnedTabRow() {
 void PinnedTabRow::OnThemeChanged() {
   PinnedRowView::OnThemeChanged();
   // After the textfield's own OnThemeChanged(), which resets its text colour.
-  title_label_->SetEnabledColor(LabelColor(this));
-  rename_field_->SetColor(LabelColor(this));
+  title_label_->SetEnabledColor(TabTitleColor(this, is_active_));
+  rename_field_->SetColor(TabTitleColor(this, is_active_));
 }
 
 void PinnedTabRow::SetFavicon(const gfx::ImageSkia& icon) {
@@ -1227,17 +1299,30 @@ void PinnedTabRow::UpdateTitle() {
   SetTooltipText(title);
 }
 
+void PinnedTabRow::SetActive(bool active) {
+  if (is_active_ == active) {
+    return;
+  }
+  is_active_ = active;
+  GetViewAccessibility().SetIsSelected(active);
+  if (GetWidget()) {
+    title_label_->SetEnabledColor(TabTitleColor(this, is_active_));
+    rename_field_->SetColor(TabTitleColor(this, is_active_));
+  }
+  SchedulePaint();
+}
+
 void PinnedTabRow::OnPaintBackground(gfx::Canvas* canvas) {
   if (is_dragged()) {
     PaintLiftedRowBackground(canvas, GetLocalBounds());
     return;
   }
-  if (IsMouseHovered()) {
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(RowHoverColor(this));
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    canvas->DrawRoundRect(GetLocalBounds(), 6.0f, flags);
+  // As VerticalTabStyleViews does: the active fill wins over hover.
+  const avora::SpaceThemePalette& palette = avora::WindowTheme::PaletteFor(this);
+  if (is_active_) {
+    PaintTabPill(canvas, this, palette.tab_active);
+  } else if (IsMouseHovered()) {
+    PaintTabPill(canvas, this, palette.tab_hover);
   }
 }
 
@@ -1457,6 +1542,18 @@ void AvoraPinnedSectionView::OnTabStripModelChanged(
   if (change.type() == TabStripModelChange::kInserted ||
       change.type() == TabStripModelChange::kRemoved) {
     Rebuild();
+  } else if (selection.active_tab_changed()) {
+    UpdateActiveRow();
+  }
+}
+
+void AvoraPinnedSectionView::UpdateActiveRow() {
+  content::WebContents* active =
+      tab_strip_model_ ? tab_strip_model_->GetActiveWebContents() : nullptr;
+  for (views::View* child : children()) {
+    if (auto* row = views::AsViewClass<PinnedTabRow>(child)) {
+      row->SetActive(active && row->web_contents() == active);
+    }
   }
 }
 
@@ -1657,6 +1754,8 @@ void AvoraPinnedSectionView::Rebuild() {
                             base::Unretained(this)),
         /*in_folder=*/!folder_id.empty()));
     row->SetDragContext(item_id, folder_id);
+    row->SetActive(tab_strip_model_ &&
+                   tab_strip_model_->GetActiveWebContents() == contents);
     // Before the favicon load below: it is the target, when there is one,
     // that the favicon is loaded for.
     ApplyPinnedTargetState(row);
@@ -1779,7 +1878,9 @@ void AvoraPinnedSectionView::Rebuild() {
                 view->OnPersistentPinnedItemContextMenu(item_id, point);
               }
             },
-            weak_factory_.GetWeakPtr())));
+            weak_factory_.GetWeakPtr()),
+        base::BindRepeating(&AvoraPinnedSectionView::RemovePersistentPinnedItem,
+                            weak_factory_.GetWeakPtr())));
     row->SetDragContext(item.id, /*folder_id=*/std::string());
     LoadFavicon(row);
   };
@@ -1831,7 +1932,10 @@ void AvoraPinnedSectionView::Rebuild() {
               &AvoraPinnedSectionView::OnPersistentPinnedItemClicked,
               base::Unretained(this)),
           base::BindRepeating(&AvoraPinnedSectionView::OnFolderItemContextMenu,
-                              base::Unretained(this))));
+                              base::Unretained(this)),
+          base::BindRepeating(
+              &AvoraPinnedSectionView::RemovePersistentPinnedItem,
+              weak_factory_.GetWeakPtr())));
       row->SetDragContext(item_id, folder.id);
       LoadFavicon(row);
     }
@@ -2687,28 +2791,41 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemClicked(
     return;
   }
 
+  // Marked before it joins the strip, as a Live Folder's tab is, so it is
+  // hidden from the moment its row in the daily list is created.  Marked
+  // after, it is an ordinary daily tab while it is inserted and activated,
+  // and the tab strip scrolls the side nav to its row -- at the end of the
+  // daily list -- just before that row is hidden.
+  //
   // Reentrant: inserting the tab runs OnTabStripModelChanged(kInserted) ->
   // Rebuild() synchronously, which deletes every row in this section --
   // including the one that was just clicked.  Nothing owned by a row may be
   // read after this point, which is why |item_id| is a by-value copy.
-  NavigateParams params(browser_, GURL(target_url),
-                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  Navigate(&params);
-
-  if (params.navigated_or_inserted_contents) {
-    MarkPinnedItemTab(params.navigated_or_inserted_contents, item_id);
-    if (!active_space.empty()) {
-      SetTabSpaceId(params.navigated_or_inserted_contents, active_space);
-    }
+  const GURL url(target_url);
+  std::unique_ptr<content::WebContents> contents =
+      content::WebContents::Create(content::WebContents::CreateParams(
+          browser_->GetProfile(), GetSiteInstanceForNewAvoraTab(browser_, url)));
+  content::WebContents* const tab = contents.get();
+  MarkPinnedItemTab(tab, item_id);
+  if (!active_space.empty()) {
+    SetTabSpaceId(tab, active_space);
   }
+  tab_strip_model_->AddWebContents(std::move(contents), -1,
+                                   ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                                   AddTabTypes::ADD_ACTIVE);
+  tab->GetController().LoadURL(url, content::Referrer(),
+                               ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                               std::string());
 }
 
 void AvoraPinnedSectionView::OnFolderItemContextMenu(
     const std::string& folder_id,
     const std::string& item_id,
     const gfx::Point& screen_point) {
-  context_menu_delegate_ = std::make_unique<TabRowContextMenuDelegate>(
+  context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
+      base::BindOnce(&AvoraPinnedSectionView::RemovePersistentPinnedItem,
+                     weak_factory_.GetWeakPtr(), item_id),
+      /*on_add_folder=*/base::OnceClosure(),
       base::BindOnce(
           [](PinnedFoldersManager* mgr, std::string item) {
             // Empty destination = top-level, per MoveItemToFolder's
@@ -2721,6 +2838,7 @@ void AvoraPinnedSectionView::OnFolderItemContextMenu(
 
   context_menu_model_ =
       std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
+  context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin");
   context_menu_model_->AddItem(kContextMenuRemoveFromFolderId,
                                u"Remove from Folder");
 
@@ -2973,21 +3091,26 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
     return;
   }
 
+  context_menu_delegate_ = std::make_unique<PinnedTabContextMenuDelegate>(
+      base::BindOnce(&AvoraPinnedSectionView::RemovePersistentPinnedItem,
+                     weak_factory_.GetWeakPtr(), item_id),
+      /*on_add_folder=*/base::OnceClosure(),
+      /*on_remove_from_folder=*/base::OnceClosure());
+  context_menu_model_ =
+      std::make_unique<ui::SimpleMenuModel>(context_menu_delegate_.get());
+  context_menu_model_->AddItem(kContextMenuUnpinTabId, u"Unpin");
+
   // No live tab exists for this row, so the item's own Space is the only
   // "current" there is.
   move_to_space_submenu_ = BuildMoveToSpaceSubMenu(
       pinned_items_manager_->GetActiveSpaceId(),
       base::BindRepeating(&AvoraPinnedSectionView::MovePinnedItemToSpace,
                           weak_factory_.GetWeakPtr(), item_id));
-  if (!move_to_space_submenu_) {
-    return;
+  if (move_to_space_submenu_) {
+    context_menu_model_->AddSubMenu(kContextMenuMoveToSpaceId,
+                                    u"Move to Space",
+                                    move_to_space_submenu_.get());
   }
-
-  context_menu_delegate_.reset();
-  context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(nullptr);
-  context_menu_model_->AddSubMenu(kContextMenuMoveToSpaceId,
-                                  u"Move to Space",
-                                  move_to_space_submenu_.get());
 
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
       context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
@@ -2995,6 +3118,49 @@ void AvoraPinnedSectionView::OnPersistentPinnedItemContextMenu(
                                   gfx::Rect(screen_point, gfx::Size()),
                                   views::MenuAnchorPosition::kTopLeft,
                                   ui::mojom::MenuSourceType::kMouse);
+}
+
+void AvoraPinnedSectionView::RemovePersistentPinnedItem(std::string item_id) {
+  if (!pinned_items_manager_ || !browser_ || item_id.empty()) {
+    return;
+  }
+
+  // The row has no live tab in this window, but materialization is per
+  // window, so another window may still be showing this pin.  Release those
+  // tabs exactly as "Unpin Tab" would -- the page stays open as a daily tab
+  // -- rather than drop the record out from under them: a tab still marked
+  // with a deleted item's id stays hidden from the daily list, gone from the
+  // pinned section with its page open the whole time.  Collected first,
+  // because each release writes prefs and rebuilds sections synchronously.
+  Profile* const profile = browser_->GetProfile();
+  std::vector<std::pair<TabStripModel*, content::WebContents*>> live_tabs;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* window) {
+        TabStripModel* model = window->GetTabStripModel();
+        if (window->GetProfile() != profile || !model) {
+          return true;
+        }
+        for (int i = 0; i < model->count(); ++i) {
+          content::WebContents* contents = model->GetWebContentsAt(i);
+          if (GetPinnedItemIdForTab(contents) == item_id) {
+            live_tabs.emplace_back(model, contents);
+          }
+        }
+        return true;
+      });
+  for (const auto& [model, contents] : live_tabs) {
+    UnpinAndRemovePinnedItem(model, pinned_items_manager_.get(),
+                             folders_manager_.get(), contents);
+  }
+
+  // No live tab anywhere (the usual case): the record and its folder
+  // membership go directly, membership first so no folder ever references
+  // an id that no longer resolves.  Both are no-ops when a release above
+  // already removed them.
+  if (folders_manager_) {
+    folders_manager_->RemoveItemFromAllFolders(item_id);
+  }
+  pinned_items_manager_->RemovePinnedItem(item_id);
 }
 
 std::unique_ptr<ui::SimpleMenuModel>

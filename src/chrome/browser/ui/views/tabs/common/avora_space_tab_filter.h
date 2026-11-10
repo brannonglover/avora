@@ -117,6 +117,9 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // SetTabPinned() to unwind, so no OnTabPinnedStateChanged() announces it
   // and the tab would stay hidden: gone from the pinned section and still
   // missing from the daily list, with its page open the whole time.
+  //
+  // Removing a Favorite leaves the same kind of stale mark behind, which
+  // ReleaseOrphanedFavoriteTabs() clears here.
   void OnSidebarItemsChanged() override;
 
   // SpaceManagerObserver:
@@ -327,6 +330,14 @@ class AvoraSpaceTabFilter : public TabStripModelObserver,
   // The in-memory mark lives on the WebContents and is gone after a restart,
   // so the reconnect is made by URL for legacy sessions only.
   void AdoptFavoriteTabs();
+
+  // The inverse of AdoptFavoriteTabs(): clears the favorite mark from any tab
+  // whose Favorite record no longer exists.  Removing a Favorite only deletes
+  // the record, and the mark is what keeps the tab out of the daily list, so
+  // without this the tab stays hidden -- gone from the Favorites row and
+  // missing from the daily list with its page still open.  Returns true when
+  // any tab was released.
+  bool ReleaseOrphanedFavoriteTabs();
 
   // Reconnects restored tabs to the pinned items (SidebarItemType::kPinned)
   // they materialize, mirroring AdoptFavoriteTabs() exactly: the mark lives

@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/views/avora/avora_link_preview_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_live_folder_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_live_folders_view.h"
+#include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_section_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_label_view.h"
 #include "chrome/browser/ui/views/tabs/common/avora_space_tab_filter.h"
@@ -205,13 +206,14 @@ class AvoraSideNavContentsLayout : public views::LayoutManagerBase {
 };
 
 // Whether |tab| is one the side nav shows somewhere other than the tab list,
-// such as a Live Folder row or a link preview's card.  AvoraSpaceTabFilter
-// hides such a tab's row, but only once it hears of the tab, which is after
-// this view has: asking whether the row is visible is not enough, because
-// when the tab has just been added it still is.
+// such as a Live Folder row, a pinned row or a link preview's card.
+// AvoraSpaceTabFilter hides such a tab's row, but only once it hears of the
+// tab, which is after this view has: asking whether the row is visible is not
+// enough, because when the tab has just been added it still is.
 bool IsShownOutsideTabList(const tabs::TabInterface* tab) {
   content::WebContents* const contents = tab ? tab->GetContents() : nullptr;
   return contents && (avora::IsLiveFolderTab(contents) ||
+                      avora::IsPinnedItemTab(contents) ||
                       avora::IsLinkPreviewTab(contents));
 }
 
