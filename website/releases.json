@@ -1,5 +1,22 @@
 [
   {
+    "version": "1.2.1",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.2.1-arm64.dmg",
+    "sizeBytes": 190700352,
+    "sha256": "d1a9b17ac2eb6064ed8beb70216e9f40f099f7fea285b74c190324e4fa1a394a",
+    "notarized": true,
+    "edSignature": "pjjl5o71piLeNd0qm2weSGRw76utnLOPo2VZp5zB2A7lF/aOnar4x5JeftxtXJwitchnR1omEMtyrRTKc0N9CA==",
+    "gitSha": "7c2c24f67d5bfc7609cb128896947065927bff6a",
+    "title": null,
+    "bullets": [
+      "Stop a rebuild mid-rename crashing the pinned section."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-10T21:02:26.523Z",
+    "publishedAt": "2026-11-10T21:03:36.475Z"
+  },
+  {
     "version": "1.2.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.2.0-arm64.dmg",
