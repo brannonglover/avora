@@ -40,6 +40,12 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
+#include "cc/paint/paint_flags.h"
+#include "third_party/skia/include/core/SkRRect.h"
+#include "ui/gfx/canvas.h"
+#include "ui/gfx/geometry/rrect_f.h"
+#include "ui/gfx/geometry/rect_f.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/compositor/layer.h"
@@ -53,7 +59,43 @@
 
 namespace {
 constexpr int kSnapDistance = 15;
-}
+
+// Avora page narrowing.  The narrowest the page goes, the handles' width,
+// and how far the right handle keeps from the window's own resize edge.
+constexpr int kAvoraMinPageWidth = 240;
+constexpr int kAvoraHandleWidth = 10;
+constexpr int kAvoraMinHandleWidth = 4;
+constexpr int kAvoraWindowEdgeClearance = 4;
+
+// Black behind a narrowed page, shaped like the contents card it fills.
+class AvoraPageBackdrop : public views::View {
+  METADATA_HEADER(AvoraPageBackdrop, views::View)
+
+ public:
+  explicit AvoraPageBackdrop(const MultiContentsView* owner) : owner_(owner) {
+    SetVisible(false);
+    SetCanProcessEventsWithinSubtree(false);
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(SK_ColorBLACK);
+    canvas->sk_canvas()->drawRRect(
+        static_cast<SkRRect>(gfx::RRectF(gfx::RectF(GetLocalBounds()),
+                                         owner_->GetBackgroundRadii())),
+        flags);
+  }
+
+ private:
+  const raw_ptr<const MultiContentsView> owner_;
+};
+
+BEGIN_METADATA(AvoraPageBackdrop)
+END_METADATA
+
+}  // namespace
 
 void MultiContentsView::ContentsSeparators::Reset() {
   top_separator = nullptr;
@@ -76,6 +118,8 @@ MultiContentsView::MultiContentsView(
 
   background_view_ =
       AddChildView(std::make_unique<MultiContentsBackgroundView>(browser_view));
+  // Avora: behind the page containers.
+  avora_page_backdrop_ = AddChildView(std::make_unique<AvoraPageBackdrop>(this));
 
   contents_container_views_.push_back(
       AddChildView(std::make_unique<ContentsContainerView>(browser_view_)));
@@ -199,6 +243,15 @@ MultiContentsView::~MultiContentsView() {
   contents_separators_.Reset();
   background_view_ = nullptr;
   avora_resize_readout_ = nullptr;
+  avora_page_backdrop_ = nullptr;
+  for (views::ViewTracker* tracker :
+       {&avora_left_handle_, &avora_right_handle_}) {
+    if (auto* handle =
+            static_cast<avora::AvoraPageEdgeHandle*>(tracker->view())) {
+      handle->SetDelegate(nullptr);
+      handle->SetVisible(false);
+    }
+  }
   RemoveAllChildViews();
 }
 
@@ -644,6 +697,28 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
   available_space =
       CalculateSeparatorLayouts(available_space, layouts.child_layouts);
 
+  // Avora: a narrowed page, centred, with black either side.  Only while it
+  // is the one page filling the contents area; the width is kept for later
+  // when it is not.
+  const bool narrowed = AvoraPageWidthApplies() && avora_page_width_ &&
+                        *avora_page_width_ < available_space.width();
+  layouts.child_layouts.emplace_back(avora_page_backdrop_.get(), narrowed,
+                                     narrowed ? available_space : gfx::Rect());
+  if (narrowed) {
+    gfx::Rect page = available_space;
+    page.ClampToCenteredSize(
+        gfx::Size(*avora_page_width_, available_space.height()));
+    layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
+                                       true, page);
+    layouts.child_layouts.emplace_back(resize_area_.get(), false, gfx::Rect());
+    layouts.child_layouts.emplace_back(contents_container_views_[1].get(),
+                                       false, gfx::Rect());
+    layouts.child_layouts.emplace_back(lens_overlay_view_.get(),
+                                       lens_overlay_view_->GetVisible(), page);
+    layouts.host_size = gfx::Size(width, height);
+    return layouts;
+  }
+
   // kOverlay: the primary container keeps the whole available space and the
   // secondary container floats above it.  Returns before any split geometry,
   // which has no meaning for this arrangement.
@@ -1041,11 +1116,124 @@ int MultiContentsView::GetResizeAxisComponent(const gfx::Size& size) const {
              : size.height();
 }
 
-void MultiContentsView::SetAvoraLiveResizing(bool resizing) {
-  if (resizing) {
-    avora_resize_readout_->StartTracking(GetActiveContentsView());
-  } else {
-    avora_resize_readout_->StopTracking();
+// ── Avora page narrowing ────────────────────────────────────────────────────
+
+bool MultiContentsView::AvoraPageWidthApplies() const {
+  return secondary_mode_ == SecondaryContentsMode::kNone &&
+         browser_view_->GetIsNormalType() &&
+         !browser_view_->avora_mini_toolbar();
+}
+
+void MultiContentsView::SetAvoraPageEdgeHandles(
+    avora::AvoraPageEdgeHandle* left,
+    avora::AvoraPageEdgeHandle* right) {
+  avora_left_handle_.SetView(left);
+  avora_right_handle_.SetView(right);
+  left->SetDelegate(this);
+  right->SetDelegate(this);
+  UpdateAvoraPageEdgeHandles();
+}
+
+void MultiContentsView::SetAvoraPageWidth(std::optional<int> width) {
+  if (width == avora_page_width_) {
+    return;
+  }
+  avora_page_width_ = width;
+  InvalidateLayout();
+}
+
+bool MultiContentsView::IsAvoraPageEdgeHandleAt(
+    const gfx::Point& point) const {
+  for (const views::ViewTracker* tracker :
+       {&avora_left_handle_, &avora_right_handle_}) {
+    const views::View* const handle = tracker->view();
+    if (handle && handle->GetVisible() && handle->bounds().Contains(point)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void MultiContentsView::OnPageEdgeDragStarted() {
+  avora_drag_start_width_ = contents_container_views_[0]->width();
+  // The room the page has: the black's width while it is narrowed, else its
+  // own, since it fills the space.  Read off the views rather than cached in
+  // layout, which is also asked about sizes this view is not.
+  avora_available_width_ = avora_page_backdrop_->GetVisible()
+                               ? avora_page_backdrop_->width()
+                               : avora_drag_start_width_;
+  avora_resize_readout_->StartTracking(GetActiveContentsView());
+}
+
+void MultiContentsView::OnPageEdgeDragged(int outward) {
+  // Both edges move, so the width changes by twice the drag and the page
+  // stays centred.  Pulled all the way out, it fills its space again.
+  const int width =
+      std::clamp(avora_drag_start_width_ + 2 * outward, kAvoraMinPageWidth,
+                 std::max(kAvoraMinPageWidth, avora_available_width_));
+  SetAvoraPageWidth(width >= avora_available_width_ ? std::nullopt
+                                                    : std::optional(width));
+}
+
+void MultiContentsView::OnPageEdgeDragEnded() {
+  avora_resize_readout_->StopTracking();
+}
+
+void MultiContentsView::OnPageEdgeReset() {
+  SetAvoraPageWidth(std::nullopt);
+}
+
+void MultiContentsView::Layout(PassKey) {
+  LayoutSuperclass<views::View>(this);
+  UpdateAvoraPageEdgeHandles();
+}
+
+void MultiContentsView::OnBoundsChanged(const gfx::Rect& previous_bounds) {
+  views::View::OnBoundsChanged(previous_bounds);
+  UpdateAvoraPageEdgeHandles();
+}
+
+void MultiContentsView::UpdateAvoraPageEdgeHandles() {
+  auto* const left =
+      static_cast<avora::AvoraPageEdgeHandle*>(avora_left_handle_.view());
+  auto* const right =
+      static_cast<avora::AvoraPageEdgeHandle*>(avora_right_handle_.view());
+  if (!left || !right || !left->parent() || !GetWidget()) {
+    return;
+  }
+  views::View* const host = left->parent();
+  const bool applies = AvoraPageWidthApplies() && GetVisible();
+  const gfx::Rect area =
+      views::View::ConvertRectToTarget(this, host, GetLocalBounds());
+  const gfx::Rect page = views::View::ConvertRectToTarget(
+      this, host, contents_container_views_[0]->bounds());
+
+  // Right: just outside the page -- in the black once it is narrowed, else in
+  // the gap before the window edge -- clear of the window's own resize edge.
+  const int right_room =
+      std::min(host->width() - kAvoraWindowEdgeClearance,
+               area.right() + kAvoraHandleWidth) -
+      page.right();
+  const int right_width = std::min(kAvoraHandleWidth, right_room);
+  const bool show_right = applies && right_width >= kAvoraMinHandleWidth;
+  if (right->GetVisible() != show_right) {
+    right->SetVisible(show_right);
+  }
+  if (show_right) {
+    right->SetBoundsRect(
+        gfx::Rect(page.right(), page.y(), right_width, page.height()));
+  }
+
+  // Left: only into the black.  At full width the gap beside the sidebar
+  // belongs to the sidebar's own resize strip.
+  const int left_width = std::min(kAvoraHandleWidth, page.x() - area.x());
+  const bool show_left = applies && left_width >= kAvoraMinHandleWidth;
+  if (left->GetVisible() != show_left) {
+    left->SetVisible(show_left);
+  }
+  if (show_left) {
+    left->SetBoundsRect(gfx::Rect(page.x() - left_width, page.y(), left_width,
+                                  page.height()));
   }
 }
 

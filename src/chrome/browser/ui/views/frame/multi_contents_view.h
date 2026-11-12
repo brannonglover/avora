@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/tabs/split_tab_highlight_controller.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/avora/avora_page_edge_handle.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/split_tabs/split_tab_visual_data.h"
@@ -23,6 +24,7 @@
 #include "ui/views/controls/resize_area_delegate.h"
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view.h"
+#include "ui/views/view_tracker.h"
 
 class BrowserView;
 class ContentsWebView;
@@ -70,6 +72,7 @@ class WebView;
 class MultiContentsView
     : public views::View,
       public views::ResizeAreaDelegate,
+      public avora::AvoraPageEdgeHandle::Delegate,
       public views::LayoutDelegate,
       public split_tabs::SplitTabHighlightController::Delegate {
   METADATA_HEADER(MultiContentsView, views::View)
@@ -228,19 +231,40 @@ class MultiContentsView
   // pane traversal.
   std::vector<views::View*> GetAccessiblePanes();
 
-  // Avora: the window is being resized by its edges (a live resize) or has
-  // stopped.  While it is, the active page's size shows over it; see
-  // avora::AvoraResizeReadoutView.
-  void SetAvoraLiveResizing(bool resizing);
+  // Avora: the page can be narrowed inside the window by dragging its left
+  // or right edge, centred, with black on either side, to check a site's
+  // responsive layout.  The width belongs to the window, so it holds across
+  // tab switches; nullopt fills the space as usual.  Split view, link
+  // previews and the mini window ignore it.
+  //
+  // |left| and |right| are BrowserView's edge handles: they sit just outside
+  // the page, partly beyond this view's bounds, so BrowserView owns them and
+  // this view places them.
+  void SetAvoraPageEdgeHandles(avora::AvoraPageEdgeHandle* left,
+                               avora::AvoraPageEdgeHandle* right);
+  void SetAvoraPageWidth(std::optional<int> width);
+  // Whether a visible edge handle is at |point|, in BrowserView coordinates.
+  // BrowserView's hit test asks, so the handles take the mouse rather than
+  // the window-drag area they sit in.
+  bool IsAvoraPageEdgeHandleAt(const gfx::Point& point) const;
+  std::optional<int> avora_page_width() const { return avora_page_width_; }
   avora::AvoraResizeReadoutView* avora_resize_readout_for_testing() const {
     return avora_resize_readout_;
   }
+
+  // avora::AvoraPageEdgeHandle::Delegate:
+  void OnPageEdgeDragStarted() override;
+  void OnPageEdgeDragged(int outward) override;
+  void OnPageEdgeDragEnded() override;
+  void OnPageEdgeReset() override;
 
   // views::ResizeAreaDelegate:
   void OnResize(int resize_amount, bool done_resizing) override;
 
   // views::View:
   void OnThemeChanged() override;
+  void Layout(PassKey) override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 
   const std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>&
   contents_container_views() const {
@@ -431,9 +455,23 @@ class MultiContentsView
 
   std::optional<int> min_contents_size_for_testing_;
 
-  // Avora: the page size shown during a live window resize.  Above every
+  // Avora: the page size shown while a page edge is dragged.  Above every
   // other child; it places itself over the page, so layout leaves it alone.
   raw_ptr<avora::AvoraResizeReadoutView> avora_resize_readout_ = nullptr;
+
+  // Avora: narrowing the page.  See SetAvoraPageWidth().
+  bool AvoraPageWidthApplies() const;
+  // Puts the edge handles beside the page as it now is.
+  void UpdateAvoraPageEdgeHandles();
+  std::optional<int> avora_page_width_;
+  // Black, behind the page, filling the contents area while it is narrowed.
+  raw_ptr<views::View> avora_page_backdrop_ = nullptr;
+  views::ViewTracker avora_left_handle_;
+  views::ViewTracker avora_right_handle_;
+  // The page's width when the current drag began.
+  int avora_drag_start_width_ = 0;
+  // The width the page can have, taken when the current drag began.
+  int avora_available_width_ = 0;
 
   // Width ratios that a split view will snap to when resize is within a
   // snap distance (kSnapDistance).

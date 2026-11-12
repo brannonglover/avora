@@ -208,6 +208,7 @@
 #include "chrome/browser/ui/views/avora/avora_mini_extensions_container.h"
 #include "chrome/browser/ui/views/avora/avora_mini_toolbar_view.h"
 #include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
+#include "chrome/browser/ui/views/avora/avora_page_edge_handle.h"
 #include "chrome/browser/ui/views/avora/avora_toast_view.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
@@ -1048,6 +1049,14 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   auto multi_contents_view = std::make_unique<MultiContentsView>(
       this, std::make_unique<MultiContentsViewDelegateImpl>(*browser_));
   multi_contents_view_ = AddChildView(std::move(multi_contents_view));
+  // Avora: grab strips on the page's edges, for narrowing it to check a
+  // site's responsive layout.  Ours because they sit partly outside the
+  // contents area; the contents view places them.
+  multi_contents_view_->SetAvoraPageEdgeHandles(
+      AddChildView(std::make_unique<avora::AvoraPageEdgeHandle>(
+          avora::AvoraPageEdgeHandle::Edge::kLeft)),
+      AddChildView(std::make_unique<avora::AvoraPageEdgeHandle>(
+          avora::AvoraPageEdgeHandle::Edge::kRight)));
 
   set_contents_view(multi_contents_view_);
 
@@ -5171,6 +5180,15 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
     if (ConvertedHitTest(parent(), avora_link_preview_, &test_point)) {
       return HTCLIENT;
     }
+  }
+
+  // Avora: the page's edge handles sit in the gap around the contents card,
+  // which is otherwise a place to drag the window from; without this the
+  // press moves the window instead of reaching the handle.
+  if (multi_contents_view_ &&
+      multi_contents_view_->IsAvoraPageEdgeHandleAt(
+          point_in_browser_view_coords)) {
+    return HTCLIENT;
   }
 
   if (avora_sidebar_header_ && avora_sidebar_header_->GetVisible()) {

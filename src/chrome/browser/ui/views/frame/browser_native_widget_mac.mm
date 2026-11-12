@@ -41,7 +41,6 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
@@ -360,19 +359,12 @@ void BrowserNativeWidgetMac::OnWindowWillStartLiveResize() {
   NativeWidgetMac::OnWindowWillStartLiveResize();
   is_window_live_resizing_ = true;
   UpdateBackgroundGeometry();
-  // Avora: the page's size shows while the window is dragged by its edges.
-  if (browser_view_ && browser_view_->multi_contents_view()) {
-    browser_view_->multi_contents_view()->SetAvoraLiveResizing(true);
-  }
 }
 
 void BrowserNativeWidgetMac::OnWindowDidEndLiveResize() {
   NativeWidgetMac::OnWindowDidEndLiveResize();
   is_window_live_resizing_ = false;
   UpdateBackgroundGeometry();
-  if (browser_view_ && browser_view_->multi_contents_view()) {
-    browser_view_->multi_contents_view()->SetAvoraLiveResizing(false);
-  }
 }
 
 void BrowserNativeWidgetMac::OnWidgetDestroyed(views::Widget* widget) {
