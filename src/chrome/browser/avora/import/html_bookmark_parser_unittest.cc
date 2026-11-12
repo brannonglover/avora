@@ -102,7 +102,7 @@ TEST_F(HtmlBookmarkParserTest, NestedFolders) {
 }
 
 TEST_F(HtmlBookmarkParserTest, InvalidUrlsSkipped) {
-  const std::string html = R"(
+  const std::string html = R"html(
 <!DOCTYPE NETSCAPE-Bookmark-file-1>
 <DL><p>
   <DT><A HREF="https://valid.com">Valid</A>
@@ -111,7 +111,7 @@ TEST_F(HtmlBookmarkParserTest, InvalidUrlsSkipped) {
   <DT><A HREF="mailto:test@test.com">Email</A>
   <DT><A HREF="https://also-valid.com">Also Valid</A>
 </DL>
-)";
+)html";
   auto result = HtmlBookmarkParser::ParseBookmarksHtml(html, "safari", "Test");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(2, result->stats.links_imported);

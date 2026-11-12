@@ -27,7 +27,8 @@ using ::testing::SizeIs;
 
 class FirefoxDbBuilder {
  public:
-  explicit FirefoxDbBuilder(const base::FilePath& db_path) : path_(db_path) {
+  explicit FirefoxDbBuilder(const base::FilePath& db_path)
+      : path_(db_path), db_(sql::Database::Tag("Test")) {
     EXPECT_TRUE(db_.Open(db_path));
     CreateSchema();
     InsertRoots();
@@ -844,7 +845,7 @@ TEST_F(FirefoxBookmarkParserTest, WalFilePresent) {
 
   // Re-open in WAL mode and add a bookmark without checkpointing.
   {
-    sql::Database db(sql::Database::Tag{"test"});
+    sql::Database db(sql::Database::Tag{"Test"});
     ASSERT_TRUE(db.Open(db_path));
     ASSERT_TRUE(db.Execute("PRAGMA journal_mode=WAL"));
 
@@ -895,7 +896,7 @@ TEST_F(FirefoxBookmarkParserTest, DatabaseMissingRequiredTables) {
   // Firefox tables should return nullopt.
   auto db_path = CreateDb("incomplete.sqlite");
   {
-    sql::Database db(sql::Database::Tag{"test"});
+    sql::Database db(sql::Database::Tag{"Test"});
     ASSERT_TRUE(db.Open(db_path));
     ASSERT_TRUE(db.Execute("CREATE TABLE some_other_table (id INTEGER)"));
   }

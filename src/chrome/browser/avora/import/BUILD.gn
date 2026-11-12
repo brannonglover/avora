@@ -52,7 +52,9 @@ source_set("unit_tests") {
     ":import",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/avora",
     "//chrome/test:test_support",
+    "//components/prefs:test_support",
     "//testing/gtest",
   ]
 }

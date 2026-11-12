@@ -11,9 +11,11 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "chrome/browser/avora/avora_imported_link_store.h"
 #include "chrome/browser/avora/avora_imported_links.h"
 #include "chrome/browser/avora/import/avora_import_coordinator.h"
 #include "chrome/browser/avora/import/bookmark_import_types.h"
+#include "components/prefs/testing_pref_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -138,7 +140,7 @@ constexpr char kNestedFolders[] = R"({
   }
 })";
 
-constexpr char kMalformedNodes[] = R"({
+constexpr char kMalformedNodes[] = R"json({
   "roots": {
     "bookmark_bar": {
       "children": [
@@ -161,7 +163,7 @@ constexpr char kMalformedNodes[] = R"({
     "other": { "children": [], "name": "Other Bookmarks", "type": "folder" },
     "synced": { "children": [], "name": "Mobile Bookmarks", "type": "folder" }
   }
-})";
+})json";
 
 constexpr char kUnicodeTitles[] = R"({
   "roots": {
@@ -181,7 +183,7 @@ constexpr char kUnicodeTitles[] = R"({
   }
 })";
 
-constexpr char kDuplicateUrls[] = R"({
+constexpr char kDuplicateUrls[] = R"json({
   "roots": {
     "bookmark_bar": {
       "children": [
@@ -201,7 +203,7 @@ constexpr char kDuplicateUrls[] = R"({
     },
     "synced": { "children": [], "name": "Mobile Bookmarks", "type": "folder" }
   }
-})";
+})json";
 
 constexpr char kOrderedBookmarks[] = R"({
   "roots": {
@@ -277,16 +279,6 @@ std::vector<ImportedItem> ChildrenOf(const ImportedSource& source,
                      return a.order < b.order;
                    });
   return children;
-}
-
-const ImportedItem* FindByTitle(const ImportedSource& source,
-                                const std::string& title) {
-  for (const auto& item : source.items) {
-    if (item.title == title) {
-      return &item;
-    }
-  }
-  return nullptr;
 }
 
 // ── Filesystem test fixture ─────────────────────────────────────────────────
