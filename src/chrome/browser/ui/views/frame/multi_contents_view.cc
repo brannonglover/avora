@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_overlay_view.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
+#include "chrome/browser/ui/views/avora/avora_resize_readout_view.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
@@ -133,6 +134,10 @@ MultiContentsView::MultiContentsView(
   lens_overlay_view->SetLayoutManager(std::make_unique<views::FillLayout>());
   lens_overlay_view_ = AddChildView(std::move(lens_overlay_view));
 
+  // Avora: last, so it draws over the pages.
+  avora_resize_readout_ =
+      AddChildView(std::make_unique<avora::AvoraResizeReadoutView>());
+
   for (auto& contents_container_view : contents_container_views_) {
     auto& view_map = container_focusable_map_[contents_container_view];
 
@@ -193,6 +198,7 @@ MultiContentsView::~MultiContentsView() {
   resize_area_ = nullptr;
   contents_separators_.Reset();
   background_view_ = nullptr;
+  avora_resize_readout_ = nullptr;
   RemoveAllChildViews();
 }
 
@@ -1033,6 +1039,14 @@ int MultiContentsView::GetResizeAxisComponent(const gfx::Size& size) const {
           split_tabs::SplitTabLayout::kSideBySide)
              ? size.width()
              : size.height();
+}
+
+void MultiContentsView::SetAvoraLiveResizing(bool resizing) {
+  if (resizing) {
+    avora_resize_readout_->StartTracking(GetActiveContentsView());
+  } else {
+    avora_resize_readout_->StopTracking();
+  }
 }
 
 BEGIN_METADATA(MultiContentsView)

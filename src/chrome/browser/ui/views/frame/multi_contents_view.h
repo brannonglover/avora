@@ -34,6 +34,10 @@ class MultiContentsViewDelegate;
 class MultiContentsViewDropTargetController;
 class MultiContentsViewMiniToolbar;
 
+namespace avora {
+class AvoraResizeReadoutView;
+}  // namespace avora
+
 namespace content {
 class WebContents;
 }  // namespace content
@@ -223,6 +227,14 @@ class MultiContentsView
   // Returns accessible panes to be used in BrowserView to create the order of
   // pane traversal.
   std::vector<views::View*> GetAccessiblePanes();
+
+  // Avora: the window is being resized by its edges (a live resize) or has
+  // stopped.  While it is, the active page's size shows over it; see
+  // avora::AvoraResizeReadoutView.
+  void SetAvoraLiveResizing(bool resizing);
+  avora::AvoraResizeReadoutView* avora_resize_readout_for_testing() const {
+    return avora_resize_readout_;
+  }
 
   // views::ResizeAreaDelegate:
   void OnResize(int resize_amount, bool done_resizing) override;
@@ -418,6 +430,10 @@ class MultiContentsView
   bool active_contents_view_highlighted_ = false;
 
   std::optional<int> min_contents_size_for_testing_;
+
+  // Avora: the page size shown during a live window resize.  Above every
+  // other child; it places itself over the page, so layout leaves it alone.
+  raw_ptr<avora::AvoraResizeReadoutView> avora_resize_readout_ = nullptr;
 
   // Width ratios that a split view will snap to when resize is within a
   // snap distance (kSnapDistance).
