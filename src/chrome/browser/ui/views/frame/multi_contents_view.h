@@ -34,10 +34,6 @@ class MultiContentsViewDelegate;
 class MultiContentsViewDropTargetController;
 class MultiContentsViewMiniToolbar;
 
-namespace avora {
-class AvoraResponsiveFrameView;
-}  // namespace avora
-
 namespace content {
 class WebContents;
 }  // namespace content
@@ -228,20 +224,6 @@ class MultiContentsView
   // pane traversal.
   std::vector<views::View*> GetAccessiblePanes();
 
-  // Avora responsive mode: the page in a centred frame that can be dragged to
-  // any size.  It belongs to the tab (see avora_responsive_frame_view.h) and
-  // only shows while a single page fills the contents area -- not in split
-  // view, under a link preview card, or in the mini window.
-  //
-  // Toggles responsive mode for the tab in the contents area.
-  void ToggleAvoraResponsiveMode();
-  bool IsAvoraResponsiveModeActive() const {
-    return avora_responsive_size_.has_value();
-  }
-  // Re-reads the primary tab's responsive state.  Call whenever the primary
-  // contents or the secondary mode changes.
-  void UpdateAvoraResponsiveFrame();
-
   // views::ResizeAreaDelegate:
   void OnResize(int resize_amount, bool done_resizing) override;
 
@@ -348,9 +330,6 @@ class MultiContentsView
 
   ViewSizes GetViewSizes(gfx::Rect available_space) const;
 
-  // Whether responsive mode can show in this window and arrangement at all.
-  bool AvoraResponsiveModeApplies() const;
-
   // Clamps to the minimum of kMinWebContentsSize or
   // kMinWebContentsSizePercentage multiplied by the available width. This
   // allows for some flexibility when it comes to particularly narrow windows.
@@ -439,18 +418,6 @@ class MultiContentsView
   bool active_contents_view_highlighted_ = false;
 
   std::optional<int> min_contents_size_for_testing_;
-
-  // Avora responsive mode.  The frame sits behind the containers and fills
-  // the contents area while the mode is on.  |avora_responsive_size_| caches
-  // the primary tab's requested size (0 on an axis is "fill") so layout, which
-  // is const, need not reach into the tab; nullopt when the mode is off or
-  // does not apply.  |avora_last_responsive_size_| is what the next toggle on
-  // starts at, so switching it off and on again in a window keeps the size.
-  class AvoraResponsiveDelegate;
-  std::unique_ptr<AvoraResponsiveDelegate> avora_responsive_delegate_;
-  raw_ptr<avora::AvoraResponsiveFrameView> avora_responsive_frame_ = nullptr;
-  std::optional<gfx::Size> avora_responsive_size_;
-  std::optional<gfx::Size> avora_last_responsive_size_;
 
   // Width ratios that a split view will snap to when resize is within a
   // snap distance (kSnapDistance).

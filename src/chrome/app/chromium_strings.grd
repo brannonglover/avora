@@ -286,13 +286,6 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
         Toggle Sidebar
       </message>
 
-      <!-- Avora: Developer-menu entry for responsive mode, which shrinks the
-           page into a centred frame that can be dragged to any size.  Named
-           after Safari's command of the same job, whose shortcut it shares. -->
-      <message name="IDS_AVORA_TOGGLE_RESPONSIVE_MAC" desc="Developer menu item that shows the page in a resizable, centred frame for testing how it responds to different viewport sizes, and back again.">
-        Responsive Design Mode
-      </message>
-
       <!-- Avora: app-menu entry for taking over as the system default
            browser.  Upstream's IDS_SET_BROWSER_AS_DEFAULT_MENU_ITEM is
            sentence case and hardcodes "Chromium", neither of which suits the

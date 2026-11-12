@@ -2464,11 +2464,6 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
       sad_tab_helper->ReinstallInWebView();
     }
 
-    // Avora: responsive mode belongs to the tab, so the incoming tab brings
-    // its own frame (or none).  Before the layout below, which places the
-    // page by it.
-    multi_contents_view_->UpdateAvoraResponsiveFrame();
-
     // Temporarily disable fast resize to ensure that the new active tab
     // updates its layout.
     const bool original_fast_resize =

@@ -100,7 +100,6 @@
 #include "chrome/browser/avora/import/avora_import_coordinator.h"
 #include "chrome/browser/ui/views/avora/avora_import_dialog_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
@@ -1336,14 +1335,6 @@ void BrowserCommandController::HandleCommandWithDisposition(
       }
       break;
     }
-    case IDC_AVORA_TOGGLE_RESPONSIVE: {
-      // Shrinks the page into a centred, draggable frame, or lets it fill the
-      // contents area again.  The mode belongs to the active tab.
-      if (auto* bv = BrowserView::GetBrowserViewForBrowser(browser_)) {
-        bv->multi_contents_view()->ToggleAvoraResponsiveMode();
-      }
-      break;
-    }
     case IDC_AVORA_IMPORT_ARC: {
       // Opens the one import dialog that covers every browser -- Chrome, Edge,
       // Firefox, Safari and Arc.  Arc appears there as its own source; see
@@ -1952,9 +1943,6 @@ void BrowserCommandController::InitCommandState() {
   // sidebar to hide (no vertical tab strip) simply do nothing, which keeps the
   // View menu item from flickering between enabled and greyed out.
   command_updater_->UpdateCommandEnabled(IDC_AVORA_TOGGLE_SIDEBAR, true);
-  // Avora: responsive mode, likewise always available; split view, link
-  // previews and the mini window, where it does not apply, ignore it.
-  command_updater_->UpdateCommandEnabled(IDC_AVORA_TOGGLE_RESPONSIVE, true);
   command_updater_->UpdateCommandEnabled(
       IDC_RECENT_TABS_MENU, (!guest_session && !profile()->IsSystemProfile() &&
                              !profile()->IsIncognitoProfile()));
