@@ -153,6 +153,7 @@
 #include "chrome/browser/ui/views/commerce/discounts_page_action_view_controller.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_bubble_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/js_optimization/js_optimizations_page_action_controller.h"
 #include "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.h"
@@ -1062,6 +1063,27 @@ void BrowserActions::InitializeChromeMenuActions() {
               bwi),
           kActionAvoraToggleSidebar, IDS_AVORA_TOGGLE_SIDEBAR_MAC,
           IDS_AVORA_TOGGLE_SIDEBAR_MAC,
+          features::IsRoundedIconsEnabled() ? kDownloadIcon
+                                            : kDownloadMenuOldIcon,
+          /*is_pinnable=*/false)
+          .SetEnabled(true)
+          .Build());
+
+  // Avora: responsive mode (Opt-Cmd-R).  The same two-part registration.
+  root_action_item_->AddChild(
+      ChromeMenuAction(
+          base::BindRepeating(
+              [](BrowserWindowInterface* bwi, actions::ActionItem* item,
+                 actions::ActionInvocationContext context) {
+                if (BrowserView* const browser_view =
+                        BrowserView::GetBrowserViewForBrowser(bwi)) {
+                  browser_view->multi_contents_view()
+                      ->ToggleAvoraResponsiveMode();
+                }
+              },
+              bwi),
+          kActionAvoraToggleResponsive, IDS_AVORA_TOGGLE_RESPONSIVE_MAC,
+          IDS_AVORA_TOGGLE_RESPONSIVE_MAC,
           features::IsRoundedIconsEnabled() ? kDownloadIcon
                                             : kDownloadMenuOldIcon,
           /*is_pinnable=*/false)

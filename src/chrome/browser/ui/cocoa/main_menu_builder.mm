@@ -400,6 +400,10 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
                           .command_id(IDC_DEV_TOOLS_INSPECT),
                       Item(IDS_DEV_TOOLS_CONSOLE_MAC)
                           .command_id(IDC_DEV_TOOLS_CONSOLE),
+                      // Avora: the key equivalent, Opt-Cmd-R, comes from
+                      // the accelerator table (accelerators_cocoa.mm).
+                      Item(IDS_AVORA_TOGGLE_RESPONSIVE_MAC)
+                          .command_id(IDC_AVORA_TOGGLE_RESPONSIVE),
                       Item(IDS_ALLOW_JAVASCRIPT_APPLE_EVENTS_MAC)
                           .command_id(IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS),
                   }),

@@ -5,17 +5,20 @@
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 #include "base/check_deref.h"
 #include "base/notreached.h"
 #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/devtools/devtools_contents_resizing_strategy.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_overlay_view.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
+#include "chrome/browser/ui/views/avora/avora_responsive_frame_view.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
@@ -37,8 +40,10 @@
 #include "components/prefs/pref_service.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
+#include "third_party/blink/public/common/page/page_zoom.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/compositor/layer.h"
@@ -52,7 +57,30 @@
 
 namespace {
 constexpr int kSnapDistance = 15;
-}
+
+// Where responsive mode starts the first time in a window: an iPhone's
+// viewport, in CSS pixels.
+constexpr int kAvoraResponsiveDefaultWidth = 390;
+constexpr int kAvoraResponsiveDefaultHeight = 844;
+}  // namespace
+
+// Connects the responsive frame to the tab in the primary container.
+class MultiContentsView::AvoraResponsiveDelegate
+    : public avora::AvoraResponsiveFrameView::Delegate {
+ public:
+  explicit AvoraResponsiveDelegate(MultiContentsView* view) : view_(view) {}
+
+  content::WebContents* GetResponsiveWebContents() override {
+    return view_->contents_container_views_[0]->contents_view()->web_contents();
+  }
+
+  void OnResponsiveSizeChanged() override {
+    view_->UpdateAvoraResponsiveFrame();
+  }
+
+ private:
+  const raw_ptr<MultiContentsView> view_;
+};
 
 void MultiContentsView::ContentsSeparators::Reset() {
   top_separator = nullptr;
@@ -88,6 +116,15 @@ MultiContentsView::MultiContentsView(
   contents_container_views_.push_back(
       AddChildView(std::make_unique<ContentsContainerView>(browser_view_)));
   contents_container_views_[1]->SetVisible(false);
+
+  // Above the page containers, which fill the contents area in responsive
+  // mode and would otherwise take the clicks meant for the frame's handles.
+  // The frame paints around the page, not over it, and only its toolbar and
+  // handles take events; everything else falls through to the container.
+  avora_responsive_delegate_ = std::make_unique<AvoraResponsiveDelegate>(this);
+  avora_responsive_frame_ =
+      AddChildView(std::make_unique<avora::AvoraResponsiveFrameView>(
+          avora_responsive_delegate_.get()));
 
   drop_target_view_ =
       AddChildView(std::make_unique<MultiContentsDropTargetView>());
@@ -193,6 +230,7 @@ MultiContentsView::~MultiContentsView() {
   resize_area_ = nullptr;
   contents_separators_.Reset();
   background_view_ = nullptr;
+  avora_responsive_frame_ = nullptr;
   RemoveAllChildViews();
 }
 
@@ -236,7 +274,11 @@ void MultiContentsView::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
     // In kOverlay the window's content radii belong to the full-bleed
     // container behind the card, not to the active one; the card carries its
     // own radii, applied in UpdateContentsBorderAndOverlay().
-    GetPrimaryContentsContainerView()->SetRoundedCorners(radii);
+    // A page in the responsive frame is a card of its own, rounded all round
+    // like a split pane rather than shaped to the window.
+    GetPrimaryContentsContainerView()->SetRoundedCorners(
+        IsAvoraResponsiveModeActive() ? kSplitViewContentRoundedCorners
+                                      : radii);
     if (secondary_mode_ != SecondaryContentsMode::kOverlay) {
       GetInactiveContentsContainerView()->SetRoundedCorners(
           gfx::RoundedCornersF());
@@ -312,6 +354,8 @@ void MultiContentsView::SetWebContentsAtIndex(
       sad_tab_helper->ReinstallInWebView();
     }
   }
+
+  UpdateAvoraResponsiveFrame();
 }
 
 void MultiContentsView::ShowSplitView(
@@ -325,6 +369,7 @@ void MultiContentsView::ShowSplitView(
     secondary_mode_ = SecondaryContentsMode::kSplit;
     resize_area_->SetLayout(visual_data.split_layout());
     UpdateContentsBorderAndOverlay();
+    UpdateAvoraResponsiveFrame();
   } else {
     // If the split view is visible, update the split visual data.
     UpdateSplitVisualData(visual_data);
@@ -352,6 +397,8 @@ void MultiContentsView::CloseSplitView() {
       sad_tab_helper->ReinstallInWebView();
     }
   }
+
+  UpdateAvoraResponsiveFrame();
 }
 
 void MultiContentsView::SwapContentsInSplitView() {
@@ -419,6 +466,7 @@ void MultiContentsView::ShowOverlayContents(
   SetActiveIndex(1);
 
   UpdateContentsBorderAndOverlay();
+  UpdateAvoraResponsiveFrame();
   InvalidateLayout();
 }
 
@@ -458,6 +506,7 @@ void MultiContentsView::HideOverlayContents() {
   }
 
   UpdateContentsBorderAndOverlay();
+  UpdateAvoraResponsiveFrame();
   InvalidateLayout();
 }
 
@@ -638,6 +687,41 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
   available_space =
       CalculateSeparatorLayouts(available_space, layouts.child_layouts);
 
+  // Avora responsive mode.  The page container keeps the whole contents area
+  // and places the page itself (see ContentsContainerView::
+  // SetAvoraResponsiveSize()), so docked DevTools keep their own place beside
+  // the frame rather than being squeezed into it.  The frame covers the area
+  // DevTools leaves, worked out the same way the container works it out.
+  // The cached size is only set while the mode applies, so split and overlay
+  // never get here with it.
+  const bool responsive = avora_responsive_size_.has_value();
+  gfx::Rect responsive_area;
+  if (responsive) {
+    gfx::Rect devtools_area;
+    ApplyDevToolsContentsResizingStrategy(
+        contents_container_views_[0]->contents_resizing_strategy(),
+        available_space, &devtools_area, &responsive_area);
+  }
+  layouts.child_layouts.emplace_back(avora_responsive_frame_.get(), responsive,
+                                     responsive_area);
+  if (responsive) {
+    const avora::ResponsiveLayout responsive_layout =
+        avora::ComputeResponsiveLayout(
+            responsive_area,
+            avora::ResponsiveSize{avora_responsive_size_->width(),
+                                  avora_responsive_size_->height()});
+    layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
+                                       true, available_space);
+    layouts.child_layouts.emplace_back(resize_area_.get(), false, gfx::Rect());
+    layouts.child_layouts.emplace_back(contents_container_views_[1].get(),
+                                       false, gfx::Rect());
+    layouts.child_layouts.emplace_back(lens_overlay_view_.get(),
+                                       lens_overlay_view_->GetVisible(),
+                                       responsive_layout.page);
+    layouts.host_size = gfx::Size(width, height);
+    return layouts;
+  }
+
   // kOverlay: the primary container keeps the whole available space and the
   // secondary container floats above it.  Returns before any split geometry,
   // which has no meaning for this arrangement.
@@ -693,7 +777,9 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
 }
 
 void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
-  if (!target_content_bounds_) {
+  // A responsive page keeps its own size while the window animates around
+  // it, so there is no reflow to hide by laying it out at the target size.
+  if (!target_content_bounds_ || IsAvoraResponsiveModeActive()) {
     for (auto& contents : contents_container_views_) {
       contents->SetTargetContentBounds(std::nullopt);
     }
@@ -966,7 +1052,7 @@ void MultiContentsView::UpdateContentsBorderAndOverlay() {
     const bool is_active =
         contents_container_view->contents_view() == GetActiveContentsView();
     contents_container_view->SetRoundedCorners(
-        is_in_split
+        is_in_split || (is_active && IsAvoraResponsiveModeActive())
             ? kSplitViewContentRoundedCorners
             : (is_active ? GetBackgroundRadii() : gfx::RoundedCornersF()));
     contents_container_view->UpdateBorderAndOverlay(
@@ -1033,6 +1119,72 @@ int MultiContentsView::GetResizeAxisComponent(const gfx::Size& size) const {
           split_tabs::SplitTabLayout::kSideBySide)
              ? size.width()
              : size.height();
+}
+
+bool MultiContentsView::AvoraResponsiveModeApplies() const {
+  return secondary_mode_ == SecondaryContentsMode::kNone &&
+         browser_view_->GetIsNormalType() &&
+         !browser_view_->avora_mini_toolbar();
+}
+
+void MultiContentsView::ToggleAvoraResponsiveMode() {
+  if (!AvoraResponsiveModeApplies()) {
+    return;
+  }
+  content::WebContents* const contents =
+      contents_container_views_[0]->contents_view()->web_contents();
+  if (!contents) {
+    return;
+  }
+
+  if (avora::GetResponsiveSize(contents)) {
+    avora::SetResponsiveSize(contents, std::nullopt);
+  } else {
+    gfx::Size size;
+    if (avora_last_responsive_size_) {
+      size = *avora_last_responsive_size_;
+    } else {
+      const double zoom = blink::ZoomLevelToZoomFactor(
+          content::HostZoomMap::GetZoomLevel(contents));
+      size = gfx::Size(
+          static_cast<int>(std::lround(kAvoraResponsiveDefaultWidth * zoom)),
+          static_cast<int>(std::lround(kAvoraResponsiveDefaultHeight * zoom)));
+    }
+    avora::SetResponsiveSize(
+        contents, avora::ResponsiveSize{size.width(), size.height()});
+  }
+  UpdateAvoraResponsiveFrame();
+}
+
+void MultiContentsView::UpdateAvoraResponsiveFrame() {
+  std::optional<gfx::Size> size;
+  if (AvoraResponsiveModeApplies()) {
+    if (auto requested = avora::GetResponsiveSize(
+            contents_container_views_[0]->contents_view()->web_contents())) {
+      size = gfx::Size(requested->width, requested->height);
+    }
+  }
+
+  // Only the primary container ever shows a responsive page.  Both are set
+  // because split view can swap them.
+  contents_container_views_[0]->SetAvoraResponsiveSize(size);
+  contents_container_views_[1]->SetAvoraResponsiveSize(std::nullopt);
+
+  const bool changed = size != avora_responsive_size_;
+  const bool was_active = avora_responsive_size_.has_value();
+  avora_responsive_size_ = size;
+  if (size) {
+    avora_last_responsive_size_ = size;
+    avora_responsive_frame_->Refresh();
+  }
+  if (was_active != size.has_value()) {
+    UpdateContentsBorderAndOverlay();
+  }
+  // Tabs without the mode switch past this on every tab change, so leave
+  // their layout alone.
+  if (changed || size) {
+    InvalidateLayout();
+  }
 }
 
 BEGIN_METADATA(MultiContentsView)

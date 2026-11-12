@@ -455,6 +455,7 @@
     UpdateCommandEnabled() silently no-ops and the menu item stays greyed.*/ \
   E(kActionAvoraImportArc, IDC_AVORA_IMPORT_ARC) \
   E(kActionAvoraToggleSidebar, IDC_AVORA_TOGGLE_SIDEBAR) \
+  E(kActionAvoraToggleResponsive, IDC_AVORA_TOGGLE_RESPONSIVE) \
 
 #if BUILDFLAG(IS_CHROMEOS)
 #define CHROME_PLATFORM_SPECIFIC_ACTION_IDS \

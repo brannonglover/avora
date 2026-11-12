@@ -51,6 +51,11 @@ const struct AcceleratorMapping {
     // whichever matching menu item it finds first -- so "Save Page As..."
     // keeps its File menu entry but gives up the shortcut.
     {IDC_AVORA_TOGGLE_SIDEBAR, ui::EF_COMMAND_DOWN, ui::VKEY_S},
+    // Avora: Opt-Cmd-R is Safari's Responsive Design Mode shortcut, which web
+    // developers on the Mac already know.  Upstream gave it to Reading Mode's
+    // keyboard entry point; see global_keyboard_shortcuts_mac.mm.
+    {IDC_AVORA_TOGGLE_RESPONSIVE, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
+     ui::VKEY_R},
     {IDC_SHOW_BOOKMARK_BAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_B},
     {IDC_SHOW_BOOKMARK_MANAGER, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,

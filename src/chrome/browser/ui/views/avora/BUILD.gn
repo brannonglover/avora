@@ -56,6 +56,8 @@ source_set("avora") {
     "avora_pinned_url_dialog.h",
     "avora_quick_nav_view.cc",
     "avora_quick_nav_view.h",
+    "avora_responsive_frame_view.cc",
+    "avora_responsive_frame_view.h",
     "avora_side_by_side.cc",
     "avora_side_by_side.h",
     "avora_sidebar_background.cc",
@@ -116,6 +118,7 @@ source_set("avora") {
     "//extensions/common",
     "//services/network/public/cpp",
     "//skia",
+    "//third_party/blink/public/common",
     "//ui/base",
     "//ui/base/clipboard",
     "//ui/shell_dialogs",
@@ -133,7 +136,10 @@ source_set("avora") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "avora_pinned_item_materializer_unittest.cc" ]
+  sources = [
+    "avora_pinned_item_materializer_unittest.cc",
+    "avora_responsive_frame_view_unittest.cc",
+  ]
 
   deps = [
     ":avora",
@@ -163,6 +169,7 @@ source_set("browser_tests") {
     "avora_pinned_unpin_browsertest.cc",
     "avora_pinned_url_edit_browsertest.cc",
     "avora_quick_nav_browsertest.cc",
+    "avora_responsive_mode_browsertest.cc",
     "avora_side_by_side_browsertest.cc",
     "avora_style_ai_settings_browsertest.cc",
     "avora_tab_sync_browsertest.cc",
