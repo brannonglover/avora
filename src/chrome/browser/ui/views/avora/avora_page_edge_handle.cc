@@ -90,7 +90,18 @@ void AvoraPageEdgeHandle::OnMouseExited(const ui::MouseEvent& event) {
   SchedulePaint();
 }
 
+void AvoraPageEdgeHandle::SetPageNarrowed(bool narrowed) {
+  if (page_narrowed_ == narrowed) {
+    return;
+  }
+  page_narrowed_ = narrowed;
+  SchedulePaint();
+}
+
 void AvoraPageEdgeHandle::OnPaint(gfx::Canvas* canvas) {
+  if (!IsGripShown()) {
+    return;
+  }
   // A short grip, centred on the strip: faint at rest so it doesn't nag, in
   // the accent colour while hovered or dragged.
   gfx::Rect grip = GetLocalBounds();

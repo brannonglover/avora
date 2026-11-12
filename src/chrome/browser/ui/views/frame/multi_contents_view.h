@@ -235,7 +235,8 @@ class MultiContentsView
   // or right edge, centred, with black on either side, to check a site's
   // responsive layout.  The width belongs to the window, so it holds across
   // tab switches; nullopt fills the space as usual.  Split view, link
-  // previews and the mini window ignore it.
+  // previews, docked DevTools and the mini window set it aside: the page
+  // fills, the handles hide, and the width comes back once they are gone.
   //
   // |left| and |right| are BrowserView's edge handles: they sit just outside
   // the page, partly beyond this view's bounds, so BrowserView owns them and

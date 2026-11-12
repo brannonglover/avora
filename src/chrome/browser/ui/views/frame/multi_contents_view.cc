@@ -1119,9 +1119,13 @@ int MultiContentsView::GetResizeAxisComponent(const gfx::Size& size) const {
 // ── Avora page narrowing ────────────────────────────────────────────────────
 
 bool MultiContentsView::AvoraPageWidthApplies() const {
+  // Not while DevTools is docked: it shares the page's container, so it
+  // would be squeezed in with the page.  Showing or hiding it re-lays this
+  // view out, so the page narrows again when DevTools closes.
   return secondary_mode_ == SecondaryContentsMode::kNone &&
          browser_view_->GetIsNormalType() &&
-         !browser_view_->avora_mini_toolbar();
+         !browser_view_->avora_mini_toolbar() &&
+         !contents_container_views_[0]->devtools_web_view()->GetVisible();
 }
 
 void MultiContentsView::SetAvoraPageEdgeHandles(
@@ -1203,6 +1207,12 @@ void MultiContentsView::UpdateAvoraPageEdgeHandles() {
   }
   views::View* const host = left->parent();
   const bool applies = AvoraPageWidthApplies() && GetVisible();
+  // Narrowed is what the layout did, not just what was asked: a width wider
+  // than the space leaves the page filling it.
+  const bool narrowed =
+      applies && avora_page_backdrop_ && avora_page_backdrop_->GetVisible();
+  left->SetPageNarrowed(narrowed);
+  right->SetPageNarrowed(narrowed);
   const gfx::Rect area =
       views::View::ConvertRectToTarget(this, host, GetLocalBounds());
   const gfx::Rect page = views::View::ConvertRectToTarget(

@@ -47,6 +47,12 @@ class AvoraPageEdgeHandle : public views::View {
   Edge edge() const { return edge_; }
   void SetDelegate(Delegate* delegate) { delegate_ = delegate; }
 
+  // Whether the page is narrowed.  The grip only shows then, or while it is
+  // being dragged; at full width the strip is still there to grab -- the
+  // cursor shows it -- but draws nothing.
+  void SetPageNarrowed(bool narrowed);
+  bool IsGripShown() const { return page_narrowed_ || dragging_; }
+
   // views::View:
   ui::Cursor GetCursor(const ui::MouseEvent& event) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
@@ -64,6 +70,7 @@ class AvoraPageEdgeHandle : public views::View {
   raw_ptr<Delegate> delegate_ = nullptr;
   bool dragging_ = false;
   bool hovered_ = false;
+  bool page_narrowed_ = false;
   gfx::Point drag_start_;
 };
 

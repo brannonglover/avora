@@ -5,6 +5,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/run_until.h"
+#include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/avora/avora_page_edge_handle.h"
@@ -180,6 +182,9 @@ IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest,
   EXPECT_EQ(page_bounds.right(), right()->x());
   EXPECT_LT(right()->bounds().right(), browser_view()->width());
 
+  // Nothing shows there until the page is resized.
+  EXPECT_FALSE(right()->IsGripShown());
+
   // A press there reaches the handle rather than dragging the window.
   EXPECT_EQ(HTCLIENT, HitTestAt(right()));
 
@@ -220,6 +225,9 @@ IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest,
     }
   }
   ASSERT_TRUE(backdrop);
+  // The grips stay while the page is narrowed ...
+  EXPECT_TRUE(left()->IsGripShown());
+  EXPECT_TRUE(right()->IsGripShown());
   EXPECT_TRUE(left()->GetVisible())
       << "left " << left()->bounds().ToString() << " page "
       << InBrowserView(page()).ToString() << " area "
@@ -243,13 +251,20 @@ IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest,
   EXPECT_FALSE(contents_area()->avora_page_width());
   EXPECT_FALSE(backdrop->GetVisible());
   EXPECT_FALSE(left()->GetVisible());
+  // ... and go once it is back to full width, though the right edge can still
+  // be grabbed.
+  EXPECT_FALSE(right()->IsGripShown());
+  EXPECT_TRUE(right()->GetVisible());
+  EXPECT_EQ(HTCLIENT, HitTestAt(right()));
 }
 
 IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest,
                        ReadoutShowsThePageSizeWhileDragging) {
   EXPECT_FALSE(readout()->GetVisible());
 
+  EXPECT_FALSE(right()->IsGripShown());
   Drag(right(), -250, /*release=*/false);
+  EXPECT_TRUE(right()->IsGripShown());
   EXPECT_TRUE(readout()->GetVisible());
   EXPECT_EQ(base::NumberToString16(page()->width()) + u" \u00D7 " +
                 base::NumberToString16(page()->height()),
@@ -289,6 +304,31 @@ IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest, WidthHoldsAcrossTabs) {
   browser()->tab_strip_model()->ActivateTabAt(0);
   Layout();
   EXPECT_EQ(narrowed, page()->width());
+}
+
+IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest,
+                       DockedDevToolsTurnsResizingOff) {
+  const int full_width = page()->width();
+  Drag(right(), -300);
+  const int narrowed = page()->width();
+  ASSERT_LT(narrowed, full_width);
+
+  DevToolsWindow* const devtools =
+      DevToolsWindowTesting::OpenDevToolsWindowSync(browser(),
+                                                    /*is_docked=*/true);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return container()->devtools_web_view()->GetVisible(); }));
+  Layout();
+  // The page and DevTools share the full space, with nothing to grab.
+  EXPECT_EQ(contents_area()->GetLocalBounds().width(), container()->width());
+  EXPECT_FALSE(left()->GetVisible());
+  EXPECT_FALSE(right()->GetVisible());
+
+  // Closed again, the page goes back to the width it had.
+  DevToolsWindowTesting::CloseDevToolsWindowSync(devtools);
+  Layout();
+  EXPECT_EQ(narrowed, page()->width());
+  EXPECT_TRUE(right()->GetVisible());
 }
 
 IN_PROC_BROWSER_TEST_F(AvoraPageEdgeBrowserTest, SplitViewFillsAsUsual) {
