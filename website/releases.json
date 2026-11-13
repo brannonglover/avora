@@ -1,5 +1,27 @@
 [
   {
+    "version": "1.4.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.4.0-arm64.dmg",
+    "sizeBytes": 190805699,
+    "sha256": "ccadbabb985be2aa048903d39cea0647875f401f7b5f0f864edd4ca34a0f6fe7",
+    "notarized": true,
+    "edSignature": "bgnxLAzKWfNUhdshlp8oUBb7JAAOrZ+SG5Vz5gOK2puT9U7rjwK8znE2GT1VeTYMQJ+FAs5WDnEvHd/Wy/muCg==",
+    "gitSha": "be646421fd8d5d01ecb7abe6afab1c5dd9f6e207",
+    "title": null,
+    "bullets": [
+      "Hide page edge grips at full width; no resizing with docked DevTools",
+      "Narrow the page by dragging its edges, instead of the window",
+      "Fix avora import unit tests so avora_unit_tests builds again",
+      "Resize windows around their centre and show the page's size",
+      "Remove the frame-style responsive design mode",
+      "Add responsive design mode to the main window"
+    ],
+    "status": "published",
+    "createdAt": "2026-11-13T14:59:17.060Z",
+    "publishedAt": "2026-11-13T15:58:03.280Z"
+  },
+  {
     "version": "1.3.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.3.0-arm64.dmg",
