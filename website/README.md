@@ -94,14 +94,33 @@ in PostHog's US region; `lib/posthog-hosts.ts` says what to change for EU.
 
 The site shares Glover Labs' one PostHog project (350420) with Cavaro, since
 the plan allows only one, so `NEXT_PUBLIC_POSTHOG_KEY` is that project's `phc_`
-key. `npm run dashboard` creates the "Avora downloads" dashboard there, or
-updates it after you change an insight in `scripts/posthog-dashboard.mjs`. Every
-chart is limited to events from www.avorabrowser.com, so Cavaro's traffic and
-local visits don't count. It reads the personal API key from
-`~/.config/posthog/personal-key`, or from `.env.local`.
+key. `npm run dashboard` keeps the "Avora Overview" dashboard there up to date
+with `scripts/posthog-dashboard.mjs`: website, downloads, download to first
+open, and app usage, each under its own heading. It finds the dashboard by ID,
+so renaming it in PostHog is fine. `npm run dashboard -- --check` runs every
+query without changing anything. The website's charts are limited to events from
+www.avorabrowser.com, so Cavaro's traffic and local visits don't count. It reads
+the personal API key from `~/.config/posthog/personal-key`, or from `.env.local`.
 
 A click is intent, not a finished download, since the DMG comes from GitHub
 Releases. GitHub's own count is on each release asset's `download_count`.
+
+### Copies in use
+
+Two events show how many copies of Avora are actually used:
+
+- **`avora_update_check`**: `/appcast.xml` records each request from Avora's
+  updater (`lib/update-check-analytics.ts`), from the User-Agent alone. There's
+  no install ID, so a Mac counts once a day by a salted hash of its address,
+  User-Agent and the date. `ANALYTICS_SALT` is set in Vercel production for
+  that; without it every check counts separately. 1.4.0 and earlier report
+  Chromium's version to Sparkle, so they show as "1.4.0 or earlier".
+- **`app_active`**: once a day, packaged copies send this themselves
+  (`src/chrome/browser/avora/avora_telemetry.cc`), with a random install ID,
+  versions, chip, language and rough counts of windows, tabs and Spaces. Never
+  pages or typing. Avora Settings > Usage statistics turns it off and forgets
+  the ID. Builds from `out/Default` never send, unless
+  `--avora-telemetry-url=<url>` points a test copy at a local server.
 
 ## Screenshots
 
