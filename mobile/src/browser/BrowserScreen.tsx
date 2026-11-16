@@ -40,6 +40,7 @@ import { isShareableUrl } from '../sync/rows';
 
 import { ActionSheet, type SheetAction } from './ActionSheet';
 import { BottomBar } from './BottomBar';
+import { onWebUrl } from './incoming';
 import {
   captureJpeg,
   PASSWORD_PROBE,
@@ -262,6 +263,21 @@ export function BrowserScreen() {
     setQuery('');
     setEditing(true);
   }, [dispatch, leave]);
+
+  // Links from other apps, when Avora is the default browser, each open in a
+  // new tab. Waits for the saved tabs so the new one isn't lost to them.
+  const hydrated = state.hydrated;
+  useEffect(() => {
+    if (!hydrated) return;
+    return onWebUrl((url) => {
+      leave();
+      dispatch({ type: 'open', url });
+      setSwitcherOpen(false);
+      setSheet(null);
+      setEditing(false);
+      Keyboard.dismiss();
+    });
+  }, [hydrated, dispatch, leave]);
 
   const selectTab = useCallback(
     (id: string) => {

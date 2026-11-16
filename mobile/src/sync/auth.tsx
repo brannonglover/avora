@@ -108,6 +108,9 @@ export function useAuth(): Auth {
 // success, or undefined when the URL isn't a sign-in callback at all.
 async function completeMagicLink(url: string): Promise<string | null | undefined> {
   if (!supabase || handledUrls.has(url)) return undefined;
+  // Web links reach here too now that the app takes http and https. A site's
+  // own ?code= isn't ours to exchange.
+  if (!url.startsWith(AUTH_REDIRECT)) return undefined;
   const params = callbackParams(url);
   if (!params.code && !params.error_description) return undefined;
   handledUrls.add(url);

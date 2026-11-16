@@ -34,6 +34,9 @@ module.exports = {
     ios: {
       bundleIdentifier: 'com.avora.browser',
       buildNumber,
+      // Required for the default browser entitlement. Merged with `scheme`
+      // above; src/app/+native-intent.tsx opens these links in a new tab.
+      scheme: ['http', 'https'],
       supportsTablet: true,
       config: {
         usesNonExemptEncryption: false,
