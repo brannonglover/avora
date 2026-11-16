@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/apple/bridging.h"
+#include "base/apple/bundle_locations.h"
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/auto_reset.h"
@@ -43,6 +44,8 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/apps/app_shim/app_shim_termination_manager.h"
 #include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
+#include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_telemetry.h"
 #include "chrome/browser/avora/avora_updater.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
@@ -636,6 +639,7 @@ Profile* GetLastProfileMac() {
 // Avora: starts the updater and, in a copy that has one, adds the app menu's
 // "Check for Updates…" item.
 - (void)avoraStartUpdater;
+- (void)avoraStartTelemetry;
 @end
 
 class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
@@ -1425,6 +1429,7 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   // for a user who has not made Avora their default browser yet.
   [self avoraRefreshSetDefaultBrowserMenuItem];
   [self avoraStartUpdater];
+  [self avoraStartTelemetry];
 }
 
 - (void)observeValueForKeyPath:(NSString*)keyPath
@@ -2092,6 +2097,38 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 
 - (void)avoraCheckForUpdates:(id)sender {
   avora::CheckForUpdates();
+}
+
+// Avora: see avora_telemetry.h for what is sent, and when.
+- (void)avoraStartTelemetry {
+  avora::TelemetryConfig config;
+  config.local_state = g_browser_process->local_state();
+  config.url_loader_factory = g_browser_process->shared_url_loader_factory();
+  config.locale = g_browser_process->GetApplicationLocale();
+  config.packaged = avora::IsUpdaterEnabled();
+  NSString* version = [base::apple::OuterBundle()
+      objectForInfoDictionaryKey:(NSString*)kCFBundleVersionKey];
+  config.app_version = base::SysNSStringToUTF8(version ?: @"");
+  config.counts = base::BindRepeating([] {
+    avora::TelemetryCounts counts;
+    Profile* profile = nullptr;
+    for (BrowserWindowInterface* window : GetAllBrowserWindowInterfaces()) {
+      if (window->GetProfile()->IsOffTheRecord()) {
+        continue;
+      }
+      ++counts.windows;
+      counts.tabs += window->GetTabStripModel()->count();
+      if (!profile) {
+        profile = window->GetProfile();
+      }
+    }
+    if (profile) {
+      counts.spaces = static_cast<int>(
+          avora::SpaceManager(profile->GetPrefs()).GetSpaces().size());
+    }
+    return counts;
+  });
+  avora::StartTelemetry(std::move(config));
 }
 
 // Conditionally adds the Profile menu to the main menu bar.

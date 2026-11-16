@@ -11,6 +11,8 @@ source_set("avora_settings") {
     "avora_style_ai_handler.h",
     "avora_sync_handler.cc",
     "avora_sync_handler.h",
+    "avora_telemetry_handler.cc",
+    "avora_telemetry_handler.h",
   ]
 
   public_deps = [

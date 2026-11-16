@@ -20,6 +20,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/about_flags.h"
 #include "chrome/browser/avora/avora_prefs.h"
+#include "chrome/browser/avora/avora_telemetry.h"
 #include "chrome/browser/accessibility/accessibility_labels_service.h"
 #include "chrome/browser/accessibility/invert_bubble_prefs.h"
 #include "chrome/browser/accessibility/page_colors_controller.h"
@@ -1475,6 +1476,7 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
       registry);
 #endif
   autofill::prefs::RegisterLocalStatePrefs(registry);
+  avora::RegisterTelemetryLocalStatePrefs(registry);
   breadcrumbs::RegisterPrefs(registry);
   browser_shutdown::RegisterPrefs(registry);
   BrowserProcessImpl::RegisterPrefs(registry);

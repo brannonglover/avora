@@ -20,6 +20,7 @@
 
 @protocol AvoraSparkleUpdater
 @property(nonatomic, readonly) BOOL sessionInProgress;
+@property(nonatomic, copy) NSString* userAgentString;
 - (void)checkForUpdateInformation;
 @end
 
@@ -29,6 +30,7 @@
                         updaterDelegate:(id)updaterDelegate
                      userDriverDelegate:(id)userDriverDelegate;
 - (void)checkForUpdates:(id)sender;
+- (void)startUpdater;
 @end
 
 @protocol AvoraSparkleUpdate
@@ -211,11 +213,24 @@ void StartUpdater() {
   Class controller_class = NSClassFromString(@"SPUStandardUpdaterController");
   CHECK(controller_class);
   AvoraUpdaterDelegate* delegate = [[AvoraUpdaterDelegate alloc] init];
-  Updater::Get().SetController([[controller_class alloc]
-                                   initWithStartingUpdater:YES
-                                           updaterDelegate:delegate
-                                        userDriverDelegate:delegate],
-                               delegate);
+  id<AvoraSparkleController> controller =
+      [[controller_class alloc] initWithStartingUpdater:NO
+                                        updaterDelegate:delegate
+                                     userDriverDelegate:delegate];
+
+  // Sparkle names the app in each feed request by CFBundleShortVersionString,
+  // which is Chromium's.  Avora's version is what the website counts checks by.
+  NSString* avora_version = [base::apple::OuterBundle()
+      objectForInfoDictionaryKey:(NSString*)kCFBundleVersionKey];
+  NSString* sparkle_version =
+      [sparkle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+  if (avora_version.length && sparkle_version.length) {
+    controller.updater.userAgentString = [NSString
+        stringWithFormat:@"Avora/%@ Sparkle/%@", avora_version, sparkle_version];
+  }
+
+  Updater::Get().SetController(controller, delegate);
+  [controller startUpdater];
 }
 
 void CheckForUpdates() {

@@ -98,6 +98,18 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
       <select id="style-ai-model"></select>
     </div>
   </section>
+  <section id="usage" aria-labelledby="usage-heading">
+    <h2 id="usage-heading">Usage statistics</h2>
+    <p class="muted">Once a day, Avora tells its developer that this copy was
+      used, so we know how many people use it and which versions they're on.
+      It sends a random ID for this copy, the Avora and macOS versions, your
+      Mac's chip and language, and rough counts of windows, tabs and Spaces.
+      Never the pages you visit, their titles, or anything you type. Turning
+      this off also forgets the ID.</p>
+    <div class="row">
+      <label><input id="usage-enabled" type="checkbox"> Send usage statistics</label>
+    </div>
+  </section>
 </main>
 <script src="avora_settings.js"></script>
 </body>
@@ -274,6 +286,14 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
   $('account-previews').addEventListener(
       'change', event => chrome.send('setSyncPreviews', [event.target.checked]));
   chrome.send('getSyncStatus');
+})();
+(() => {
+  const box = document.getElementById('usage-enabled');
+  window.avoraSettings.onTelemetryStatus = status => {
+    box.checked = Boolean(status.enabled);
+  };
+  box.addEventListener('change', event => chrome.send('setTelemetryEnabled', [event.target.checked]));
+  chrome.send('getTelemetryStatus');
 })();
 )JS";
 
