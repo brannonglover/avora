@@ -15,8 +15,18 @@ type Auth = {
   linkError: string | null;
   sendLink: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<void>;
+  // Only for REVIEW_EMAIL; everyone else's account has no password.
+  signInWithPassword: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
+
+// App Review can't read the emailed code, so this one account signs in with a
+// password instead. docs/SYNC.md covers creating it.
+export const REVIEW_EMAIL = 'appreview@avorabrowser.com';
+
+export function isReviewEmail(email: string): boolean {
+  return email.trim().toLowerCase() === REVIEW_EMAIL;
+}
 
 const AuthContext = createContext<Auth | null>(null);
 
@@ -66,6 +76,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       verifyCode: async (email, code) => {
         const { error } = await requireClient().auth.verifyOtp({ email, token: code, type: 'email' });
+        if (error) throw error;
+        setLinkError(null);
+      },
+      signInWithPassword: async (email, password) => {
+        const { error } = await requireClient().auth.signInWithPassword({ email, password });
         if (error) throw error;
         setLinkError(null);
       },

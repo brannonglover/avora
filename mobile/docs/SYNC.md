@@ -49,6 +49,22 @@ Both apps sign in with an email code: `POST /auth/v1/otp`, then
 link. Sessions are refreshed with
 `POST /auth/v1/token?grant_type=refresh_token`.
 
+### The App Review account
+
+App Review can't read an emailed code, so one account signs in with a
+password instead: `appreview@avorabrowser.com` (`REVIEW_EMAIL` in
+`src/sync/auth.tsx`). When that address is typed on the phone's sign-in
+screen, a password field appears and the app uses
+`supabase.auth.signInWithPassword`. Every other address works as before.
+
+To create it, go to **Authentication → Users → Add user → Create new user**.
+Enter the address and a strong password, and tick **Auto Confirm User**. The
+address doesn't need a working mailbox. Put the address and password in App
+Store Connect under **App Review Information → Sign-in required**, and in
+TestFlight's **Beta App Review Information** if a build asks for one. The
+desktop app has no password sign-in, so a Mac can sign in to this account only
+if the address receives mail.
+
 Every install has a **device id**: a UUID generated once and kept for good. It
 is written to `updated_by` on every row the device changes. The device
 upserts `public.devices` (`id`, `name`, `platform`, `last_seen_at`) when it

@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { Laptop, Mail, Smartphone, X } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,13 +12,14 @@ import {
   Switch,
   Text,
   TextInput,
+  type TextInputInstance,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { setPreviewsEnabled, usePreviewsEnabled } from '../browser/previews';
 import { colors, radius } from '../browser/theme';
-import { useAuth } from './auth';
+import { isReviewEmail, useAuth } from './auth';
 import { getDeviceId, updatedAgo, useDevices } from './devices';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -55,8 +56,10 @@ export function AccountScreen() {
 }
 
 function SignIn() {
-  const { sendLink, verifyCode, linkError } = useAuth();
+  const { sendLink, verifyCode, signInWithPassword, linkError } = useAuth();
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const passwordRef = useRef<TextInputInstance>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -86,6 +89,16 @@ function SignIn() {
   if (!sentTo) {
     const trimmed = email.trim();
     const valid = EMAIL_RE.test(trimmed);
+    // The App Review account signs in with a password; see REVIEW_EMAIL.
+    const review = isReviewEmail(trimmed);
+    const submit = () => {
+      if (busy) return;
+      if (review) {
+        if (password) run(() => signInWithPassword(trimmed, password));
+      } else if (valid) {
+        send(trimmed);
+      }
+    };
     return (
       <>
         <Text style={styles.title}>Sign in to Avora</Text>
@@ -105,14 +118,40 @@ function SignIn() {
           autoCapitalize="none"
           autoCorrect={false}
           autoFocus
-          returnKeyType="send"
-          onSubmitEditing={() => valid && !busy && send(trimmed)}
+          returnKeyType={review ? 'next' : 'send'}
+          onSubmitEditing={() => (review ? passwordRef.current?.focus() : submit())}
           editable={!busy}
           accessibilityLabel="Email address"
         />
-        <PrimaryButton label="Email me a sign-in link" busy={busy} disabled={!valid} onPress={() => send(trimmed)} />
+        {review ? (
+          <TextInput
+            ref={passwordRef}
+            style={[styles.input, styles.stacked]}
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Password"
+            placeholderTextColor={colors.textTertiary}
+            secureTextEntry
+            textContentType="password"
+            autoComplete="current-password"
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="go"
+            onSubmitEditing={submit}
+            editable={!busy}
+            accessibilityLabel="Password"
+          />
+        ) : null}
+        <PrimaryButton
+          label={review ? 'Sign In' : 'Email me a sign-in link'}
+          busy={busy}
+          disabled={review ? !password : !valid}
+          onPress={submit}
+        />
         {shownError ? <Text style={styles.error}>{shownError}</Text> : null}
-        <Text style={styles.footnote}>No password needed. Use the same email you signed in with on your Mac.</Text>
+        {review ? null : (
+          <Text style={styles.footnote}>No password needed. Use the same email you signed in with on your Mac.</Text>
+        )}
       </>
     );
   }
@@ -310,6 +349,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 17,
   },
+  stacked: { marginTop: 10 },
   codeInput: { fontSize: 22, letterSpacing: 6, fontVariant: ['tabular-nums'] },
   button: {
     height: 50,
