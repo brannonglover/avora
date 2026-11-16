@@ -1,5 +1,22 @@
 [
   {
+    "version": "1.5.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.5.0-arm64.dmg",
+    "sizeBytes": 190699865,
+    "sha256": "c4c985494bb7f7341e1f8c9b94a95e1db91a44e0128bf0734619136724de70d2",
+    "notarized": true,
+    "edSignature": "MXtUeCv5qQn7wXcIylShUKoZBAtO0myDbfHqAAa0L1d3ofFanhxIn7yxsKtcQNAgsJMgiAChCoPjvgt6WhS6Bw==",
+    "gitSha": "f57959b70ec4ff346179c1c36f5bb0b0db1c6bb4",
+    "title": null,
+    "bullets": [
+      "Send a daily usage heartbeat, with a switch to turn it off."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-16T18:47:35.141Z",
+    "publishedAt": "2026-11-16T19:07:29.065Z"
+  },
+  {
     "version": "1.4.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.4.0-arm64.dmg",
