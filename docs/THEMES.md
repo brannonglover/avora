@@ -21,7 +21,7 @@ Chrome Web Store Themes row.
 picked colours, the mode and, when the theme started as one, the mood id.
 It is stored on the Space as its canonical JSON (`Serialize()`), which is also
 the `spaces.theme` column. The format is part of the sync contract: see
-*Space themes* in `docs/SYNC.md` in the avoraapp repository. An empty theme
+*Space themes* in `mobile/docs/SYNC.md`. An empty theme
 keeps Avora's default graphite look, so Spaces made before themes look as they
 always did.
 

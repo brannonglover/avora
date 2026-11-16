@@ -6,8 +6,7 @@
 namespace avora::sync {
 
 // The Supabase project behind Avora accounts and tab sync. The phone app talks
-// to the same project; the contract both sides follow is docs/SYNC.md in the
-// avoraapp repository.
+// to the same project; the contract both sides follow is mobile/docs/SYNC.md.
 inline constexpr char kSupabaseUrl[] =
     "https://hfrlczxdekeqtgmgtgor.supabase.co";
 

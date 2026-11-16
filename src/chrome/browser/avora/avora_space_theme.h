@@ -18,7 +18,7 @@ namespace avora {
 //
 // A theme is shared across the account as `spaces.theme`, the string
 // Serialize() returns, so the phone tints itself the same way.  The format is
-// part of the sync contract (docs/SYNC.md in the avoraapp repository):
+// part of the sync contract (mobile/docs/SYNC.md):
 //
 //   {"colors":["#8C7CFF","#FF7FA8"],"mode":"dark","mood":"dusk","v":1}
 //

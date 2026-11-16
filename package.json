@@ -2,7 +2,7 @@
   "name": "avora",
   "version": "1.5.0",
   "private": true,
-  "description": "A Chromium-based browser with vertical tabs and spaces.",
+  "description": "Avora: the Chromium-based desktop browser, its website, and the mobile app.",
   "scripts": {
     "build": "bash build-scripts/incremental-build.sh",
     "build:full": "bash build-scripts/build.sh full",
@@ -11,6 +11,9 @@
     "cleanup": "bash build-scripts/build.sh cleanup",
     "release": "bash build-scripts/release.sh",
     "site": "npm --prefix website run dev",
-    "site:dmg": "npm --prefix website run dmg"
+    "site:dmg": "npm --prefix website run dmg",
+    "mobile": "npm --prefix mobile start",
+    "mobile:ios": "npm --prefix mobile run ios",
+    "mobile:typecheck": "npm --prefix mobile run typecheck"
   }
 }

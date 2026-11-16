@@ -30,7 +30,7 @@ TEST(AvoraSpaceThemeTest, SerializesCanonically) {
   SpaceTheme theme = Theme({SkColorSetRGB(0x8C, 0x7C, 0xFF),
                             SkColorSetRGB(0xFF, 0x7F, 0xA8)});
   theme.mood = "dusk";
-  // The sync contract in avoraapp's docs/SYNC.md quotes this string.
+  // The sync contract in mobile/docs/SYNC.md quotes this string.
   EXPECT_EQ(theme.Serialize(),
             R"({"colors":["#8C7CFF","#FF7FA8"],"mode":"dark","mood":"dusk",)"
             R"("v":1})");

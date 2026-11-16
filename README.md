@@ -43,6 +43,14 @@ Chrome extension support depends on how much of the Chromium extension stack is 
 
 The marketing site lives in `website/`. `npm run site` serves it at http://localhost:3000. See `website/README.md`.
 
+Vercel builds the site from `website/` and skips commits that only touch `mobile/` (`website/vercel.json`).
+
+## Mobile app
+
+The iOS/Android companion (Expo) lives in `mobile/`, with its own `package.json` and lockfile; it is not an npm workspace. `npm run mobile:ios` builds and runs it in the simulator, `npm run mobile` starts Metro. See `mobile/README.md`.
+
+Mobile releases are tagged `mobile-vX.Y.Z`; desktop releases keep `vX.Y.Z`. The tab-sync contract shared by desktop and mobile, with its Supabase migrations, is `mobile/docs/SYNC.md` and `mobile/supabase/`.
+
 ## Architecture
 
 - `native/cef-project`: official CEF baseline, CMake build, Avora/minimal targets

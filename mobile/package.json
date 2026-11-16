@@ -1,5 +1,5 @@
 {
-  "name": "avora",
+  "name": "avora-mobile",
   "version": "0.4.1",
   "main": "expo-router/entry",
   "dependencies": {

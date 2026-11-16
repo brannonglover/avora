@@ -3,7 +3,7 @@
 An Avora account has one set of tabs. Every signed-in device, whether a Mac
 or the phone, shows the same Spaces, Favorites, pinned items and today tabs,
 and any of them can change them. The contract (tables, writes, reads,
-previews) is `docs/SYNC.md` in the avoraapp repository, along with the
+previews) is `mobile/docs/SYNC.md`, along with the
 migrations that create the tables. This page covers how the desktop meets it.
 
 ```

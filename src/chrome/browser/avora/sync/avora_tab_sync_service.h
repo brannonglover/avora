@@ -39,8 +39,8 @@ namespace avora::sync {
 // Signing in is two steps: an email address, to which Supabase sends a
 // one-time code, then that code, which buys a session. While signed in, the
 // profile's Spaces, Favorites, pinned items and today tabs are one shared set
-// with every other device on the account (docs/SYNC.md in the avoraapp
-// repository): this device's changes go up as row writes a moment after they
+// with every other device on the account (mobile/docs/SYNC.md): this device's
+// changes go up as row writes a moment after they
 // happen, and other devices' changes come down every few seconds and are
 // applied to the sidebar models and the tab strips.
 //

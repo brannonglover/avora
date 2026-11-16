@@ -1,6 +1,6 @@
 # Avora for iOS & Android
 
-The mobile companion to the Avora desktop browser (`~/projects/avora`), built with Expo. For now it's a plain browser: one WebView per tab, an address bar at the bottom, and tab management modeled on the desktop sidebar's **Pinned** / **Today** split.
+The mobile companion to the Avora desktop browser (the rest of this repo), built with Expo. For now it's a plain browser: one WebView per tab, an address bar at the bottom, and tab management modeled on the desktop sidebar's **Pinned** / **Today** split.
 
 ## Run it
 

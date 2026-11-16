@@ -13,7 +13,7 @@
 
 namespace avora::sync {
 
-// The two shared tables of docs/SYNC.md (in the avoraapp repository).
+// The two shared tables of mobile/docs/SYNC.md.
 enum class SharedTable { kSpaces, kItems };
 
 // Item kinds, as stored in items.kind.
