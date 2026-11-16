@@ -138,5 +138,27 @@ throwaway profile so no personal tabs or accounts appear:
 Don't capture the import dialog: it lists the real browser profiles on the Mac,
 even from a throwaway profile.
 
+### Tour recordings
+
+Each Tour tab plays a short loop (`spaces.mp4`, `tabs.mp4`, `preview.mp4`,
+`mini.mp4`) with its first frame as the poster (`*-poster.jpg`). The PNGs are
+still used for anyone who asks for reduced motion, and in the sitemap.
+
+- Record with ScreenCaptureKit, filtered to the test copy's own window IDs. A
+  filter that includes the *application* matches by bundle ID, so it also
+  records your real Avora.
+- Drive the test copy with AX presses on its pid (Spaces bar, Today tabs,
+  Favorites, "Close preview", the mini window's Space chip) and with DevTools
+  protocol clicks inside pages. Turn off Wikipedia's own hover cards first
+  (`localStorage["mwe-popups-enabled"] = "0"`).
+- Clicks sent to a pid don't move the real pointer, so the pointer is drawn in
+  afterwards with ffmpeg from the logged click positions.
+- A test copy you can't make the key window records grey traffic lights; patch
+  them from a key-window still.
+- A mini window opens at 1400×1080, so it's resized as soon as it appears and
+  that moment is crossfaded out. Each clip's last half-second fades into its
+  first frame so it loops.
+- Keep each clip under about 1 MB (H.264, CRF 26, `-tune animation`).
+
 `next/image` caches by URL, so delete `.next/cache/images` and
 `.next/dev/cache/images` after replacing a screenshot under the same name.

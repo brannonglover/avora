@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState, type KeyboardEvent } from "react";
-import Image from "next/image";
 import {
   AppWindow,
   FolderGit2,
@@ -12,6 +11,7 @@ import {
   RefreshCw,
   type LucideIcon,
 } from "lucide-react";
+import { TourClip } from "./TourClip";
 
 const STOPS: {
   id: string;
@@ -21,6 +21,9 @@ const STOPS: {
   body: string;
   src: string;
   alt: string;
+  video: string;
+  poster: string;
+  clipLabel: string;
 }[] = [
   {
     id: "spaces",
@@ -29,7 +32,10 @@ const STOPS: {
     title: "Work and life, signed in separately.",
     body: "Every Space has its own tabs, Favorites and colour, and its own cookies and logins. Stay signed in to two accounts on one site, one Space each, and switch with a click.",
     src: "/shots/spaces.png",
-    alt: "Avora's Work Space, with its own Favorites, pinned pages and today's tabs in a blue accent.",
+    alt: "Avora's Work Space in a blue accent, with Linear open from its Favorites, two pinned pages and today's tabs.",
+    video: "/shots/spaces.mp4",
+    poster: "/shots/spaces-poster.jpg",
+    clipLabel: "A recording of Avora switching from the Work Space to Personal, Research and Design and back, each with its own Favorites, pinned pages and tabs.",
   },
   {
     id: "tabs",
@@ -38,6 +44,9 @@ const STOPS: {
     title: "Keep what matters. Work on the rest.",
     body: "Favorites and pinned pages stay put. Today holds what you're doing now, and it survives a quit, a crash or a closed window.",
     src: "/shots/personal.png",
+    video: "/shots/tabs.mp4",
+    poster: "/shots/tabs-poster.jpg",
+    clipLabel: "A recording of Avora's Personal Space moving between today's tabs, a Favorite and back to a Wikipedia article on Yosemite.",
     alt: "Avora's Personal Space, with Favorites at the top of the sidebar, a pinned page below them and today's tabs under the Space name.",
   },
   {
@@ -47,6 +56,9 @@ const STOPS: {
     title: "Look at a link without leaving your page.",
     body: "Links that would open a new tab open in a card over the page instead. Close it to carry on, or expand it into a real tab with your scroll position and form state intact.",
     src: "/shots/preview.png",
+    video: "/shots/preview.mp4",
+    poster: "/shots/preview-poster.jpg",
+    clipLabel: "A recording of a link on Wikipedia's Aurora article opening in a preview card, scrolling inside the card, and closing it to return to the page.",
     alt: "A Wikipedia article open in a preview card over another page, with close and expand buttons at its corner.",
   },
   {
@@ -56,6 +68,9 @@ const STOPS: {
     title: "A link from Mail is a glance, not a commitment.",
     body: "Links from other apps land in a small window of their own instead of joining the tabs you're working in. Keep one by choosing a Space from its toolbar.",
     src: "/shots/mini.png",
+    video: "/shots/mini.mp4",
+    poster: "/shots/mini-poster.jpg",
+    clipLabel: "A recording of a link from another app opening in a mini window over Avora, then being sent to the Research Space, where it joins today's tabs.",
     alt: "A mini window with its own address bar and a Research Space selector, floating over the main Avora window.",
   },
 ];
@@ -104,7 +119,7 @@ export function Tour() {
         <p className="eyebrow">Screenshots</p>
         <h2>Pick a tab. This is the real thing.</h2>
         <p className="lede">
-          Every image here is a capture of Avora itself, not a mockup.
+          Every clip here is a recording of Avora itself, not a mockup.
         </p>
       </header>
 
@@ -137,7 +152,7 @@ export function Tour() {
           ))}
         </div>
 
-        {STOPS.map(({ id, title, body, src, alt }) => (
+        {STOPS.map(({ id, title, body, src, alt, video, poster, clipLabel }) => (
           <div
             key={id}
             id={`tour-panel-${id}`}
@@ -148,13 +163,13 @@ export function Tour() {
           >
             <h3>{title}</h3>
             <p>{body}</p>
-            <Image
-              className="shot"
-              src={src}
+            <TourClip
+              active={activeId === id}
+              video={video}
+              poster={poster}
+              still={src}
+              label={clipLabel}
               alt={alt}
-              width={1600}
-              height={1000}
-              sizes="(max-width: 900px) 100vw, 860px"
             />
           </div>
         ))}

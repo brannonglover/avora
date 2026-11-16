@@ -594,6 +594,45 @@ code {
   color: var(--muted);
 }
 
+/* A recording has no transparent corners, so round it like the window. */
+.clip {
+  position: relative;
+}
+
+.clip video {
+  aspect-ratio: 1600 / 1000;
+  border-radius: 0.75% / 1.2%;
+  background: var(--card);
+}
+
+.clip-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgb(15 18 22 / 0.72);
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+.clip:hover .clip-toggle,
+.clip-toggle:focus-visible {
+  opacity: 1;
+}
+
+.clip-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .also {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
