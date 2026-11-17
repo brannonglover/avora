@@ -1,8 +1,7 @@
 import { History } from 'lucide-react-native';
-import { useEffect, useRef } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View, type ViewInstance } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { setLogoTarget, useSplashDone } from '../splash/handoff';
+import { LivingLogo } from '../splash/LivingLogo';
 import { Favicon } from './Favicon';
 import type { ClosedTab } from './tabs';
 import { colors, radius } from './theme';
@@ -15,11 +14,6 @@ type Props = {
 
 export function StartPage({ recentlyClosed, onReopen }: Props) {
   const recent = recentlyClosed.slice(0, 6);
-  const logo = useRef<ViewInstance>(null);
-  // The launch splash flies its logo onto this one; until it lands, this one
-  // stays hidden so there's only ever one logo on screen.
-  const splashDone = useSplashDone();
-  useEffect(() => () => setLogoTarget(null), []);
 
   return (
     <ScrollView
@@ -28,17 +22,7 @@ export function StartPage({ recentlyClosed, onReopen }: Props) {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.hero}>
-        <View
-          ref={logo}
-          style={!splashDone && styles.hidden}
-          onLayout={() =>
-            logo.current?.measureInWindow((x, y, width, height) =>
-              setLogoTarget({ x, y, width, height }),
-            )
-          }
-        >
-          <Image source={require('../../assets/icon.png')} style={styles.logo} />
-        </View>
+        <LivingLogo size={72} radius={18} />
         <Text style={styles.wordmark}>Avora</Text>
       </View>
 
@@ -75,8 +59,6 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: 20, paddingTop: 72, paddingBottom: 32 },
   hero: { alignItems: 'center', marginBottom: 40 },
-  logo: { width: 72, height: 72, borderRadius: 18 },
-  hidden: { opacity: 0 },
   wordmark: {
     marginTop: 14,
     color: colors.text,
