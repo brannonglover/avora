@@ -444,21 +444,25 @@ bool TabDragHandlerImpl::ContinueDrag(views::View& event_source_view,
 
       // Highlight favorites or pinned drop zones.
       auto* favorites = tab_strip_view->GetFavoritesView();
+      bool over_favorites = false;
       if (favorites) {
-        bool over = favorites->GetVisible() &&
+        over_favorites = favorites->GetVisible() &&
             favorites->GetBoundsInScreen().Contains(screen_location);
-        favorites->SetDropHighlighted(over);
-        if (over) {
+        favorites->SetDropHighlighted(over_favorites);
+        if (over_favorites) {
           favorites->UpdateInsertionGap(screen_location);
         }
       }
 
       auto* pinned_section = tab_strip_view->GetPinnedSectionView();
       if (pinned_section) {
-        bool over_pinned = pinned_section->GetVisible() &&
+        // Favorites is a fixed header, so a scrolled-up pinned section can
+        // sit underneath it; a drop there lands in Favorites, so only one
+        // of the two should light up.
+        bool over_pinned = !over_favorites && pinned_section->GetVisible() &&
             pinned_section->GetBoundsInScreen().Contains(screen_location);
 
-        if (!over_pinned) {
+        if (!over_pinned && !over_favorites) {
           auto* fav = tab_strip_view->GetFavoritesView();
           if (!daily_bounds.IsEmpty() && fav) {
             int top = fav->GetBoundsInScreen().bottom();

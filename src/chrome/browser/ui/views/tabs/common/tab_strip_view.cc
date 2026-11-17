@@ -112,9 +112,9 @@ bool IsVerticalOrientation(const TabCollectionNode* collection_node) {
 
 // Avora: lays out the side nav as one continuous scrolling surface.
 //
-// Every section sits in here alongside the daily tab list, inside the
-// unpinned ScrollView's contents, so the whole nav scrolls together instead
-// of the tab list scrolling underneath a fixed header.  Chromium's own
+// Every section but Favorites sits in here alongside the daily tab list,
+// inside the unpinned ScrollView's contents, so the nav scrolls together
+// instead of in pieces; only Favorites stays fixed above it.  Chromium's own
 // arrangement -- sections above the scroll view, only tabs inside it -- is
 // what made the nav scroll in two pieces.
 //
@@ -167,10 +167,10 @@ class AvoraSideNavContentsLayout : public views::LayoutManagerBase {
       }
     };
 
-    // Order is [Favorites] -> [Live Folders] -> [Pinned] -> [Imported] ->
-    // [Space label] -> [New tab] -> [Daily], matching what the tab strip
-    // laid out before these views moved in here.
-    stack(strip_->GetFavoritesView(), 0, kSectionGap);
+    // Order is [Live Folders] -> [Pinned] -> [Imported] -> [Space label] ->
+    // [New tab] -> [Daily].  Favorites is not in here: it stays pinned above
+    // this scroll view (see TabStripViewLayout::CalculateVerticalLayout) so
+    // it is always on screen, however far the rest of the nav is scrolled.
     stack(strip_->GetLiveFoldersView(), 0, 0);
     stack(strip_->GetPinnedSectionView(), 0, 0);
     stack(strip_->GetImportedSectionView(), 0, 0);
@@ -691,13 +691,15 @@ void TabStripView::SetBrowser(BrowserWindowInterface* browser,
   if (!browser || !IsVerticalOrientation(collection_node_)) {
     return;
   }
-  // Create the favorites grid view above the pinned section.
-  // AddChildViewAt(0) places it as the first child so the layout manager
-  // can position it at the top.
-  auto favorites =
-      std::make_unique<avora::AvoraFavoritesView>(browser, window_space_state);
-  favorites_view_ = static_cast<avora::AvoraFavoritesView*>(
-      AddSideNavView(std::move(favorites)));
+  // Avora: the favorites grid is a fixed header, not part of the scrolling
+  // surface: it is a direct child of the strip, laid out above the scroll
+  // view by TabStripViewLayout, so it stays visible however far the rest of
+  // the nav is scrolled.
+  // First child, so focus traversal still reaches it before the sections
+  // below it.
+  favorites_view_ = AddChildViewAt(
+      std::make_unique<avora::AvoraFavoritesView>(browser, window_space_state),
+      0);
 
   // Avora: Live Folders (provider-owned rows such as GitHub pull requests)
   // sit directly under favorites, above the pinned section: their contents

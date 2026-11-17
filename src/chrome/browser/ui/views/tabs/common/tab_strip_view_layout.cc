@@ -9,6 +9,7 @@
 #include "base/logging.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/views/avora/avora_favorites_view.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
@@ -188,12 +189,14 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
   }
   const int width = size_bounds.width().value();
 
-  // Avora: every section of the side nav -- Favorites, Live Folders, the
+  // Avora: every section of the side nav but Favorites -- Live Folders, the
   // pinned and imported sections, the Space label, the new-tab button and the
-  // daily tab list -- now lives inside the unpinned ScrollView's contents
-  // (AvoraSideNavContentsLayout), so this layout has a single job: give that
-  // scroll view the whole strip.  The contents are free to be taller than the
-  // viewport, and that overflow is what scrolls, as one surface.
+  // daily tab list -- lives inside the unpinned ScrollView's contents
+  // (AvoraSideNavContentsLayout).  Favorites is a fixed header: it sits at
+  // the top of the strip at its natural height, and the scroll view gets
+  // everything below it.  The scroll contents are free to be taller than the
+  // viewport, and that overflow is what scrolls, as one surface, while
+  // Favorites stays put.
   //
   // Upstream stacked the sections here, above the scroll view, and handed the
   // scroll view only what was left.  That is what made the nav scroll in two
@@ -208,17 +211,39 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
     layouts.child_layouts.emplace_back(tabs_separator, false, gfx::Rect());
   }
 
+  // Favorites header, with the same gap below it that it had when it was
+  // the first section of the scrolling surface.  Zero height (no favorites
+  // and no drag in progress) takes no gap either.
+  constexpr int kFavoritesGap = 8;
+  int header_height = 0;
+  if (views::View* favorites = tab_strip_view->GetFavoritesView()) {
+    const int favorites_height =
+        favorites->GetVisible()
+            ? favorites->GetPreferredSize(views::SizeBounds(width, {}))
+                  .height()
+            : 0;
+    layouts.child_layouts.emplace_back(
+        favorites, favorites->GetVisible(),
+        gfx::Rect(0, 0, width, favorites_height));
+    if (favorites_height > 0) {
+      header_height = favorites_height + kFavoritesGap;
+    }
+  }
+
   // Bounded is the real case: the region view hands the strip the space it
   // has.  Unbounded only comes up in a preferred-size query, where the
   // natural height of the contents is the honest answer.
   const int height =
       size_bounds.height().is_bounded()
           ? size_bounds.height().value()
-          : unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
+          : header_height +
+                unpinned_tabs_scroll_view->GetPreferredSize(size_bounds)
+                    .height();
+  const int scroll_height = std::max(0, height - header_height);
 
-  layouts.child_layouts.emplace_back(unpinned_tabs_scroll_view,
-                                     unpinned_tabs_scroll_view->GetVisible(),
-                                     gfx::Rect(0, 0, width, height));
+  layouts.child_layouts.emplace_back(
+      unpinned_tabs_scroll_view, unpinned_tabs_scroll_view->GetVisible(),
+      gfx::Rect(0, header_height, width, scroll_height));
   layouts.host_size = gfx::Size(width, height);
   return layouts;
 }
