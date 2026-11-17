@@ -22,18 +22,21 @@ tabs (only the device that closed a tab can reopen it).
 2. **Authentication → Sign In / Providers**: leave Email enabled. Turning off
    "Confirm email" isn't needed, because a magic link both confirms and signs in.
 3. **Authentication → URL Configuration → Redirect URLs**: add `avora://**`.
-4. **Authentication → Emails → Magic Link**: add the one-time code so people
-   can sign in when they open the email on a different device from the one
-   that asked for it:
+4. **Authentication → Emails**: paste in the Avora-themed templates from
+   `supabase/templates/`. Both show the one-time code as well as the link, so
+   people can sign in when they open the email on a different device from the
+   one that asked for it.
 
-   ```html
-   <h2>Sign in to Avora</h2>
-   <p><a href="{{ .ConfirmationURL }}">Sign in</a></p>
-   <p>Or enter this code: <strong>{{ .Token }}</strong></p>
-   ```
+   | Template | Subject | Body |
+   |---|---|---|
+   | **Confirm signup** (a first sign-in) | `Confirm your Avora account` | `confirm-signup.html` |
+   | **Magic Link** (every sign-in after that) | `Your Avora sign-in code` | `magic-link.html` |
 
-   Do the same in the **Confirm signup** template, since a first sign-in sends
-   that one instead.
+   The two files share one layout, so change them together. The logo loads
+   from `https://www.avorabrowser.com/apple-icon.png` (`website/app/apple-icon.png`),
+   so keep that file. The footer says the code expires in an hour, which is
+   Supabase's default **Email OTP Expiration**. If you change that setting,
+   change the footer too.
 5. Copy `.env.example` to `.env.local` and fill in the project URL and the
    publishable key (Project Settings → API), then restart `npx expo start`.
 6. Optionally schedule `select public.purge_tombstones();` daily (pg_cron) to
@@ -41,6 +44,28 @@ tabs (only the device that closed a tab can reopen it).
 
 The default Supabase email sender allows only a few messages an hour. Set up custom SMTP
 before anyone besides you uses this.
+
+### Custom SMTP with Resend
+
+1. In Resend, go to **Domains → Add domain** and add `avorabrowser.com`. Then add the
+   DNS records it lists (SPF and DKIM, plus DMARC if you want it). Wait until the domain
+   shows as verified, because until then sends from it fail.
+2. In Resend, go to **API Keys** and create a key with **Sending access**.
+3. In Supabase, go to **Authentication → Emails → SMTP Settings**, turn on custom SMTP,
+   and enter:
+
+   | Field | Value |
+   |---|---|
+   | Host | `smtp.resend.com` |
+   | Port | `465` (SSL/TLS); `587` (STARTTLS) also works |
+   | Username | `resend` |
+   | Password | the Resend API key (`re_…`) |
+   | Sender email | an address on the verified domain, e.g. `noreply@avorabrowser.com` |
+   | Sender name | `Avora` |
+
+   If port 465 is blocked, Resend also accepts 2465 (SSL) and 25, 587 or 2587 (STARTTLS).
+4. Custom SMTP doesn't lift Supabase's own email rate limit (around 30 an hour). Raise
+   it under **Authentication → Rate Limits** if you need more.
 
 ## Signing in
 
