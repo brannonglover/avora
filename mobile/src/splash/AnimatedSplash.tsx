@@ -1,0 +1,300 @@
+import * as SplashScreen from 'expo-splash-screen';
+import { useEffect, useState } from 'react';
+import { AccessibilityInfo, Animated, Dimensions, Easing, StyleSheet, View } from 'react-native';
+import Svg, { Circle, Defs, LinearGradient, RadialGradient, Rect, Stop } from 'react-native-svg';
+
+import { colors } from '../browser/theme';
+import { logoTarget, markSplashDone } from './handoff';
+
+// Must match the expo-splash-screen plugin's imageWidth in app.config.js: the
+// overlay starts as a pixel-for-pixel copy of the native splash, so hiding the
+// native one is invisible.
+const LOGO = 160;
+// The start page clips its 72pt logo to an 18pt radius; same ratio here, so
+// nothing changes shape when the splash logo lands on it.
+const LOGO_RADIUS = LOGO * (18 / 72);
+
+// The icon's own gradient, left to right along the "A".
+const glowColors = ['#6A7DFF', '#7DF2D3', '#F28AC8'] as const;
+const GLOW = 460;
+const BLOB = 150;
+const ORBIT = 62;
+
+// How long the logo holds the stage before handing off to the browser.
+const INTRO_MS = 950;
+
+function Glow() {
+  const c = GLOW / 2;
+  return (
+    <Svg width={GLOW} height={GLOW}>
+      <Defs>
+        {glowColors.map((color, i) => (
+          <RadialGradient key={color} id={`blob${i}`} cx="50%" cy="50%" r="50%">
+            <Stop offset="0" stopColor={color} stopOpacity={0.55} />
+            <Stop offset="0.55" stopColor={color} stopOpacity={0.16} />
+            <Stop offset="1" stopColor={color} stopOpacity={0} />
+          </RadialGradient>
+        ))}
+      </Defs>
+      {glowColors.map((color, i) => {
+        // Three blobs a third of a turn apart; the whole layer rotates, so
+        // the colours drift around the logo like an aurora.
+        const a = (i / glowColors.length) * Math.PI * 2 - Math.PI / 2;
+        return (
+          <Circle
+            key={color}
+            cx={c + Math.cos(a) * ORBIT}
+            cy={c + Math.sin(a) * ORBIT}
+            r={BLOB}
+            fill={`url(#blob${i})`}
+          />
+        );
+      })}
+    </Svg>
+  );
+}
+
+// A soft diagonal band of light, swept across the logo once.
+function Sheen() {
+  return (
+    <Svg width={LOGO * 0.55} height={LOGO * 1.8}>
+      <Defs>
+        <LinearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0" stopColor="#FFFFFF" stopOpacity={0} />
+          <Stop offset="0.5" stopColor="#FFFFFF" stopOpacity={0.28} />
+          <Stop offset="1" stopColor="#FFFFFF" stopOpacity={0} />
+        </LinearGradient>
+      </Defs>
+      <Rect width="100%" height="100%" fill="url(#sheen)" />
+    </Svg>
+  );
+}
+
+export function AnimatedSplash() {
+  const [visible, setVisible] = useState(true);
+  const [exiting, setExiting] = useState(false);
+
+  const [v] = useState(() => ({
+    backdrop: new Animated.Value(1),
+    glow: new Animated.Value(0),
+    spin: new Animated.Value(0),
+    pulse: new Animated.Value(1),
+    sheen: new Animated.Value(0),
+    logoOpacity: new Animated.Value(1),
+    // 0 = centred like the native splash, 1 = landed on the start page.
+    fly: new Animated.Value(0),
+    // Where the logo flies to: offset from the centre and the final scale.
+    dx: new Animated.Value(0),
+    dy: new Animated.Value(0),
+    endScale: new Animated.Value(1),
+  }));
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const finish = () => {
+      if (cancelled) return;
+      markSplashDone();
+      setVisible(false);
+    };
+
+    const exit = (reduceMotion: boolean) => {
+      if (cancelled) return;
+      setExiting(true);
+      const target = logoTarget();
+
+      if (reduceMotion) {
+        Animated.timing(v.backdrop, { toValue: 0, duration: 250, useNativeDriver: true }).start(finish);
+        Animated.timing(v.logoOpacity, { toValue: 0, duration: 250, useNativeDriver: true }).start();
+        return;
+      }
+
+      const fadeAway = Animated.parallel([
+        Animated.timing(v.backdrop, {
+          toValue: 0,
+          duration: 420,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(v.glow, {
+          toValue: 0,
+          duration: 320,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]);
+
+      if (target) {
+        // Glide onto the start page's logo, then swap it in on the same frame.
+        const { width, height } = Dimensions.get('window');
+        v.dx.setValue(target.x + target.width / 2 - width / 2);
+        v.dy.setValue(target.y + target.height / 2 - height / 2);
+        v.endScale.setValue(target.width / LOGO);
+        Animated.parallel([
+          fadeAway,
+          Animated.timing(v.fly, {
+            toValue: 1,
+            duration: 560,
+            easing: Easing.bezier(0.2, 0.8, 0.2, 1),
+            useNativeDriver: true,
+          }),
+        ]).start(finish);
+      } else {
+        // No start page (a site is open): the logo swells and dissolves.
+        v.endScale.setValue(1.5);
+        Animated.parallel([
+          fadeAway,
+          Animated.timing(v.fly, {
+            toValue: 1,
+            duration: 420,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(v.logoOpacity, {
+            toValue: 0,
+            duration: 380,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]).start(finish);
+      }
+    };
+
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduceMotion) => {
+        if (cancelled) return;
+        if (reduceMotion) {
+          setTimeout(() => exit(true), 300);
+          return;
+        }
+
+        Animated.parallel([
+          // The glow blooms out from behind the logo...
+          Animated.timing(v.glow, {
+            toValue: 1,
+            duration: 700,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          // ...and keeps drifting until the splash is gone.
+          Animated.timing(v.spin, {
+            toValue: 1,
+            duration: 2000,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          // The logo draws a breath in and settles.
+          Animated.sequence([
+            Animated.timing(v.pulse, {
+              toValue: 0.92,
+              duration: 220,
+              easing: Easing.inOut(Easing.quad),
+              useNativeDriver: true,
+            }),
+            Animated.spring(v.pulse, {
+              toValue: 1,
+              friction: 4,
+              tension: 90,
+              useNativeDriver: true,
+            }),
+          ]),
+          // A glint of light crosses it.
+          Animated.sequence([
+            Animated.delay(260),
+            Animated.timing(v.sheen, {
+              toValue: 1,
+              duration: 620,
+              easing: Easing.inOut(Easing.cubic),
+              useNativeDriver: true,
+            }),
+          ]),
+        ]).start();
+
+        setTimeout(() => exit(false), INTRO_MS);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [v]);
+
+  if (!visible) return null;
+
+  const glowScale = v.glow.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+  const rotate = v.spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '140deg'] });
+  const sheenX = v.sheen.interpolate({ inputRange: [0, 1], outputRange: [-LOGO, LOGO] });
+  const translateX = Animated.multiply(v.fly, v.dx);
+  const translateY = Animated.multiply(v.fly, v.dy);
+  // Scale from 1 to endScale as fly goes 0 to 1, times the intro's pulse.
+  const flyScale = Animated.add(1, Animated.multiply(v.fly, Animated.add(v.endScale, -1)));
+  const scale = Animated.multiply(flyScale, v.pulse);
+
+  return (
+    <View
+      style={StyleSheet.absoluteFill}
+      pointerEvents={exiting ? 'none' : 'auto'}
+      onLayout={() => SplashScreen.hide()}
+    >
+      <Animated.View style={[StyleSheet.absoluteFill, styles.backdrop, { opacity: v.backdrop }]} />
+
+      <View style={styles.center} pointerEvents="none">
+        {/* The glow rides along with the logo as it leaves, fading on the way. */}
+        <Animated.View
+          style={{
+            opacity: v.glow,
+            transform: [
+              { translateX },
+              { translateY },
+              { scale: Animated.multiply(glowScale, flyScale) },
+              { rotate },
+            ],
+          }}
+        >
+          <Glow />
+        </Animated.View>
+      </View>
+
+      <View style={styles.center} pointerEvents="none">
+        <Animated.View
+          style={[
+            styles.logo,
+            { opacity: v.logoOpacity, transform: [{ translateX }, { translateY }, { scale }] },
+          ]}
+        >
+          <Animated.Image source={require('../../assets/splash-icon.png')} style={styles.logoImage} />
+          <Animated.View
+            style={[styles.sheen, { transform: [{ translateX: sheenX }, { rotate: '18deg' }] }]}
+          >
+            <Sheen />
+          </Animated.View>
+        </Animated.View>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  backdrop: { backgroundColor: colors.background },
+  center: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logo: {
+    width: LOGO,
+    height: LOGO,
+    borderRadius: LOGO_RADIUS,
+    overflow: 'hidden',
+  },
+  logoImage: { width: LOGO, height: LOGO },
+  sheen: {
+    position: 'absolute',
+    top: -LOGO * 0.4,
+    left: LOGO * 0.225,
+  },
+});
