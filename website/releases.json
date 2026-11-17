@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.6.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.6.0-arm64.dmg",
+    "sizeBytes": 190703247,
+    "sha256": "8b16fdb8226af280b1bb0e72af5472af8a6e61c3a3123ee876f03379e0a1f8c7",
+    "notarized": true,
+    "edSignature": "iJcHaymoG/OwcFAbLf9OF5TDDEvtoe1t7hIzxo0qsdu21JWZv/FjpoEq7tM0HYMb6RLwzmp4F58Oqv+SahvyBg==",
+    "gitSha": "c1ca78596279710ef03c2f42aad071ff42326fd2",
+    "title": null,
+    "bullets": [
+      "favorites bar",
+      "Wire mobile/ into the monorepo."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-17T14:02:02.818Z",
+    "publishedAt": "2026-11-17T14:02:37.697Z"
+  },
+  {
     "version": "1.5.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.5.0-arm64.dmg",
