@@ -26,6 +26,10 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   // The badge sits in the bottom-left corner, on top of the Spaces bar.
   devIndicators: false,
+  experimental: {
+    // Remind about Next.js releases that fix a published security advisory.
+    agentUpgrade: "security",
+  },
   // The vercel.app address serves the site too, and search engines shouldn't see
   // a second copy.
   async redirects() {
