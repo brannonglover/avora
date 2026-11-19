@@ -1,6 +1,6 @@
 {
   "name": "avora",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "description": "Avora: the Chromium-based desktop browser, its website, and the mobile app.",
   "scripts": {
