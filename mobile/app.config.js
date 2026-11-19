@@ -37,6 +37,12 @@ module.exports = {
       // Required for the default browser entitlement. Merged with `scheme`
       // above; src/app/+native-intent.tsx opens these links in a new tab.
       scheme: ['http', 'https'],
+      // Lets iOS offer Avora under Settings → Apps → Default Browser App.
+      // Apple granted it for com.avora.browser on 2026-11-18; see
+      // docs/DEFAULT_BROWSER.md.
+      entitlements: {
+        'com.apple.developer.web-browser': true,
+      },
       supportsTablet: true,
       config: {
         usesNonExemptEncryption: false,
