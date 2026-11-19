@@ -1,10 +1,10 @@
 import { History } from 'lucide-react-native';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { LivingLogo } from '../splash/LivingLogo';
 import { Favicon } from './Favicon';
 import type { ClosedTab } from './tabs';
-import { colors, radius } from './theme';
+import { COLUMN_WIDTH, colors, radius } from './theme';
 import { hostOf } from './url';
 
 type Props = {
@@ -14,11 +14,16 @@ type Props = {
 
 export function StartPage({ recentlyClosed, onReopen }: Props) {
   const recent = recentlyClosed.slice(0, 6);
+  const { height } = useWindowDimensions();
 
   return (
     <ScrollView
       style={styles.page}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[
+        styles.content,
+        // A phone in landscape has little height to spare above the list.
+        { paddingTop: height < 500 ? 28 : 72 },
+      ]}
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.hero}>
@@ -57,7 +62,13 @@ export function StartPage({ recentlyClosed, onReopen }: Props) {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.background },
-  content: { paddingHorizontal: 20, paddingTop: 72, paddingBottom: 32 },
+  content: {
+    width: '100%',
+    maxWidth: COLUMN_WIDTH + 40,
+    alignSelf: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 32,
+  },
   hero: { alignItems: 'center', marginBottom: 40 },
   wordmark: {
     marginTop: 14,

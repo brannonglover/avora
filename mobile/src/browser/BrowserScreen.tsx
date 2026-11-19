@@ -3,8 +3,6 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import {
-  ArrowDown,
-  ArrowUp,
   Copy,
   CopyPlus,
   Pin,
@@ -363,16 +361,6 @@ export function BrowserScreen() {
           },
         });
       }
-      // Pinned items and Favorites sit in a grid; today tabs in a list.
-      const group = tabs.filter((t) => t.kind === tab.kind && t.parentId === tab.parentId);
-      const index = group.findIndex((t) => t.id === tab.id);
-      const [earlier, later] = tab.pinned ? ['Move Left', 'Move Right'] : ['Move Up', 'Move Down'];
-      if (index > 0) {
-        actions.push({ label: earlier, icon: ArrowUp, onPress: () => dispatch({ type: 'move', id: tab.id, by: -1 }) });
-      }
-      if (index >= 0 && index < group.length - 1) {
-        actions.push({ label: later, icon: ArrowDown, onPress: () => dispatch({ type: 'move', id: tab.id, by: 1 }) });
-      }
       actions.push({ label: 'Close Tab', icon: X, destructive: true, onPress: () => closeTab(tab) });
       if (tab.pinned) {
         actions.push({
@@ -384,7 +372,7 @@ export function BrowserScreen() {
       }
       return actions;
     },
-    [tabs, dispatch, closeTab, removeItem, showToast],
+    [dispatch, closeTab, removeItem, showToast],
   );
 
   const openMenu = useCallback(() => {
@@ -524,47 +512,51 @@ export function BrowserScreen() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <StatusBar style="light" />
 
-      <View
-        style={styles.content}
-        onLayout={(e) => {
-          contentSize.current = e.nativeEvent.layout;
-        }}
-      >
-        {liveIds.map((id) => {
-          const tab = tabsById.get(id)!;
-          return (
-            <TabWebView
-              key={id}
-              tab={tab}
-              active={id === activeTab.id}
-              preview={previewFor(tab)}
-              ref={(ref) => {
-                webviews.current.set(id, ref);
-              }}
-              containerRef={(ref) => {
-                containers.current.set(id, ref);
-              }}
-              onNav={updateNav}
-              onRecord={(url, title) => dispatch({ type: 'record', id, url, title })}
-              onOpenWindow={(url) => {
-                leave();
-                dispatch({ type: 'open', url, afterId: id, openerId: id });
-              }}
-              onLoadStarted={() => passwordFields.current.set(id, null)}
-              onLoaded={() => scheduleCapture(id)}
-              onTerminated={() => webviews.current.get(id)?.reload()}
-              onPasswordField={(has) => onPasswordField(id, has)}
+      {/* Pages stay clear of the Dynamic Island and rounded corners in
+          landscape; the WebView doesn't inset itself for them. */}
+      <View style={[styles.content, { paddingLeft: insets.left, paddingRight: insets.right }]}>
+        {/* Tabs fill this absolutely, which would ignore the padding above. */}
+        <View
+          style={styles.pages}
+          onLayout={(e) => {
+            contentSize.current = e.nativeEvent.layout;
+          }}
+        >
+          {liveIds.map((id) => {
+            const tab = tabsById.get(id)!;
+            return (
+              <TabWebView
+                key={id}
+                tab={tab}
+                active={id === activeTab.id}
+                preview={previewFor(tab)}
+                ref={(ref) => {
+                  webviews.current.set(id, ref);
+                }}
+                containerRef={(ref) => {
+                  containers.current.set(id, ref);
+                }}
+                onNav={updateNav}
+                onRecord={(url, title) => dispatch({ type: 'record', id, url, title })}
+                onOpenWindow={(url) => {
+                  leave();
+                  dispatch({ type: 'open', url, afterId: id, openerId: id });
+                }}
+                onLoadStarted={() => passwordFields.current.set(id, null)}
+                onLoaded={() => scheduleCapture(id)}
+                onTerminated={() => webviews.current.get(id)?.reload()}
+                onPasswordField={(has) => onPasswordField(id, has)}
+              />
+            );
+          })}
+
+          {activeTab.url === null ? (
+            <StartPage
+              recentlyClosed={state.recentlyClosed}
+              onReopen={(closedAt) => dispatch({ type: 'reopen', closedAt })}
             />
-          );
-        })}
-
-        {activeTab.url === null ? (
-          <StartPage
-            recentlyClosed={state.recentlyClosed}
-            onReopen={(closedAt) => dispatch({ type: 'reopen', closedAt })}
-          />
-        ) : null}
-
+          ) : null}
+        </View>
       </View>
 
       {/* While the overlay is up the keyboard belongs to it, so the bar stays put
@@ -636,6 +628,7 @@ export function BrowserScreen() {
           const tab = tabsById.get(id);
           if (tab) closeTab(tab);
         }}
+        onMoveTab={(id, by) => dispatch({ type: 'move', id, by })}
         onTabActions={(tab) =>
           setSheet({
             title: tab.title || hostOf(tab.url) || 'Start Page',
@@ -795,6 +788,7 @@ function useKeyboardHeight() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   content: { flex: 1, backgroundColor: colors.background },
+  pages: { flex: 1 },
   webview: { flex: 1, backgroundColor: colors.background },
   hidden: { display: 'none' },
   preview: { ...StyleSheet.absoluteFill, backgroundColor: colors.background },

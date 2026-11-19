@@ -36,6 +36,25 @@ export const radius = {
   row: 12,
 } as const;
 
+// On wide screens (iPad, a phone in landscape) content keeps to a centred
+// column this wide instead of stretching edge to edge.
+export const COLUMN_WIDTH = 600;
+
+// The usable width (inside the safe area) from which the bottom bar fits on
+// one row.
+export const WIDE_WIDTH = 600;
+
+// How far in from each side an absolutely positioned overlay sits so that it
+// stays inside the safe area, centred, and no wider than `max`.
+export function sideInset(
+  windowWidth: number,
+  insets: { left: number; right: number },
+  gutter: number,
+  max: number = COLUMN_WIDTH,
+): number {
+  return Math.max(gutter + Math.max(insets.left, insets.right), (windowWidth - max) / 2);
+}
+
 // '#RRGGBB' at the given opacity, for tinting surfaces with a Space's colour.
 export function withAlpha(hex: string, alpha: number): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);

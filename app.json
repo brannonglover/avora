@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "432af8f9-a941-4ce4-affc-fe63a00616c0"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.brannonglover.avora",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}

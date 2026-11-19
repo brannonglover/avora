@@ -120,7 +120,7 @@ type Action =
   | { type: 'reopen'; closedAt?: number }
   | { type: 'togglePin'; id: string }
   | { type: 'duplicate'; id: string }
-  | { type: 'move'; id: string; by: -1 | 1 }
+  | { type: 'move'; id: string; by: number }
   | { type: 'clearToday' }
   | { type: 'switchSpace'; id: string }
   | { type: 'createSpace'; name: string }

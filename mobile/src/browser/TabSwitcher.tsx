@@ -17,8 +17,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SpaceRow } from '../sync/rows';
 
 import { Favicon } from './Favicon';
+import { useAutoScroller, useReorder } from './reorder';
 import type { Folder, Tab } from './tabs';
-import { colors, radius } from './theme';
+import { COLUMN_WIDTH, colors, radius } from './theme';
 import { hostOf } from './url';
 
 type Props = {
@@ -35,6 +36,9 @@ type Props = {
   onSelect: (id: string) => void;
   onCloseTab: (id: string) => void;
   onTabActions: (tab: Tab) => void;
+  // Moves a tab `by` places within its own section (Favorites, Pinned, a
+  // folder, or Today).
+  onMoveTab: (id: string, by: number) => void;
   onNewTab: () => void;
   onClearToday: () => void;
   onAccount: () => void;
@@ -42,6 +46,9 @@ type Props = {
 };
 
 const PINNED_COLUMNS = 4;
+// Hold this long to lift a tab for dragging; let go without moving for its actions.
+const LONG_PRESS_MS = 350;
+const HINT = 'Long press and drag to reorder, or long press for actions';
 
 export function TabSwitcher(props: Props) {
   const { visible, tabs, activeId } = props;
@@ -52,7 +59,11 @@ export function TabSwitcher(props: Props) {
   const [mounted, setMounted] = useState(visible);
   if (visible && !mounted) setMounted(true);
   const scrollRef = useRef<ScrollViewInstance>(null);
-  const activeRowY = useRef(0);
+  // Read when the switcher opens, not on every change of tab.
+  const activeIdRef = useRef(activeId);
+  useLayoutEffect(() => {
+    activeIdRef.current = activeId;
+  });
   const todayY = useRef(0);
   const [openFolder, setOpenFolder] = useState<{ id: string; spaceId: string } | null>(null);
   if (!visible && openFolder) setOpenFolder(null);
@@ -68,16 +79,6 @@ export function TabSwitcher(props: Props) {
     });
   }, [visible, slide]);
 
-  // Open with the current tab in view; once open, leave scrolling to the user.
-  useEffect(() => {
-    if (!visible) return;
-    const frame = requestAnimationFrame(() => {
-      const listTop = todayY.current;
-      scrollRef.current?.scrollTo({ y: Math.max(0, listTop + activeRowY.current - 240), animated: false });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [visible]);
-
   const favorites = tabs.filter((t) => t.kind === 'favorite');
   const pinned = useMemo(
     () => groupPinned(tabs.filter((t) => t.kind === 'pinned'), props.folders),
@@ -85,7 +86,45 @@ export function TabSwitcher(props: Props) {
   );
   const today = tabs.filter((t) => t.kind === 'today');
   const activeSpace = props.spaces.find((s) => s.id === props.activeSpaceId);
-  const tileSize = (Math.min(width, 600) - 32 - (PINNED_COLUMNS - 1) * 10) / PINNED_COLUMNS;
+  const usableWidth = width - insets.left - insets.right;
+  const tileSize = (Math.min(usableWidth, COLUMN_WIDTH) - 32 - (PINNED_COLUMNS - 1) * 10) / PINNED_COLUMNS;
+  const tabsById = new Map(tabs.map((t) => [t.id, t]));
+  const showActions = (id: string) => {
+    const tab = tabsById.get(id);
+    if (tab) props.onTabActions(tab);
+  };
+  const { scroller, scrollProps } = useAutoScroller(scrollRef);
+  const favoritesDrag = useReorder({
+    keys: favorites.map((t) => t.id),
+    mode: 'grid',
+    onMove: props.onMoveTab,
+    onLongPress: showActions,
+    scroller,
+  });
+  const pinnedDrag = useReorder({
+    keys: pinned.map((e) => (e.kind === 'tab' ? e.tab.id : e.folder.id)),
+    mode: 'grid',
+    onMove: props.onMoveTab,
+    onLongPress: showActions,
+    scroller,
+  });
+  const todayDrag = useReorder({
+    keys: today.map((t) => t.id),
+    mode: 'list',
+    onMove: props.onMoveTab,
+    onLongPress: showActions,
+    scroller,
+  });
+  // Open with the current tab in view; once open, leave scrolling to the user.
+  const todayLayoutOf = todayDrag.layoutOf;
+  useEffect(() => {
+    if (!visible) return;
+    const frame = requestAnimationFrame(() => {
+      const rowY = todayLayoutOf(activeIdRef.current)?.y ?? 0;
+      scrollRef.current?.scrollTo({ y: Math.max(0, todayY.current + rowY - 240), animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [visible, todayLayoutOf]);
   const shownFolder =
     openFolder?.spaceId === props.activeSpaceId
       ? pinned.find((e) => e.kind === 'folder' && e.folder.id === openFolder.id)
@@ -102,6 +141,8 @@ export function TabSwitcher(props: Props) {
         styles.sheet,
         {
           paddingTop: insets.top,
+          paddingLeft: insets.left,
+          paddingRight: insets.right,
           opacity: slide,
           transform: [
             { translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [height * 0.12, 0] }) },
@@ -110,7 +151,7 @@ export function TabSwitcher(props: Props) {
       ]}
       pointerEvents={visible ? 'auto' : 'none'}
     >
-      <View style={styles.header}>
+      <View style={[styles.column, styles.header]}>
         <Text style={styles.headerTitle} numberOfLines={1}>
           {activeSpace?.name || 'Tabs'}
         </Text>
@@ -120,35 +161,44 @@ export function TabSwitcher(props: Props) {
         </Pressable>
       </View>
 
-      <SpaceBar
-        spaces={props.spaces}
-        activeId={props.activeSpaceId}
-        onSelect={props.onSwitchSpace}
-        onNew={props.onNewSpace}
-        onLongPress={props.onRenameSpace}
-      />
+      <View style={styles.column}>
+        <SpaceBar
+          spaces={props.spaces}
+          activeId={props.activeSpaceId}
+          onSelect={props.onSwitchSpace}
+          onNew={props.onNewSpace}
+          onLongPress={props.onRenameSpace}
+        />
+      </View>
 
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
+        {...scrollProps}
       >
         {favorites.length ? (
           <View style={styles.section}>
             <SectionLabel text="Favorites" />
             <View style={styles.grid}>
-              {favorites.map((tab) => (
-                <Tile
-                  key={tab.id}
-                  size={tileSize}
-                  active={tab.id === activeId}
-                  onPress={() => props.onSelect(tab.id)}
-                  onLongPress={() => props.onTabActions(tab)}
-                  accessibilityLabel={`Favorite, ${titleOf(tab)}`}
-                >
-                  <Favicon url={tab.url} size={26} />
-                </Tile>
-              ))}
+              {favorites.map((tab) => {
+                const drag = favoritesDrag.item(tab.id);
+                return (
+                  <Animated.View key={tab.id} {...drag.wrapper}>
+                    <Tile
+                      size={tileSize}
+                      active={tab.id === activeId}
+                      onPress={() => props.onSelect(tab.id)}
+                      onLongPress={drag.onLongPress}
+                      onPressOut={drag.onPressOut}
+                      accessibilityLabel={`Favorite, ${titleOf(tab)}`}
+                      accessibilityHint={HINT}
+                    >
+                      <Favicon url={tab.url} size={26} />
+                    </Tile>
+                  </Animated.View>
+                );
+              })}
             </View>
           </View>
         ) : null}
@@ -156,22 +206,27 @@ export function TabSwitcher(props: Props) {
           <View style={styles.section}>
             <SectionLabel text="Pinned" />
             <View style={styles.grid}>
-              {pinned.map((entry) =>
-                entry.kind === 'tab' ? (
-                  <Tile
-                    key={entry.tab.id}
-                    size={tileSize}
-                    label={titleOf(entry.tab)}
-                    active={entry.tab.id === activeId}
-                    onPress={() => props.onSelect(entry.tab.id)}
-                    onLongPress={() => props.onTabActions(entry.tab)}
-                    accessibilityLabel={`Pinned tab, ${titleOf(entry.tab)}`}
-                  >
-                    <Favicon url={entry.tab.url} size={26} />
-                  </Tile>
+              {pinned.map((entry) => {
+                const drag = pinnedDrag.item(entry.kind === 'tab' ? entry.tab.id : entry.folder.id);
+                return entry.kind === 'tab' ? (
+                  <Animated.View key={entry.tab.id} {...drag.wrapper}>
+                    <Tile
+                      size={tileSize}
+                      label={titleOf(entry.tab)}
+                      active={entry.tab.id === activeId}
+                      onPress={() => props.onSelect(entry.tab.id)}
+                      onLongPress={drag.onLongPress}
+                      onPressOut={drag.onPressOut}
+                      accessibilityLabel={`Pinned tab, ${titleOf(entry.tab)}`}
+                      accessibilityHint={HINT}
+                    >
+                      <Favicon url={entry.tab.url} size={26} />
+                    </Tile>
+                  </Animated.View>
                 ) : (
+                  // Folders hold their place; tabs can be dragged past them.
+                  <Animated.View key={entry.folder.id} {...drag.wrapper}>
                   <Tile
-                    key={entry.folder.id}
                     size={tileSize}
                     label={entry.folder.title || 'Folder'}
                     folder
@@ -185,8 +240,9 @@ export function TabSwitcher(props: Props) {
                       ))}
                     </View>
                   </Tile>
-                ),
-              )}
+                  </Animated.View>
+                );
+              })}
             </View>
           </View>
         ) : null}
@@ -202,20 +258,23 @@ export function TabSwitcher(props: Props) {
           </View>
           {today.length ? (
             <View style={styles.list}>
-              {today.map((tab, i) => (
-                <TabRow
-                  key={tab.id}
-                  tab={tab}
-                  active={tab.id === activeId}
-                  first={i === 0}
-                  onPress={() => props.onSelect(tab.id)}
-                  onLongPress={() => props.onTabActions(tab)}
-                  onClose={() => props.onCloseTab(tab.id)}
-                  onLayoutY={(y) => {
-                    if (tab.id === activeId) activeRowY.current = y;
-                  }}
-                />
-              ))}
+              {today.map((tab, i) => {
+                const drag = todayDrag.item(tab.id);
+                return (
+                  <Animated.View key={tab.id} {...drag.wrapper}>
+                    <TabRow
+                      tab={tab}
+                      active={tab.id === activeId}
+                      lifted={drag.lifted}
+                      first={i === 0}
+                      onPress={() => props.onSelect(tab.id)}
+                      onLongPress={drag.onLongPress}
+                      onPressOut={drag.onPressOut}
+                      onClose={() => props.onCloseTab(tab.id)}
+                    />
+                  </Animated.View>
+                );
+              })}
             </View>
           ) : (
             <Text style={styles.empty}>No tabs today. Pinned tabs stay put; everything else lands here.</Text>
@@ -223,20 +282,28 @@ export function TabSwitcher(props: Props) {
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 8 }]}>
-        <View style={styles.footerSide} />
-        <Pressable
-          onPress={props.onNewTab}
-          style={({ pressed }) => [styles.newTab, pressed && { opacity: 0.85 }]}
-          accessibilityLabel="New tab"
-        >
-          <Plus size={20} color={colors.background} strokeWidth={2.5} />
-          <Text style={styles.newTabText}>New Tab</Text>
-        </Pressable>
-        <View style={[styles.footerSide, { alignItems: 'flex-end' }]}>
-          <Pressable hitSlop={10} onPress={props.onDone}>
-            <Text style={styles.done}>Done</Text>
+      {/* The bar runs edge to edge under the side insets; its buttons don't. */}
+      <View
+        style={[
+          styles.footer,
+          { paddingBottom: insets.bottom + 8, marginLeft: -insets.left, marginRight: -insets.right },
+        ]}
+      >
+        <View style={[styles.column, styles.footerRow]}>
+          <View style={styles.footerSide} />
+          <Pressable
+            onPress={props.onNewTab}
+            style={({ pressed }) => [styles.newTab, pressed && { opacity: 0.85 }]}
+            accessibilityLabel="New tab"
+          >
+            <Plus size={20} color={colors.background} strokeWidth={2.5} />
+            <Text style={styles.newTabText}>New Tab</Text>
           </Pressable>
+          <View style={[styles.footerSide, { alignItems: 'flex-end' }]}>
+            <Pressable hitSlop={10} onPress={props.onDone}>
+              <Text style={styles.done}>Done</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -247,6 +314,7 @@ export function TabSwitcher(props: Props) {
           activeId={activeId}
           onSelect={props.onSelect}
           onLongPress={props.onTabActions}
+          onMove={props.onMoveTab}
           onClose={() => setOpenFolder(null)}
         />
       ) : null}
@@ -292,7 +360,9 @@ function Tile({
   active,
   onPress,
   onLongPress,
+  onPressOut,
   accessibilityLabel,
+  accessibilityHint,
   children,
 }: {
   size: number;
@@ -301,13 +371,18 @@ function Tile({
   active: boolean;
   onPress: () => void;
   onLongPress?: () => void;
+  onPressOut?: () => void;
   accessibilityLabel: string;
+  accessibilityHint?: string;
   children: React.ReactNode;
 }) {
   return (
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
+      onPressOut={onPressOut}
+      delayLongPress={LONG_PRESS_MS}
+      accessibilityHint={accessibilityHint}
       style={({ pressed }) => [styles.tile, { width: size }, pressed && styles.pressed]}
       accessibilityLabel={accessibilityLabel}
     >
@@ -339,6 +414,7 @@ function FolderSheet({
   activeId,
   onSelect,
   onLongPress,
+  onMove,
   onClose,
 }: {
   folder: Folder;
@@ -346,9 +422,22 @@ function FolderSheet({
   activeId: string;
   onSelect: (id: string) => void;
   onLongPress: (tab: Tab) => void;
+  onMove: (id: string, by: number) => void;
   onClose: () => void;
 }) {
   const { width, height } = useWindowDimensions();
+  const scrollRef = useRef<ScrollViewInstance>(null);
+  const { scroller, scrollProps } = useAutoScroller(scrollRef);
+  const drag = useReorder({
+    keys: tabs.map((t) => t.id),
+    mode: 'grid',
+    onMove,
+    onLongPress: (id) => {
+      const tab = tabs.find((t) => t.id === id);
+      if (tab) onLongPress(tab);
+    },
+    scroller,
+  });
   const [fade] = useState(() => new Animated.Value(0));
   useEffect(() => {
     Animated.timing(fade, { toValue: 1, duration: 160, useNativeDriver: true }).start();
@@ -377,23 +466,34 @@ function FolderSheet({
             <X size={18} color={colors.textSecondary} />
           </Pressable>
         </View>
-        <ScrollView style={{ maxHeight: height * 0.55 }} contentContainerStyle={styles.grid}>
-          {tabs.map((tab) => (
-            <Tile
-              key={tab.id}
-              size={tileSize}
-              label={titleOf(tab)}
-              active={tab.id === activeId}
-              onPress={() => {
-                onClose();
-                onSelect(tab.id);
-              }}
-              onLongPress={() => onLongPress(tab)}
-              accessibilityLabel={`Pinned tab, ${titleOf(tab)}`}
-            >
-              <Favicon url={tab.url} size={26} />
-            </Tile>
-          ))}
+        <ScrollView
+          ref={scrollRef}
+          style={{ maxHeight: height * 0.55 }}
+          contentContainerStyle={styles.grid}
+          {...scrollProps}
+        >
+          {tabs.map((tab) => {
+            const item = drag.item(tab.id);
+            return (
+              <Animated.View key={tab.id} {...item.wrapper}>
+                <Tile
+                  size={tileSize}
+                  label={titleOf(tab)}
+                  active={tab.id === activeId}
+                  onPress={() => {
+                    onClose();
+                    onSelect(tab.id);
+                  }}
+                  onLongPress={item.onLongPress}
+                  onPressOut={item.onPressOut}
+                  accessibilityLabel={`Pinned tab, ${titleOf(tab)}`}
+                  accessibilityHint={HINT}
+                >
+                  <Favicon url={tab.url} size={26} />
+                </Tile>
+              </Animated.View>
+            );
+          })}
         </ScrollView>
       </Animated.View>
     </Animated.View>
@@ -475,19 +575,21 @@ const CLOSE_THRESHOLD = -110;
 function TabRow({
   tab,
   active,
+  lifted,
   first,
   onPress,
   onLongPress,
+  onPressOut,
   onClose,
-  onLayoutY,
 }: {
   tab: Tab;
   active: boolean;
+  lifted: boolean;
   first: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  onPressOut: () => void;
   onClose: () => void;
-  onLayoutY: (y: number) => void;
 }) {
   const [x] = useState(() => new Animated.Value(0));
   const onCloseRef = useRef(onClose);
@@ -520,10 +622,7 @@ function TabRow({
   const title = tab.title || hostOf(tab.url) || 'Start Page';
 
   return (
-    <View
-      style={[styles.rowOuter, !first && styles.rowDivider]}
-      onLayout={(e) => onLayoutY(e.nativeEvent.layout.y)}
-    >
+    <View style={[styles.rowOuter, !first && styles.rowDivider]}>
       <View style={styles.rowCloseUnder}>
         <Text style={styles.rowCloseUnderText}>Close</Text>
       </View>
@@ -531,12 +630,16 @@ function TabRow({
         <Pressable
           onPress={onPress}
           onLongPress={onLongPress}
+          onPressOut={onPressOut}
+          delayLongPress={LONG_PRESS_MS}
           style={({ pressed }) => [
             styles.row,
             active && styles.rowActive,
-            pressed && styles.pressed,
+            pressed && !lifted && styles.pressed,
+            lifted && styles.rowLifted,
           ]}
           accessibilityLabel={`${title}${active ? ', current tab' : ''}`}
+          accessibilityHint={HINT}
         >
           {active ? <View style={styles.activeBar} /> : null}
           <Favicon url={tab.url} size={22} />
@@ -566,6 +669,8 @@ function TabRow({
 
 const styles = StyleSheet.create({
   sheet: { backgroundColor: colors.background, zIndex: 10 },
+  // Header, Space chips and footer line up with the tab grid on wide screens.
+  column: { width: '100%', maxWidth: COLUMN_WIDTH, alignSelf: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -649,6 +754,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   rowActive: { backgroundColor: colors.raised },
+  rowLifted: { backgroundColor: colors.border },
   activeBar: {
     position: 'absolute',
     left: 0,
@@ -672,14 +778,12 @@ const styles = StyleSheet.create({
   folderClose: { marginLeft: 'auto' },
   empty: { color: colors.textTertiary, fontSize: 14, paddingHorizontal: 4, lineHeight: 20 },
   footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
     paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
   },
+  footerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20 },
   footerSide: { flex: 1 },
   newTab: {
     flexDirection: 'row',

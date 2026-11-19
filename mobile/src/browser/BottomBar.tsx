@@ -15,16 +15,20 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuroraProgress } from './Aurora';
 import { Favicon } from './Favicon';
 import type { Tab } from './tabs';
-import { colors, radius, withAlpha } from './theme';
+import { colors, radius, WIDE_WIDTH, withAlpha } from './theme';
 import { displayText, hostOf, isInsecure, isSearchUrl, splitHost } from './url';
 
 const SWIPE_COMMIT = 70;
+// On one row the address bar stays readable rather than spanning a 13" iPad.
+const WIDE_PILL_MAX = 680;
 
 type Props = {
   tab: Tab;
@@ -52,6 +56,11 @@ type Props = {
 
 export function BottomBar(props: Props) {
   const { tab, tabCount, spaceName, spaceColor, progress, loading, canGoBack, canGoForward, onStartEditing } = props;
+
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  // iPad, or a phone in landscape: one row, so the page keeps its height.
+  const wide = width - insets.left - insets.right >= WIDE_WIDTH;
 
   const [pillX] = useState(() => new Animated.Value(0));
   // The responder is created once; read the latest props through a ref.
@@ -113,127 +122,150 @@ export function BottomBar(props: Props) {
   const isSearch = isSearchUrl(tab.url);
   const host = tab.url && !isSearch ? splitHost(hostOf(tab.url)) : null;
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.addressRow}>
-        <Animated.View
-          style={[styles.pillWrap, { transform: [{ translateX: pillX }] }]}
-          {...pan.panHandlers}
-        >
-          <Pressable
-            style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
-            onPress={onStartEditing}
-            accessibilityRole="search"
-            accessibilityLabel={label ? `Address, ${label}` : 'Search or enter address'}
-            accessibilityHint="Swipe left or right to switch tabs"
-          >
-            <AuroraProgress loading={loading} progress={progress} radius={radius.row} />
-            <View style={styles.pillSide}>
-              {!tab.url ? (
-                <Search size={15} color={colors.textTertiary} />
-              ) : isInsecure(tab.url) ? (
-                <LockOpen size={13} color={colors.danger} />
-              ) : null}
-            </View>
-            <View style={styles.pillCenter}>
-              {isSearch ? (
-                <Search size={14} color={colors.textSecondary} />
-              ) : tab.url ? (
-                <Favicon url={tab.url} size={16} />
-              ) : null}
-              <Text style={[styles.pillText, !label && styles.placeholder]} numberOfLines={1}>
-                {host ? (
-                  <>
-                    <Text style={styles.subdomain}>{host.sub}</Text>
-                    {host.domain}
-                  </>
-                ) : (
-                  label || 'Search or enter address'
-                )}
-              </Text>
-            </View>
-            <View style={styles.pillSide}>
-              {tab.url ? (
-                <Pressable hitSlop={12} onPress={props.onReloadOrStop}>
-                  {loading ? (
-                    <X size={16} color={colors.textSecondary} />
-                  ) : (
-                    <RotateCw size={15} color={colors.textSecondary} />
-                  )}
-                </Pressable>
-              ) : null}
-            </View>
-          </Pressable>
-        </Animated.View>
-      </View>
-
-      <View style={styles.toolbar}>
-        {/* Back and forward share one capsule: they're a pair, not two of five. */}
-        <View style={styles.navPair}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-            disabled={!canGoBack}
-            onPress={props.onBack}
-            style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
-          >
-            <ChevronLeft size={22} color={canGoBack ? colors.text : colors.textTertiary} />
-          </Pressable>
-          <View style={styles.navDivider} />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Forward"
-            disabled={!canGoForward}
-            onPress={props.onForward}
-            style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
-          >
-            <ChevronRight size={22} color={canGoForward ? colors.text : colors.textTertiary} />
-          </Pressable>
+  const addressPill = (
+    <Animated.View
+      style={[styles.pillWrap, wide && styles.pillWrapWide, { transform: [{ translateX: pillX }] }]}
+      {...pan.panHandlers}
+    >
+      <Pressable
+        style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
+        onPress={onStartEditing}
+        accessibilityRole="search"
+        accessibilityLabel={label ? `Address, ${label}` : 'Search or enter address'}
+        accessibilityHint="Swipe left or right to switch tabs"
+      >
+        <AuroraProgress loading={loading} progress={progress} radius={radius.row} />
+        <View style={styles.pillSide}>
+          {!tab.url ? (
+            <Search size={15} color={colors.textTertiary} />
+          ) : isInsecure(tab.url) ? (
+            <LockOpen size={13} color={colors.danger} />
+          ) : null}
         </View>
-
-        {/* Tabs live in Spaces, so the way into them says which Space you're in. */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Show tabs, ${spaceName}, ${tabCount} open`}
-          accessibilityHint="Long press for tab actions"
-          onPress={props.onShowTabs}
-          onLongPress={props.onTabsLongPress}
-          style={({ pressed }) => [
-            styles.spaceChip,
-            {
-              backgroundColor: withAlpha(spaceColor, pressed ? 0.26 : 0.14),
-              borderColor: withAlpha(spaceColor, 0.38),
-            },
-          ]}
-        >
-          <View style={[styles.spaceDot, { backgroundColor: spaceColor }]} />
-          <Text style={styles.spaceName} numberOfLines={1}>
-            {spaceName}
+        <View style={styles.pillCenter}>
+          {isSearch ? (
+            <Search size={14} color={colors.textSecondary} />
+          ) : tab.url ? (
+            <Favicon url={tab.url} size={16} />
+          ) : null}
+          <Text style={[styles.pillText, !label && styles.placeholder]} numberOfLines={1}>
+            {host ? (
+              <>
+                <Text style={styles.subdomain}>{host.sub}</Text>
+                {host.domain}
+              </>
+            ) : (
+              label || 'Search or enter address'
+            )}
           </Text>
-          <View style={[styles.spaceCount, { backgroundColor: withAlpha(spaceColor, 0.3) }]}>
-            <Text style={styles.spaceCountText}>{tabCount > 99 ? '99+' : tabCount}</Text>
-          </View>
-        </Pressable>
-
-        <View style={styles.trailing}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="More"
-            onPress={props.onMenu}
-            style={({ pressed }) => [styles.roundButton, pressed && styles.roundButtonPressed]}
-          >
-            <Ellipsis size={20} color={colors.text} />
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="New tab"
-            onPress={props.onNewTab}
-            style={({ pressed }) => [styles.newTab, pressed && styles.newTabPressed]}
-          >
-            <Plus size={22} color={colors.background} strokeWidth={2.5} />
-          </Pressable>
         </View>
+        <View style={styles.pillSide}>
+          {tab.url ? (
+            <Pressable hitSlop={12} onPress={props.onReloadOrStop}>
+              {loading ? (
+                <X size={16} color={colors.textSecondary} />
+              ) : (
+                <RotateCw size={15} color={colors.textSecondary} />
+              )}
+            </Pressable>
+          ) : null}
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+
+  // Back and forward share one capsule: they're a pair, not two of five.
+  const navPair = (
+    <View style={styles.navPair}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+        disabled={!canGoBack}
+        onPress={props.onBack}
+        style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
+      >
+        <ChevronLeft size={22} color={canGoBack ? colors.text : colors.textTertiary} />
+      </Pressable>
+      <View style={styles.navDivider} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Forward"
+        disabled={!canGoForward}
+        onPress={props.onForward}
+        style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
+      >
+        <ChevronRight size={22} color={canGoForward ? colors.text : colors.textTertiary} />
+      </Pressable>
+    </View>
+  );
+
+  // Tabs live in Spaces, so the way into them says which Space you're in.
+  const spaceChip = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Show tabs, ${spaceName}, ${tabCount} open`}
+      accessibilityHint="Long press for tab actions"
+      onPress={props.onShowTabs}
+      onLongPress={props.onTabsLongPress}
+      style={({ pressed }) => [
+        styles.spaceChip,
+        wide ? styles.spaceChipWide : styles.spaceChipNarrow,
+        {
+          backgroundColor: withAlpha(spaceColor, pressed ? 0.26 : 0.14),
+          borderColor: withAlpha(spaceColor, 0.38),
+        },
+      ]}
+    >
+      <View style={[styles.spaceDot, { backgroundColor: spaceColor }]} />
+      <Text style={styles.spaceName} numberOfLines={1}>
+        {spaceName}
+      </Text>
+      <View style={[styles.spaceCount, { backgroundColor: withAlpha(spaceColor, 0.3) }]}>
+        <Text style={styles.spaceCountText}>{tabCount > 99 ? '99+' : tabCount}</Text>
       </View>
+    </Pressable>
+  );
+
+  const trailing = (
+    <View style={styles.trailing}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="More"
+        onPress={props.onMenu}
+        style={({ pressed }) => [styles.roundButton, pressed && styles.roundButtonPressed]}
+      >
+        <Ellipsis size={20} color={colors.text} />
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="New tab"
+        onPress={props.onNewTab}
+        style={({ pressed }) => [styles.newTab, pressed && styles.newTabPressed]}
+      >
+        <Plus size={22} color={colors.background} strokeWidth={2.5} />
+      </Pressable>
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { paddingLeft: insets.left, paddingRight: insets.right }]}>
+      {wide ? (
+        <View style={styles.toolbar}>
+          {navPair}
+          <View style={styles.wideMiddle}>{addressPill}</View>
+          {spaceChip}
+          {trailing}
+        </View>
+      ) : (
+        <>
+          <View style={styles.addressRow}>{addressPill}</View>
+          <View style={styles.toolbar}>
+            {navPair}
+            {spaceChip}
+            {trailing}
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -251,6 +283,8 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   pillWrap: { flex: 1, height: 44 },
+  pillWrapWide: { maxWidth: WIDE_PILL_MAX },
+  wideMiddle: { flex: 1, minWidth: 0, flexDirection: 'row', justifyContent: 'center' },
   pill: {
     flex: 1,
     minHeight: 44,
@@ -302,7 +336,6 @@ const styles = StyleSheet.create({
   navHalfPressed: { backgroundColor: colors.fill },
   navDivider: { width: StyleSheet.hairlineWidth, height: 20, backgroundColor: colors.border },
   spaceChip: {
-    flex: 1,
     minWidth: 0,
     height: 40,
     flexDirection: 'row',
@@ -314,6 +347,10 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
   },
+  // Shares its row with back/forward and the buttons on a phone in portrait;
+  // sized to its name once the address bar joins the row.
+  spaceChipNarrow: { flex: 1 },
+  spaceChipWide: { maxWidth: 240 },
   spaceDot: { width: 8, height: 8, borderRadius: 4 },
   spaceName: { flexShrink: 1, color: colors.text, fontSize: 15, fontWeight: '600' },
   spaceCount: {

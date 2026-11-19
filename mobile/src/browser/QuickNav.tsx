@@ -18,7 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuroraRing } from './Aurora';
 import { Favicon } from './Favicon';
 import type { Tab } from './tabs';
-import { colors } from './theme';
+import { colors, sideInset } from './theme';
 import { displayText, editText, hostOf, isSearchUrl, resolveInput } from './url';
 
 // The desktop quick-nav overlay (avora_quick_nav_view.cc), fitted to a phone:
@@ -27,6 +27,8 @@ import { displayText, editText, hostOf, isSearchUrl, resolveInput } from './url'
 const INPUT_HEIGHT = 48;
 const INPUT_RADIUS = 12;
 const CARD_RADIUS = 16;
+// A touch wider than the content column: it's the one place you type.
+const CARD_MAX_WIDTH = 680;
 const ROW_HEIGHT = 52;
 const ROW_RADIUS = 10;
 const MAX_ROWS = 8;
@@ -146,7 +148,9 @@ export function QuickNav({
   onCancel,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Centred, inside the safe area, and no wider than reads well on an iPad.
+  const side = sideInset(windowWidth, insets, 12, CARD_MAX_WIDTH);
   const [shown] = useState(() => new Animated.Value(0));
   const bottom = keyboardHeight || insets.bottom;
   const free = windowHeight - insets.top - bottom;
@@ -196,6 +200,8 @@ export function QuickNav({
         style={[
           styles.card,
           {
+            left: side,
+            right: side,
             opacity: shown,
             transform: [
               { translateY: top },
@@ -295,8 +301,6 @@ const styles = StyleSheet.create({
   card: {
     position: 'absolute',
     top: 0,
-    left: 12,
-    right: 12,
     padding: 12,
     borderRadius: CARD_RADIUS,
     backgroundColor: quickNav.card,

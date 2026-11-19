@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, radius } from './theme';
+import { colors, radius, sideInset } from './theme';
 
 export type ToastMessage = {
   id: number;
@@ -20,6 +21,9 @@ type Props = {
 };
 
 export function Toast({ toast, onDismiss, bottom }: Props) {
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const side = sideInset(width, insets, 16);
   const [opacity] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
@@ -40,6 +44,8 @@ export function Toast({ toast, onDismiss, bottom }: Props) {
         styles.toast,
         {
           bottom,
+          left: side,
+          right: side,
           opacity,
           transform: [{ translateY: opacity.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
         },
@@ -66,8 +72,6 @@ export function Toast({ toast, onDismiss, bottom }: Props) {
 const styles = StyleSheet.create({
   toast: {
     position: 'absolute',
-    left: 16,
-    right: 16,
     zIndex: 20,
     flexDirection: 'row',
     alignItems: 'center',

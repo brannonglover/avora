@@ -2,7 +2,7 @@ import type { LucideIcon } from 'lucide-react-native';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, radius } from './theme';
+import { COLUMN_WIDTH, colors, radius } from './theme';
 
 export type SheetAction = {
   label: string;
@@ -24,7 +24,10 @@ export function ActionSheet({ visible, title, subtitle, actions, onClose }: Prop
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
+      <Pressable
+        style={[styles.backdrop, { paddingLeft: 10 + insets.left, paddingRight: 10 + insets.right }]}
+        onPress={onClose}
+      >
         <Pressable style={[styles.sheet, { marginBottom: insets.bottom + 8 }]}>
           {title ? (
             <View style={styles.header}>
@@ -66,9 +69,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: 'rgba(0,0,0,0.45)',
-    paddingHorizontal: 10,
   },
   sheet: {
+    width: '100%',
+    maxWidth: COLUMN_WIDTH,
+    alignSelf: 'center',
     backgroundColor: colors.raised,
     borderRadius: radius.card + 4,
     overflow: 'hidden',
