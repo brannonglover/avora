@@ -3,6 +3,7 @@ import * as Linking from 'expo-linking';
 import { createContext, use, useEffect, useMemo, useState } from 'react';
 
 import { unregisterDevice } from './devices';
+import { deleteAccount } from './remote';
 import { supabase } from './supabase';
 
 type Auth = {
@@ -18,6 +19,9 @@ type Auth = {
   // Only for REVIEW_EMAIL; everyone else's account has no password.
   signInWithPassword: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  // Deletes the account and its synced data, then signs out. Tabs on this
+  // device stay, as after signing out.
+  deleteAccount: () => Promise<void>;
 };
 
 // App Review can't read the emailed code, so this one account signs in with a
@@ -90,6 +94,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await unregisterDevice().catch(() => {});
         const { error } = await requireClient().auth.signOut({ scope: 'local' });
         if (error) throw error;
+      },
+      deleteAccount: async () => {
+        const client = requireClient();
+        if (!session) throw new Error('You’re not signed in.');
+        await deleteAccount(session.user.id);
+        // The server has already ended the session, so a failure to reach it
+        // here doesn't matter: signOut clears the stored session regardless.
+        await client.auth.signOut({ scope: 'local' }).catch(() => {});
       },
     }),
     [ready, session, linkError],

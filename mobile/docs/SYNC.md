@@ -96,6 +96,40 @@ upserts `public.devices` (`id`, `name`, `platform`, `last_seen_at`) when it
 signs in and deletes that row when it signs out. `devices.tabs` is no longer
 read or written; it stays only for app builds older than this document.
 
+## Deleting an account
+
+App Review requires that an account can be deleted from inside the app
+(guideline 5.1.1(v)). On the phone it's **Account → Delete Account**, below
+Sign Out. It needs no service-role key in the app:
+
+1. The app lists `tab-previews/{user_id}/` and removes every object through the
+   Storage API (`deleteAllPreviews` in `src/sync/remote.ts`). Storage policies
+   already let a user delete their own previews. Going through the API matters:
+   deleting `storage.objects` rows in SQL would leave the files behind.
+2. It calls `supabase.rpc('delete_account')`
+   (`POST /rest/v1/rpc/delete_account`), from
+   `supabase/migrations/20261119000000_delete_account.sql`. That `security
+   definer` function deletes the caller's `items`, `spaces` and `devices`, then
+   their `auth.users` row, which ends every session and refresh token. It refuses
+   with hint `previews_remain` while any preview is left (another device may
+   have uploaded one after step 1), and the app goes back to step 1 up to twice
+   more.
+3. The app signs out locally and the Account screen shows the sign-in form.
+   The phone's tabs stay on the phone, detached as after Sign Out. Realtime
+   doesn't deliver the row deletions to it, so nothing is closed locally.
+
+Other devices keep working from their access token until it expires (an hour
+at most), then fail to refresh and should treat that as signed out. Signing in
+again with the same email creates a new, empty account.
+
+Setup: apply the migration like the others. Nothing else is needed. To test
+it, sign in with a throwaway address, sync a few tabs with previews on, delete
+the account, and check that **Authentication → Users** no longer lists it and
+that `tab-previews` has no folder for its id.
+
+If App Review deletes `appreview@avorabrowser.com`, create it again (see *The
+App Review account*) before the next submission.
+
 ## The rows
 
 ### `public.spaces`

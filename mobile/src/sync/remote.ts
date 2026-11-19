@@ -127,6 +127,36 @@ export async function deletePreview(path: string): Promise<void> {
   await client().storage.from(BUCKET).remove([path]);
 }
 
+// Every preview the account has, from any device. Used before deleting the
+// account, which public.delete_account() refuses while any remain.
+export async function deleteAllPreviews(userId: string): Promise<void> {
+  const bucket = client().storage.from(BUCKET);
+  // Each pass removes one page; stop if a pass removes nothing rather than
+  // loop on a page we aren't allowed to delete.
+  for (;;) {
+    const { data, error } = await bucket.list(userId, { limit: PAGE });
+    if (error) throw error;
+    const paths = data.filter((file) => file.id).map((file) => `${userId}/${file.name}`);
+    if (!paths.length) return;
+    const removed = await bucket.remove(paths);
+    if (removed.error) throw removed.error;
+    if (!removed.data.length) throw new Error('Couldn’t delete your tab previews.');
+  }
+}
+
+// Deletes the signed-in account and everything synced to it. The caller signs
+// out afterwards; the server has already ended the session.
+export async function deleteAccount(userId: string): Promise<void> {
+  // A device can upload a preview between the two steps; the server then
+  // refuses, and one more pass clears it.
+  for (let attempt = 1; ; attempt++) {
+    await deleteAllPreviews(userId);
+    const { error } = await client().rpc('delete_account');
+    if (!error) return;
+    if (error.hint !== 'previews_remain' || attempt === 3) throw error;
+  }
+}
+
 // An <Image> source for a stored preview. The URL carries preview_updated_at,
 // so the image cache refetches exactly when the preview changes.
 export function previewSource(path: string, updatedAt: string | null, accessToken: string) {

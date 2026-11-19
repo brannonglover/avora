@@ -209,8 +209,9 @@ function SignIn() {
 }
 
 function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => void }) {
-  const { signOut } = useAuth();
+  const { signOut, deleteAccount } = useAuth();
   const devices = useDevices();
+  const [deleting, setDeleting] = useState(false);
   const previewsOn = usePreviewsEnabled();
   const [thisDevice, setThisDevice] = useState<string | null>(null);
   useEffect(() => {
@@ -229,6 +230,32 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
           ),
       },
     ]);
+
+  // Stays on this screen afterwards, which then shows the signed-out state.
+  const runDelete = () => {
+    setDeleting(true);
+    deleteAccount().then(
+      () => Alert.alert('Account deleted', 'Your tabs are still on this phone.'),
+      (e: unknown) => {
+        setDeleting(false);
+        Alert.alert(
+          'Couldn’t delete your account',
+          `${e instanceof Error ? e.message : String(e)}\n\nTry again, or email support@avorabrowser.com.`,
+        );
+      },
+    );
+  };
+
+  const confirmDelete = () =>
+    Alert.alert(
+      'Delete your account?',
+      'This permanently deletes your Avora account, the Spaces and tabs synced to it, and their tab previews, ' +
+        'on every device. Tabs on this phone stay here but stop syncing. This can’t be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete Account', style: 'destructive', onPress: runDelete },
+      ],
+    );
 
   return (
     <>
@@ -279,8 +306,25 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
         </View>
       </View>
 
-      <Pressable onPress={confirmSignOut} style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
+      <Pressable
+        onPress={confirmSignOut}
+        disabled={deleting}
+        style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}
+      >
         <Text style={styles.signOutText}>Sign Out</Text>
+      </Pressable>
+      <Pressable
+        onPress={confirmDelete}
+        disabled={deleting}
+        style={({ pressed }) => [styles.deleteAccount, pressed && styles.pressed]}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: deleting, busy: deleting }}
+      >
+        {deleting ? (
+          <ActivityIndicator color={colors.textSecondary} />
+        ) : (
+          <Text style={styles.deleteAccountText}>Delete Account</Text>
+        )}
       </Pressable>
     </>
   );
@@ -350,7 +394,9 @@ const styles = StyleSheet.create({
     fontSize: 17,
   },
   stacked: { marginTop: 10 },
-  codeInput: { fontSize: 22, letterSpacing: 6, fontVariant: ['tabular-nums'] },
+  // No letterSpacing: React Native reuses native text fields, and the spacing
+  // stuck to every input shown after this one (the address bar, the email field).
+  codeInput: { fontSize: 22, fontVariant: ['tabular-nums'] },
   button: {
     height: 50,
     marginTop: 12,
@@ -411,4 +457,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   signOutText: { color: colors.danger, fontSize: 16, fontWeight: '600' },
+  deleteAccount: { height: 44, marginTop: 8, alignItems: 'center', justifyContent: 'center' },
+  deleteAccountText: { color: colors.danger, fontSize: 15 },
 });
