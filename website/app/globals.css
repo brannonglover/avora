@@ -765,6 +765,149 @@ code {
 
 /* Footer */
 
+/* Support */
+
+.support h1 {
+  font-size: clamp(2.5rem, 5vw, 4rem);
+}
+
+.support .section-head {
+  margin-bottom: 40px;
+}
+
+.support-contact,
+.faq {
+  max-width: 760px;
+}
+
+.support-contact {
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgb(30 34 42 / 0.7);
+}
+
+.support-email {
+  color: var(--link);
+  font-size: clamp(1.3rem, 2.4vw, 1.7rem);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.support-email:hover {
+  text-decoration: underline;
+}
+
+.support-contact p {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.faq {
+  margin-top: 56px;
+}
+
+.faq h2 {
+  margin-bottom: 20px;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
+.faq-item {
+  border-top: 1px solid var(--line);
+}
+
+.faq-item:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.faq-item summary {
+  padding: 18px 0;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.faq-item summary::marker {
+  color: var(--accent);
+}
+
+.faq-item p {
+  padding: 0 0 20px 1.2em;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.faq-item p a,
+.support .note a {
+  color: var(--link);
+}
+
+.faq-item strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.footer a {
+  color: inherit;
+}
+
+/* Privacy policy */
+
+.policy h1 {
+  font-size: clamp(2.5rem, 5vw, 4rem);
+}
+
+.policy-date {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.policy-body {
+  max-width: 760px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.policy-body h2 {
+  margin: 48px 0 14px;
+  color: var(--text);
+  font-size: clamp(1.4rem, 2.4vw, 1.8rem);
+}
+
+.policy-body h2:first-child {
+  margin-top: 0;
+}
+
+.policy-body p + p,
+.policy-body p + ul,
+.policy-body ul + p {
+  margin-top: 14px;
+}
+
+.policy-body ul {
+  padding-left: 1.2em;
+  list-style: disc;
+}
+
+.policy-body li + li {
+  margin-top: 10px;
+}
+
+.policy-body li::marker {
+  color: var(--accent);
+}
+
+.policy-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.policy-body a {
+  color: var(--link);
+}
+
 .footer {
   display: flex;
   justify-content: space-between;

@@ -12,5 +12,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       url: `${siteUrl}/releases`,
       lastModified: publishedReleases[0].publishedAt ?? undefined,
     },
+    { url: `${siteUrl}/support` },
+    { url: `${siteUrl}/privacy` },
   ];
 }

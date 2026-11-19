@@ -2,6 +2,9 @@
 // served the page.
 export const siteUrl = "https://www.avorabrowser.com";
 
+// Where the support page, and so the App Store listing, sends people.
+export const supportEmail = "support@avorabrowser.com";
+
 export const siteDescription =
   "Avora is a Chromium browser for Mac with vertical tabs, Spaces with their own sign-ins, and Intelligence that explains any page's CSS. Import from Arc or Chrome.";
 

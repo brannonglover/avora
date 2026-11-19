@@ -6,7 +6,9 @@ export function Footer() {
       <span>
         Avora {version}, built on Chromium {chromiumMajor}
       </span>
-      <span>© 2026 Avora</span>
+      <span>
+        <a href="/support">Support</a> · <a href="/privacy">Privacy</a> · © 2026 Avora
+      </span>
     </footer>
   );
 }

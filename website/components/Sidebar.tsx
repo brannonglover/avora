@@ -8,6 +8,7 @@ import {
   Briefcase,
   House,
   Images,
+  LifeBuoy,
   Microscope,
   Palette,
   ScrollText,
@@ -34,7 +35,7 @@ const SPACES: { name: string; color: string; icon: LucideIcon }[] = [
 
 // The home page's sections are anchors on it, so from any other page they lead
 // back there.
-export function Sidebar({ page = "home" }: { page?: "home" | "releases" }) {
+export function Sidebar({ page = "home" }: { page?: "home" | "releases" | "support" | "privacy" }) {
   const home = page === "home" ? "" : "/";
   const [active, setActive] = useState(page === "home" ? SECTIONS[0].id : "");
   const [space, setSpace] = useState(SPACES[2].name);
@@ -96,6 +97,16 @@ export function Sidebar({ page = "home" }: { page?: "home" | "releases" }) {
             >
               <ScrollText size={16} aria-hidden="true" />
               Release notes
+            </a>
+          </li>
+          <li>
+            <a
+              className="tab"
+              href="/support"
+              aria-current={page === "support" ? "page" : undefined}
+            >
+              <LifeBuoy size={16} aria-hidden="true" />
+              Support
             </a>
           </li>
         </ul>
