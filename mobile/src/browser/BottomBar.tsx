@@ -21,7 +21,7 @@ import {
 import { AuroraProgress } from './Aurora';
 import { Favicon } from './Favicon';
 import type { Tab } from './tabs';
-import { colors, radius } from './theme';
+import { colors, radius, withAlpha } from './theme';
 import { displayText, hostOf, isInsecure, isSearchUrl, splitHost } from './url';
 
 const SWIPE_COMMIT = 70;
@@ -29,6 +29,8 @@ const SWIPE_COMMIT = 70;
 type Props = {
   tab: Tab;
   tabCount: number;
+  spaceName: string;
+  spaceColor: string;
   hasPrevTab: boolean;
   progress: number;
   loading: boolean;
@@ -49,7 +51,7 @@ type Props = {
 };
 
 export function BottomBar(props: Props) {
-  const { tab, tabCount, progress, loading, canGoBack, canGoForward, onStartEditing } = props;
+  const { tab, tabCount, spaceName, spaceColor, progress, loading, canGoBack, canGoForward, onStartEditing } = props;
 
   const [pillX] = useState(() => new Animated.Value(0));
   // The responder is created once; read the latest props through a ref.
@@ -166,63 +168,80 @@ export function BottomBar(props: Props) {
       </View>
 
       <View style={styles.toolbar}>
-        <ToolButton label="Back" disabled={!canGoBack} onPress={props.onBack}>
-          <ChevronLeft size={26} color={canGoBack ? colors.text : colors.textTertiary} />
-        </ToolButton>
-        <ToolButton label="Forward" disabled={!canGoForward} onPress={props.onForward}>
-          <ChevronRight size={26} color={canGoForward ? colors.text : colors.textTertiary} />
-        </ToolButton>
-        <ToolButton label="New tab" onPress={props.onNewTab}>
-          <Plus size={24} color={colors.text} />
-        </ToolButton>
-        <ToolButton
-          label={`Show tabs, ${tabCount} open`}
+        {/* Back and forward share one capsule: they're a pair, not two of five. */}
+        <View style={styles.navPair}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            disabled={!canGoBack}
+            onPress={props.onBack}
+            style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
+          >
+            <ChevronLeft size={22} color={canGoBack ? colors.text : colors.textTertiary} />
+          </Pressable>
+          <View style={styles.navDivider} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Forward"
+            disabled={!canGoForward}
+            onPress={props.onForward}
+            style={({ pressed }) => [styles.navHalf, pressed && styles.navHalfPressed]}
+          >
+            <ChevronRight size={22} color={canGoForward ? colors.text : colors.textTertiary} />
+          </Pressable>
+        </View>
+
+        {/* Tabs live in Spaces, so the way into them says which Space you're in. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Show tabs, ${spaceName}, ${tabCount} open`}
+          accessibilityHint="Long press for tab actions"
           onPress={props.onShowTabs}
           onLongPress={props.onTabsLongPress}
+          style={({ pressed }) => [
+            styles.spaceChip,
+            {
+              backgroundColor: withAlpha(spaceColor, pressed ? 0.26 : 0.14),
+              borderColor: withAlpha(spaceColor, 0.38),
+            },
+          ]}
         >
-          <View style={styles.tabCount}>
-            <Text style={styles.tabCountText}>{tabCount > 99 ? ':D' : tabCount}</Text>
+          <View style={[styles.spaceDot, { backgroundColor: spaceColor }]} />
+          <Text style={styles.spaceName} numberOfLines={1}>
+            {spaceName}
+          </Text>
+          <View style={[styles.spaceCount, { backgroundColor: withAlpha(spaceColor, 0.3) }]}>
+            <Text style={styles.spaceCountText}>{tabCount > 99 ? '99+' : tabCount}</Text>
           </View>
-        </ToolButton>
-        <ToolButton label="More" onPress={props.onMenu}>
-          <Ellipsis size={24} color={colors.text} />
-        </ToolButton>
+        </Pressable>
+
+        <View style={styles.trailing}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="More"
+            onPress={props.onMenu}
+            style={({ pressed }) => [styles.roundButton, pressed && styles.roundButtonPressed]}
+          >
+            <Ellipsis size={20} color={colors.text} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="New tab"
+            onPress={props.onNewTab}
+            style={({ pressed }) => [styles.newTab, pressed && styles.newTabPressed]}
+          >
+            <Plus size={22} color={colors.background} strokeWidth={2.5} />
+          </Pressable>
+        </View>
       </View>
     </View>
-  );
-}
-
-function ToolButton({
-  label,
-  disabled,
-  onPress,
-  onLongPress,
-  children,
-}: {
-  label: string;
-  disabled?: boolean;
-  onPress: () => void;
-  onLongPress?: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={disabled}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      style={({ pressed }) => [styles.toolButton, pressed && styles.toolButtonPressed]}
-    >
-      {children}
-    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    borderTopColor: colors.hairline,
   },
   addressRow: {
     flexDirection: 'row',
@@ -263,28 +282,68 @@ const styles = StyleSheet.create({
   placeholder: { color: colors.textTertiary, fontWeight: '400' },
   toolbar: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    height: 48,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    gap: 10,
   },
-  toolButton: {
-    width: 52,
+  navPair: {
+    flexDirection: 'row',
+    alignItems: 'center',
     height: 40,
+    borderRadius: radius.pill,
+    backgroundColor: colors.raised,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    overflow: 'hidden',
+  },
+  navHalf: { width: 46, height: 40, alignItems: 'center', justifyContent: 'center' },
+  navHalfPressed: { backgroundColor: colors.fill },
+  navDivider: { width: StyleSheet.hairlineWidth, height: 20, backgroundColor: colors.border },
+  spaceChip: {
+    flex: 1,
+    minWidth: 0,
+    height: 40,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
   },
-  toolButtonPressed: { backgroundColor: colors.fill },
-  tabCount: {
-    minWidth: 24,
-    height: 24,
-    paddingHorizontal: 4,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: colors.text,
+  spaceDot: { width: 8, height: 8, borderRadius: 4 },
+  spaceName: { flexShrink: 1, color: colors.text, fontSize: 15, fontWeight: '600' },
+  spaceCount: {
+    minWidth: 26,
+    height: 26,
+    paddingHorizontal: 7,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tabCountText: { color: colors.text, fontSize: 12, fontWeight: '700' },
+  spaceCountText: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  trailing: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  roundButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.raised,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+  },
+  roundButtonPressed: { backgroundColor: colors.border },
+  newTab: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accent,
+  },
+  newTabPressed: { opacity: 0.8 },
 });

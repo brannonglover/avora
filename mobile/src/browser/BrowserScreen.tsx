@@ -573,6 +573,8 @@ export function BrowserScreen() {
         <BottomBar
           tab={activeTab}
           tabCount={tabs.length}
+          spaceName={activeSpace?.name || 'Tabs'}
+          spaceColor={activeSpace?.color || colors.accent}
           hasPrevTab={tabs[0]?.id !== activeTab.id}
           progress={nav.progress}
           loading={nav.loading}

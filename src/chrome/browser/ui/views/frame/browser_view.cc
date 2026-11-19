@@ -210,6 +210,7 @@
 #include "chrome/browser/ui/views/avora/avora_parked_pin_view.h"
 #include "chrome/browser/ui/views/avora/avora_page_edge_handle.h"
 #include "chrome/browser/ui/views/avora/avora_toast_view.h"
+#include "chrome/browser/ui/views/avora/avora_quick_nav_commands.h"
 #include "chrome/browser/ui/views/avora/avora_quick_nav_view.h"
 #include "chrome/browser/ui/views/avora/avora_space_gesture_controller.h"
 #include "chrome/browser/ui/views/avora/avora_sidebar_view.h"
@@ -1279,6 +1280,8 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
             base::BindRepeating(&BrowserView::NavigateAvoraAddressBar,
                                 base::Unretained(this)),
             base::BindRepeating(&BrowserView::HideAvoraQuickNav,
+                                base::Unretained(this)),
+            base::BindRepeating(&avora::RunQuickNavCommand,
                                 base::Unretained(this))));
 
     // Link preview overlay (target="_blank" interception).
@@ -7000,6 +7003,18 @@ void BrowserView::OnAvoraSidebarAnimationProgressed(
   InvalidateLayout();
 }
 
+namespace {
+
+// The site the overlay's commands would clear, shown beside them.
+std::string AvoraQuickNavCommandSite(BrowserWindowInterface* browser) {
+  content::WebContents* target =
+      avora::GetQuickNavCommandTarget(browser->GetTabStripModel());
+  return target ? avora::ClearableSiteForURL(target->GetLastCommittedURL())
+                : std::string();
+}
+
+}  // namespace
+
 void BrowserView::ShowAvoraQuickNav() {
   if (!avora_quick_nav_) {
     return;
@@ -7023,7 +7038,7 @@ void BrowserView::ShowAvoraQuickNav() {
   avora_quick_nav_->SetBoundsRect(
       multi_contents_view_ ? multi_contents_view_->bounds()
                            : GetLocalBounds());
-  avora_quick_nav_->Show(current_url);
+  avora_quick_nav_->Show(current_url, AvoraQuickNavCommandSite(browser_));
   ReorderChildView(avora_quick_nav_, children().size());
 
   // Trigger a layout pass so the overlay gets its authoritative bounds
@@ -7064,7 +7079,8 @@ void BrowserView::ShowAvoraQuickNavWithURL() {
   avora_quick_nav_->SetBoundsRect(
       multi_contents_view_ ? multi_contents_view_->bounds()
                            : GetLocalBounds());
-  avora_quick_nav_->ShowWithURL(url_text, current_url);
+  avora_quick_nav_->ShowWithURL(url_text, current_url,
+                                AvoraQuickNavCommandSite(browser_));
   ReorderChildView(avora_quick_nav_, children().size());
 
   // Trigger a layout pass so the overlay gets its authoritative bounds

@@ -56,6 +56,8 @@ source_set("avora") {
     "avora_pinned_section_view.h",
     "avora_pinned_url_dialog.cc",
     "avora_pinned_url_dialog.h",
+    "avora_quick_nav_commands.cc",
+    "avora_quick_nav_commands.h",
     "avora_quick_nav_view.cc",
     "avora_quick_nav_view.h",
     "avora_resize_readout_view.cc",

@@ -10,6 +10,7 @@
 #include "chrome/browser/avora/avora_omnibox_bridge.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/avora/avora_quick_nav_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/avora/avora_window_theme.h"
 #include "components/favicon/core/favicon_service.h"
@@ -26,13 +27,13 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/range/range.h"
+#include "ui/gfx/vector_icon_types.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/image_view.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
@@ -150,11 +151,12 @@ END_METADATA
 
 // ── Result row (icon | title | trailing detail) ─────────────────────────────
 
-// One row of the list, used for favorites, history matches and search
-// suggestions alike.  Search rows draw the search glyph and no trailing
-// detail; navigations draw a favicon and their domain.  Keeping these as one
-// class is what lets selection, favicon loading and keyboard traversal treat
-// every row the same regardless of where it came from.
+// One row of the list, used for favorites, history matches, search
+// suggestions and commands alike.  Search and command rows draw a glyph (the
+// search glyph, or the command's); navigations draw a favicon and their
+// domain.  Keeping these as one class is what lets selection, favicon loading
+// and keyboard traversal treat every row the same regardless of where it came
+// from.
 class ResultRowView : public views::Button {
   METADATA_HEADER(ResultRowView, views::Button)
 
@@ -162,9 +164,9 @@ class ResultRowView : public views::Button {
   ResultRowView(const std::string& value,
                 const std::u16string& title,
                 const std::u16string& detail,
-                bool is_search,
+                const gfx::VectorIcon* glyph,
                 base::RepeatingCallback<void(const std::string&)> on_click)
-      : value_(value), is_search_(is_search) {
+      : value_(value), glyph_(glyph) {
     SetCallback(base::BindRepeating(std::move(on_click), value));
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 0)));
 
@@ -174,7 +176,7 @@ class ResultRowView : public views::Button {
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
-    // Icon — the search glyph up front for queries, otherwise left blank
+    // Icon — the row's glyph for queries and commands, otherwise left blank
     // until the favicon for this row arrives.
     auto icon = std::make_unique<views::ImageView>();
     icon->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
@@ -215,20 +217,22 @@ class ResultRowView : public views::Button {
     views::Button::OnThemeChanged();
     title_label_->SetEnabledColor(WindowTheme::PaletteFor(this).text);
     detail_label_->SetEnabledColor(DomainColor(this));
-    if (is_search_) {
+    if (glyph_) {
       icon_view_->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kSearchIcon, DomainColor(this), kFaviconSize));
+          *glyph_, DomainColor(this), kFaviconSize));
     }
   }
 
   // Identity of the row, and the string committed when it is chosen: the
-  // destination URL for navigations, the raw query for searches.
+  // destination URL for navigations, the raw query for searches, the name for
+  // commands.
   const std::string& value() const { return value_; }
 
-  bool is_search() const { return is_search_; }
+  // True for rows that draw a glyph rather than a site's favicon.
+  bool has_glyph() const { return glyph_ != nullptr; }
 
   void SetFavicon(const gfx::ImageSkia& icon) {
-    if (icon.isNull() || !icon_view_ || is_search_) {
+    if (icon.isNull() || !icon_view_ || glyph_) {
       return;
     }
     favicon_ = icon;
@@ -279,7 +283,7 @@ class ResultRowView : public views::Button {
 
  private:
   std::string value_;
-  bool is_search_ = false;
+  raw_ptr<const gfx::VectorIcon> glyph_ = nullptr;
   gfx::ImageSkia favicon_;
   bool selected_ = false;
   raw_ptr<views::ImageView> icon_view_ = nullptr;
@@ -299,7 +303,7 @@ std::unique_ptr<ResultRowView> MakeUrlRow(
   const std::string domain = StripUrlPrefix(url);
   return std::make_unique<ResultRowView>(
       url, base::UTF8ToUTF16(title.empty() ? domain : title),
-      base::UTF8ToUTF16(domain), /*is_search=*/false, std::move(on_click));
+      base::UTF8ToUTF16(domain), /*glyph=*/nullptr, std::move(on_click));
 }
 
 }  // namespace
@@ -311,10 +315,12 @@ std::unique_ptr<ResultRowView> MakeUrlRow(
 AvoraQuickNavView::AvoraQuickNavView(BrowserWindowInterface* browser,
                                      avora::WindowSpaceState* window_space_state,
                                      QuickNavCommitCallback commit_cb,
-                                     QuickNavDismissCallback dismiss_cb)
+                                     QuickNavDismissCallback dismiss_cb,
+                                     QuickNavCommandCallback command_cb)
     : browser_(browser),
       commit_cb_(std::move(commit_cb)),
       dismiss_cb_(std::move(dismiss_cb)),
+      command_cb_(std::move(command_cb)),
       window_space_state_(window_space_state) {
   // The overlay itself needs a layer for proper event handling.
   SetPaintToLayer();
@@ -367,18 +373,22 @@ AvoraQuickNavView::~AvoraQuickNavView() {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-void AvoraQuickNavView::Show(const std::string& current_page_url) {
+void AvoraQuickNavView::Show(const std::string& current_page_url,
+                             const std::string& command_site) {
   // CMD+T already created a new tab before showing this overlay,
   // so navigate that tab in-place rather than opening yet another one.
   open_in_new_tab_ = false;
   current_page_url_ = current_page_url;
+  command_site_ = command_site;
   ShowOverlay(std::u16string());
 }
 
 void AvoraQuickNavView::ShowWithURL(const std::u16string& url_text,
-                                    const std::string& current_page_url) {
+                                    const std::string& current_page_url,
+                                    const std::string& command_site) {
   open_in_new_tab_ = false;
   current_page_url_ = current_page_url;
+  command_site_ = command_site;
   ShowOverlay(url_text);
 }
 
@@ -398,6 +408,7 @@ void AvoraQuickNavView::ShowOverlay(const std::u16string& url_text) {
 
   user_text_ = url_text;
   deleting_ = false;
+  suppress_completion_ = false;
 
   if (input_field_) {
     updating_from_selection_ = true;
@@ -421,9 +432,11 @@ void AvoraQuickNavView::Hide() {
   selected_index_ = -1;
   row_values_.clear();
   current_page_url_.clear();
+  command_site_.clear();
   showing_matches_ = false;
   user_text_.clear();
   deleting_ = false;
+  suppress_completion_ = false;
   if (omnibox_bridge_) {
     omnibox_bridge_->Stop();
   }
@@ -436,6 +449,18 @@ void AvoraQuickNavView::Hide() {
 
 bool AvoraQuickNavView::IsShowing() const {
   return GetVisible();
+}
+
+void AvoraQuickNavView::RunCommand(SiteDataCommand command) {
+  // Copied first: dismissing resets the overlay, and running the command can
+  // switch tabs underneath it.
+  QuickNavCommandCallback command_cb = command_cb_;
+  if (dismiss_cb_) {
+    dismiss_cb_.Run();
+  }
+  if (command_cb) {
+    command_cb.Run(command);
+  }
 }
 
 // ── View overrides ──────────────────────────────────────────────────────────
@@ -497,6 +522,12 @@ bool AvoraQuickNavView::HandleKeyEvent(views::Textfield* sender,
 
   if (key_event.key_code() == ui::VKEY_RETURN) {
     std::u16string text(sender->GetText());
+    // The field holds a command's full name whether it was typed, completed
+    // by type-ahead, or picked from the list.
+    if (std::optional<SiteDataCommand> command = MatchSiteDataCommand(text)) {
+      RunCommand(*command);
+      return true;
+    }
     if (!text.empty() && commit_cb_) {
       commit_cb_.Run(text, open_in_new_tab_);
     }
@@ -539,6 +570,7 @@ void AvoraQuickNavView::ContentsChanged(views::Textfield* sender,
 
   const bool prevent_inline_autocomplete = deleting_;
   deleting_ = false;
+  suppress_completion_ = prevent_inline_autocomplete;
 
   if (new_contents.empty()) {
     if (omnibox_bridge_) {
@@ -718,7 +750,7 @@ void AvoraQuickNavView::UpdateSelection(int new_index) {
 
     // Mirror the selected row's favicon into the field.
     const gfx::ImageSkia& row_icon = row->favicon();
-    if (input_favicon_ && !row->is_search() && !row_icon.isNull()) {
+    if (input_favicon_ && !row->has_glyph() && !row_icon.isNull()) {
       gfx::ImageSkia resized = gfx::ImageSkiaOperations::CreateResizedImage(
           row_icon, skia::ImageOperations::RESIZE_BEST,
           gfx::Size(kInputFaviconSize, kInputFaviconSize));
@@ -875,6 +907,11 @@ void AvoraQuickNavView::LoadInputFavicon(const std::string& url) {
 }
 
 void AvoraQuickNavView::OnRowChosen(const std::string& value) {
+  if (std::optional<SiteDataCommand> command =
+          MatchSiteDataCommand(base::UTF8ToUTF16(value))) {
+    RunCommand(*command);
+    return;
+  }
   if (commit_cb_) {
     commit_cb_.Run(base::UTF8ToUTF16(value), open_in_new_tab_);
   }
@@ -896,8 +933,26 @@ void AvoraQuickNavView::OnOmniboxResults(const OmniboxResults& results) {
   }
 
   RebuildMatchList(results.suggestions);
-  ApplyInlineCompletion(results.query, results.inline_completion,
-                        results.inline_completion_url);
+
+  // While the text could still be a command, type-ahead completes the command
+  // rather than a site, so Enter on "clear coo" cannot land on some
+  // "clear-cookbook.com".  It completes only once a single command is left,
+  // and never on a deletion.
+  const std::vector<SiteDataCommand> commands =
+      SiteDataCommandsStartingWith(results.query);
+  if (commands.empty()) {
+    ApplyInlineCompletion(results.query, results.inline_completion,
+                          results.inline_completion_url);
+    return;
+  }
+  std::u16string completion;
+  if (commands.size() == 1 && !suppress_completion_) {
+    const std::u16string name = SiteDataCommandName(commands.front());
+    const size_t typed =
+        base::TrimWhitespace(results.query, base::TRIM_LEADING).size();
+    completion = name.substr(typed);
+  }
+  ApplyInlineCompletion(results.query, completion, GURL());
 }
 
 void AvoraQuickNavView::RebuildMatchList(
@@ -906,10 +961,28 @@ void AvoraQuickNavView::RebuildMatchList(
     return;
   }
 
-  std::vector<std::string> values;
-  values.reserve(suggestions.size());
+  // Commands the text could be the start of lead the list.  A suggestion to
+  // search for a command's own name is dropped: its row would hold the same
+  // text, and choosing it would run the command anyway.
+  const std::vector<SiteDataCommand> commands =
+      SiteDataCommandsStartingWith(user_text_);
+  std::vector<const OmniboxSuggestion*> kept;
+  kept.reserve(suggestions.size());
   for (const auto& suggestion : suggestions) {
-    values.push_back(suggestion.commit_value);
+    if (!commands.empty() && suggestion.is_search &&
+        MatchSiteDataCommand(base::UTF8ToUTF16(suggestion.commit_value))) {
+      continue;
+    }
+    kept.push_back(&suggestion);
+  }
+
+  std::vector<std::string> values;
+  values.reserve(commands.size() + kept.size());
+  for (SiteDataCommand command : commands) {
+    values.push_back(base::UTF16ToUTF8(SiteDataCommandName(command)));
+  }
+  for (const OmniboxSuggestion* suggestion : kept) {
+    values.push_back(suggestion->commit_value);
   }
 
   // Later passes usually repeat the earlier ones verbatim.  Rebuilding anyway
@@ -930,12 +1003,23 @@ void AvoraQuickNavView::RebuildMatchList(
   auto on_click = base::BindRepeating(&AvoraQuickNavView::OnRowChosen,
                                       base::Unretained(this));
 
-  for (const auto& suggestion : suggestions) {
+  const std::u16string command_detail =
+      command_site_.empty() ? u"No site open"
+                            : base::UTF8ToUTF16(command_site_);
+  for (SiteDataCommand command : commands) {
+    const std::u16string name = SiteDataCommandName(command);
+    grid_container_->AddChildView(std::make_unique<ResultRowView>(
+        base::UTF16ToUTF8(name), name, command_detail,
+        &SiteDataCommandIcon(command), on_click));
+  }
+
+  for (const OmniboxSuggestion* suggestion : kept) {
     auto* row = grid_container_->AddChildView(std::make_unique<ResultRowView>(
-        suggestion.commit_value, suggestion.title, suggestion.subtitle,
-        suggestion.is_search, on_click));
-    if (!suggestion.is_search) {
-      LoadFavicon(row, suggestion.destination_url.spec());
+        suggestion->commit_value, suggestion->title, suggestion->subtitle,
+        suggestion->is_search ? &vector_icons::kSearchIcon : nullptr,
+        on_click));
+    if (!suggestion->is_search) {
+      LoadFavicon(row, suggestion->destination_url.spec());
     }
   }
 

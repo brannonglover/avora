@@ -10,6 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "chrome/browser/avora/avora_clear_site_data.h"
 #include "chrome/browser/avora/avora_favorites.h"
 #include "chrome/browser/avora/avora_omnibox_bridge.h"
 #include "chrome/browser/avora/avora_window_space.h"
@@ -42,9 +43,17 @@ using QuickNavCommitCallback =
 // Callback invoked when the overlay should be dismissed.
 using QuickNavDismissCallback = base::RepeatingClosure;
 
+// Callback invoked when the user runs a typed command ("Clear Cache") instead
+// of navigating.  The overlay has already been dismissed when it runs.
+using QuickNavCommandCallback = base::RepeatingCallback<void(SiteDataCommand)>;
+
 // Full-window overlay triggered by CMD+T.  Shows a centered search input
 // field with a grid of favorite-site favicons (32 px) below it.  Pressing
 // Enter navigates; pressing Escape or clicking the backdrop dismisses.
+//
+// The field also takes commands.  Typing the start of one ("clear") lists the
+// matching commands above the suggestions, and Enter on a command's full name
+// -- typed, type-ahead completed, or picked from the list -- runs it.
 class AvoraQuickNavView : public views::View,
                           public views::TextfieldController,
                           public FavoritesManager::Observer,
@@ -74,17 +83,22 @@ class AvoraQuickNavView : public views::View,
   AvoraQuickNavView(BrowserWindowInterface* browser,
                     avora::WindowSpaceState* window_space_state,
                     QuickNavCommitCallback commit_cb,
-                    QuickNavDismissCallback dismiss_cb);
+                    QuickNavDismissCallback dismiss_cb,
+                    QuickNavCommandCallback command_cb);
   AvoraQuickNavView(const AvoraQuickNavView&) = delete;
   AvoraQuickNavView& operator=(const AvoraQuickNavView&) = delete;
   ~AvoraQuickNavView() override;
 
   // Show the overlay (CMD+T). Input is empty; current URL appears in list.
-  void Show(const std::string& current_page_url);
+  // |command_site| is the site a command would act on, shown beside the
+  // command rows; empty when there is none.
+  void Show(const std::string& current_page_url,
+            const std::string& command_site);
 
   // Show with the given text pre-filled and selected (CMD+L).
   void ShowWithURL(const std::u16string& url_text,
-                   const std::string& current_page_url);
+                   const std::string& current_page_url,
+                   const std::string& command_site);
 
   // Hide the overlay.
   void Hide();
@@ -113,6 +127,9 @@ class AvoraQuickNavView : public views::View,
  private:
   // Common implementation for Show() and ShowWithURL().
   void ShowOverlay(const std::u16string& url_text);
+
+  // Dismiss the overlay and hand |command| to the browser to run.
+  void RunCommand(SiteDataCommand command);
 
   // Build the centered card containing input + favorites grid.
   void BuildCard();
@@ -163,6 +180,10 @@ class AvoraQuickNavView : public views::View,
   raw_ptr<BrowserWindowInterface> browser_;
   QuickNavCommitCallback commit_cb_;
   QuickNavDismissCallback dismiss_cb_;
+  QuickNavCommandCallback command_cb_;
+
+  // The site a command would act on, shown on the command rows.
+  std::string command_site_;
 
   // Backdrop child (has the blur layer).
   raw_ptr<views::View> backdrop_ = nullptr;
@@ -215,6 +236,10 @@ class AvoraQuickNavView : public views::View,
   // Set when the last key pressed was Backspace or Delete.  Type-ahead is
   // suppressed for that pass so deleting a character does not put it back.
   bool deleting_ = false;
+
+  // Whether the autocomplete pass now running was started by a deletion.
+  // Command type-ahead honours it the same way Chromium's completion does.
+  bool suppress_completion_ = false;
 
   base::CancelableTaskTracker cancelable_task_tracker_;
   base::WeakPtrFactory<AvoraQuickNavView> weak_factory_{this};

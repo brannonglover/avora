@@ -14,6 +14,8 @@ source_set("space_theme") {
 
 source_set("avora") {
   sources = [
+    "avora_clear_site_data.cc",
+    "avora_clear_site_data.h",
     "avora_tab_guid.cc",
     "avora_tab_guid.h",
     "avora_tab_guid_session_handler.cc",
@@ -175,6 +177,7 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
+    "avora_clear_site_data_unittest.cc",
     "avora_github_provider_unittest.cc",
     "avora_import_provenance_unittest.cc",
     "avora_local_user_unittest.cc",
@@ -190,7 +193,9 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/test:test_support",
-    "//testing/gtest",    "//ui/gfx",
+    "//testing/gtest",
+    "//ui/gfx",
+    "//url",
   ]
 }
 
