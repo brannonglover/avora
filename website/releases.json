@@ -1,5 +1,22 @@
 [
   {
+    "version": "1.8.0",
+    "chromium": "155.0.8038.0",
+    "file": "Avora-1.8.0-arm64.dmg",
+    "sizeBytes": 190707059,
+    "sha256": "a2015f969f77a12764afedad1b5c2c779e39e85648058c2ca019cc25d8739213",
+    "notarized": true,
+    "edSignature": "p9sKf5JhiKYVkKFjEanBiIilpcdjMN6nktQVK0DLB3xINfz3p9dUmSKdXjyHPcyQyvgkJz8cP3VO9gvvsVFGDQ==",
+    "gitSha": "5ff2686c441049cf0d8d9c9b89ceab8793ddcf57",
+    "title": null,
+    "bullets": [
+      "Clear Spaces and tabs from a device when signing out."
+    ],
+    "status": "published",
+    "createdAt": "2026-11-20T15:24:59.527Z",
+    "publishedAt": "2026-11-20T15:25:46.229Z"
+  },
+  {
     "version": "1.6.0",
     "chromium": "155.0.8038.0",
     "file": "Avora-1.6.0-arm64.dmg",
