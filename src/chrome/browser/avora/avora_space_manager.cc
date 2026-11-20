@@ -243,6 +243,15 @@ std::string SpaceManager::CreateSpace(const std::string& name,
 }
 
 void SpaceManager::RemoveSpace(const std::string& id) {
+  RemoveSpaceImpl(id, /*release_identity=*/true);
+}
+
+void SpaceManager::RemoveSpaceKeepingIdentity(const std::string& id) {
+  RemoveSpaceImpl(id, /*release_identity=*/false);
+}
+
+void SpaceManager::RemoveSpaceImpl(const std::string& id,
+                                   bool release_identity) {
   RefreshCacheIfNeeded();
   auto spaces = cached_spaces_;
 
@@ -289,7 +298,9 @@ void SpaceManager::RemoveSpace(const std::string& id) {
 
   // After the write: retiring the identity notifies the identity store's own
   // observers, and they must not see a Space list that still has this Space.
-  ReleaseIdentity(removed_profile_id, cached_spaces_);
+  if (release_identity) {
+    ReleaseIdentity(removed_profile_id, cached_spaces_);
+  }
 
   if (was_active && !cached_spaces_.empty()) {
     for (const auto& space : cached_spaces_) {
@@ -551,6 +562,26 @@ void SpaceManager::SetSpaceProfile(const std::string& id,
   }
   SaveSpaces(spaces);
   NotifySpacesChanged();
+}
+
+void SpaceManager::AdoptIdentity(const std::string& id,
+                                 const std::string& profile_id) {
+  RefreshCacheIfNeeded();
+  auto spaces = cached_spaces_;
+  std::string previous;
+  for (auto& space : spaces) {
+    if (space.id == id) {
+      previous = space.profile_id;
+      space.profile_id = profile_id;
+      break;
+    }
+  }
+  if (previous.empty() || previous == profile_id) {
+    return;
+  }
+  SaveSpaces(spaces);
+  NotifySpacesChanged();
+  ReleaseIdentity(previous, cached_spaces_);
 }
 
 void SpaceManager::ReorderSpace(const std::string& id, int new_index) {

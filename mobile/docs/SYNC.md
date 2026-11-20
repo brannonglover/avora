@@ -115,8 +115,7 @@ Sign Out. It needs no service-role key in the app:
    have uploaded one after step 1), and the app goes back to step 1 up to twice
    more.
 3. The app signs out locally and the Account screen shows the sign-in form.
-   The phone's tabs stay on the phone, detached as after Sign Out. Realtime
-   doesn't deliver the row deletions to it, so nothing is closed locally.
+   As after Sign Out, the phone's Spaces and tabs are cleared.
 
 Other devices keep working from their access token until it expires (an hour
 at most), then fail to refresh and should treat that as signed out. Signing in
@@ -257,9 +256,21 @@ already exists.
 - Quitting, closing the last window or crashing must never be uploaded as
   closing tabs.
 
+### Signing out
+
+A device's Spaces and tabs belong to the account, so signing out removes them
+from the device; they come back on the next sign-in. Otherwise they would merge
+into whichever account signed in next. The phone first sends any queued
+changes. If they can't be sent, it says so and asks before signing out, since
+they'd be lost. It then goes back to a fresh install's single "Personal" Space
+and start page, and clears its recently closed tabs too. A phone that quit
+before clearing clears on its next launch. A Mac does the same and also sets
+each Space's website sign-ins aside for the account (`docs/TAB_SYNC.md`).
+
 ### First sign-in on a device that already has tabs
 
-Merge, never replace. A local Space whose name matches an account Space
+Only tabs opened while signed out can be here, since signing out clears the
+rest. Merge, never replace. A local Space whose name matches an account Space
 (ignoring case) becomes that Space; the other local Spaces are uploaded. Within
 a Space, a local item matching an existing item of the same `kind` and `url`
 adopts that item's id; the rest are uploaded. If the account has no Spaces, the

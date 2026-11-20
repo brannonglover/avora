@@ -9,6 +9,8 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/task_environment.h"
+#include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_profile.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_space_theme.h"
@@ -25,6 +27,7 @@ class AvoraSharedModelsTest : public testing::Test {
     SpaceManager::RegisterProfilePrefs(prefs_.registry());
     SidebarItemStore::RegisterProfilePrefs(prefs_.registry());
     SharedStore::RegisterProfilePrefs(prefs_.registry());
+    SharedModels::RegisterProfilePrefs(prefs_.registry());
   }
 
   // A server copy of Space `id`, as GET /rest/v1/spaces returns it.
@@ -137,6 +140,89 @@ TEST_F(AvoraSharedModelsTest, RemoteUrlEditKeepsTheItem) {
   EXPECT_EQ(item->title, "new.example/inbox");
   EXPECT_EQ(item->type, SidebarItemType::kPinned);
   EXPECT_EQ(items.GetItems(space, SidebarItemType::kPinned).size(), 1u);
+}
+
+// Signing out needs real identities, and the pinned-folder prefs a Space's
+// removal clears.
+class AvoraSharedModelsSignOutTest : public AvoraSharedModelsTest {
+ protected:
+  AvoraSharedModelsSignOutTest() {
+    BrowserProfileStore::RegisterProfilePrefs(prefs_.registry());
+    PinnedFoldersManager::RegisterProfilePrefs(prefs_.registry());
+  }
+};
+
+// Signing out leaves one new Space with a new identity, and sets the old
+// Spaces' identities aside for the account: they come back when it signs in
+// again, and never go to another account.
+TEST_F(AvoraSharedModelsSignOutTest, SignOutParksIdentitiesForTheAccount) {
+  SharedModels models(&prefs_, base::DoNothing());
+  SpaceManager& spaces = models.space_manager();
+  const std::string first = spaces.GetSpaces().front().id;
+  const std::string first_identity = spaces.GetSpaces().front().profile_id;
+  const std::string work = spaces.CreateSpace("Work");
+  const std::string work_identity = spaces.GetSpaceById(work)->profile_id;
+  SidebarItemStore items(&prefs_);
+  items.AddItem(work, SidebarItemType::kPinned, "https://pinned.example/",
+                "Pinned");
+  SharedStore store(&prefs_);
+  store.Reset("account-a");
+
+  models.ClearForSignOut(store, "account-a");
+
+  ASSERT_EQ(spaces.GetSpaces().size(), 1u);
+  const Space fresh = spaces.GetSpaces().front();
+  EXPECT_NE(fresh.id, first);
+  EXPECT_NE(fresh.id, work);
+  EXPECT_NE(fresh.profile_id, first_identity);
+  EXPECT_NE(fresh.profile_id, work_identity);
+  EXPECT_TRUE(items.GetAllItems().empty());
+  // Kept, though no Space owns it now.
+  EXPECT_TRUE(BrowserProfileStore(&prefs_).GetProfileById(work_identity));
+
+  // Another account's Space of the same id gets a new identity.
+  store.Reset("account-b");
+  models.Apply(store,
+               ServerSpace(store, work, std::string(),
+                           "2026-11-20T10:00:00+00:00"),
+               {});
+  const std::string b_space = store.ToLocal(SharedTable::kSpaces, work);
+  ASSERT_TRUE(spaces.GetSpaceById(b_space));
+  EXPECT_NE(spaces.GetSpaceById(b_space)->profile_id, work_identity);
+  models.ClearForSignOut(store, "account-b");
+
+  // The account's own Space browses as it did, whether it comes down from the
+  // server...
+  store.Reset("account-a");
+  models.Apply(store,
+               ServerSpace(store, work, std::string(),
+                           "2026-11-20T11:00:00+00:00"),
+               {});
+  const std::string restored = store.ToLocal(SharedTable::kSpaces, work);
+  ASSERT_TRUE(spaces.GetSpaceById(restored));
+  EXPECT_EQ(spaces.GetSpaceById(restored)->profile_id, work_identity);
+
+  // ...or matches a Space here by name.
+  ASSERT_EQ(spaces.GetSpaces().size(), 2u);
+  const Space placeholder_space = spaces.GetSpaces()[0].id == restored
+                                      ? spaces.GetSpaces()[1]
+                                      : spaces.GetSpaces()[0];
+  const std::string placeholder = placeholder_space.id;
+  const std::string placeholder_identity = placeholder_space.profile_id;
+  const std::string json = base::StringPrintf(
+      R"([{"id": "%s", "name": "%s", "icon": "", "color": "",
+           "position": "a1", "updated_at": "2026-11-20T11:00:00+00:00",
+           "updated_by": "phone", "deleted_at": null}])",
+      first.c_str(), placeholder_space.name.c_str());
+  std::optional<base::Value> rows = base::JSONReader::Read(json, 0);
+  store.MergeFromServer(SharedTable::kSpaces, std::move(*rows).TakeList());
+  models.LinkMatching(store);
+  EXPECT_EQ(store.ToLocal(SharedTable::kSpaces, first), placeholder);
+  EXPECT_EQ(spaces.GetSpaceById(placeholder)->profile_id, first_identity);
+  // The placeholder's own identity had no other Space, so it is retired.
+  EXPECT_FALSE(BrowserProfileStore(&prefs_).GetProfileById(placeholder_identity));
+  EXPECT_TRUE(prefs_.GetDict(SharedModels::kParkedIdentitiesPref)
+                  .FindDict("account-a") == nullptr);
 }
 
 }  // namespace

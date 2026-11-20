@@ -18,6 +18,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { setPreviewsEnabled, usePreviewsEnabled } from '../browser/previews';
+import { sendUnsentChanges } from '../browser/tabs';
 import { colors, radius } from '../browser/theme';
 import { isReviewEmail, useAuth } from './auth';
 import { getDeviceId, updatedAgo, useDevices } from './devices';
@@ -218,24 +219,49 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
     getDeviceId().then(setThisDevice);
   }, []);
 
+  const [signingOut, setSigningOut] = useState(false);
+  const busy = deleting || signingOut;
+
+  const finishSignOut = () =>
+    signOut().then(onSignedOut, (e: unknown) => {
+      setSigningOut(false);
+      Alert.alert('Couldn’t sign out', e instanceof Error ? e.message : String(e));
+    });
+
+  // Signing out clears this phone, so whatever is still queued goes up first.
+  const runSignOut = async () => {
+    setSigningOut(true);
+    const unsent = await sendUnsentChanges();
+    if (!unsent) return finishSignOut();
+    const what = unsent === 1 ? 'A change on this phone hasn’t' : `${unsent} changes on this phone haven’t`;
+    Alert.alert(
+      'Some changes haven’t synced',
+      `${what} reached your account yet. If you sign out now, ${unsent === 1 ? 'it' : 'they'} will be lost. ` +
+        'Check your connection and try again.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => setSigningOut(false) },
+        { text: 'Sign Out Anyway', style: 'destructive', onPress: finishSignOut },
+      ],
+      { cancelable: true, onDismiss: () => setSigningOut(false) },
+    );
+  };
+
   const confirmSignOut = () =>
-    Alert.alert('Sign out?', 'Your tabs stay on this phone but stop syncing with your other devices.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: () =>
-          signOut().then(onSignedOut, (e: unknown) =>
-            Alert.alert('Couldn’t sign out', e instanceof Error ? e.message : String(e)),
-          ),
-      },
-    ]);
+    Alert.alert(
+      'Sign out?',
+      'Your Spaces and tabs will be removed from this phone. They stay in your account and come back when you ' +
+        'sign in again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign Out', style: 'destructive', onPress: runSignOut },
+      ],
+    );
 
   // Stays on this screen afterwards, which then shows the signed-out state.
   const runDelete = () => {
     setDeleting(true);
     deleteAccount().then(
-      () => Alert.alert('Account deleted', 'Your tabs are still on this phone.'),
+      () => Alert.alert('Account deleted', 'Your account and its Spaces and tabs are gone.'),
       (e: unknown) => {
         setDeleting(false);
         Alert.alert(
@@ -250,7 +276,7 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
     Alert.alert(
       'Delete your account?',
       'This permanently deletes your Avora account, the Spaces and tabs synced to it, and their tab previews, ' +
-        'on every device. Tabs on this phone stay here but stop syncing. This can’t be undone.',
+        'on every device, and removes them from this phone. This can’t be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete Account', style: 'destructive', onPress: runDelete },
@@ -308,14 +334,20 @@ function SignedIn({ email, onSignedOut }: { email: string; onSignedOut: () => vo
 
       <Pressable
         onPress={confirmSignOut}
-        disabled={deleting}
+        disabled={busy}
         style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: busy, busy: signingOut }}
       >
-        <Text style={styles.signOutText}>Sign Out</Text>
+        {signingOut ? (
+          <ActivityIndicator color={colors.danger} />
+        ) : (
+          <Text style={styles.signOutText}>Sign Out</Text>
+        )}
       </Pressable>
       <Pressable
         onPress={confirmDelete}
-        disabled={deleting}
+        disabled={busy}
         style={({ pressed }) => [styles.deleteAccount, pressed && styles.pressed]}
         accessibilityRole="button"
         accessibilityState={{ disabled: deleting, busy: deleting }}

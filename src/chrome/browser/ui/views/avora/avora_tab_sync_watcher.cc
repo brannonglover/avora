@@ -9,25 +9,34 @@
 #include "chrome/browser/avora/avora_tab_guid.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
 #include "chrome/browser/avora/avora_pinned_items.h"
+#include "chrome/browser/avora/avora_space_manager.h"
+#include "chrome/browser/avora/avora_tab_space.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sessions/session_restore.h"
+#include "chrome/browser/sessions/tab_restore_service_factory.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_materializer.h"
 #include "chrome/browser/ui/views/avora/avora_pinned_item_tab_marker.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
+#include "components/sessions/core/tab_restore_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/url_constants.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/base_window.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 
 namespace avora {
@@ -47,6 +56,13 @@ bool IsSharingBrowser(BrowserWindowInterface* browser) {
 bool IsQuitting() {
   return browser_shutdown::IsTryingToQuit() ||
          browser_shutdown::HasShutdownStarted();
+}
+
+void ClearRecentlyClosed(Profile* profile) {
+  if (sessions::TabRestoreService* restore =
+          TabRestoreServiceFactory::GetForProfileIfExisting(profile)) {
+    restore->ClearEntries();
+  }
 }
 
 TabSyncService* ServiceFor(Profile* profile) {
@@ -378,6 +394,70 @@ void TabSyncWatcher::RemovePinnedItem(Profile* profile,
   if (!unmarked) {
     pinned_folders.RemoveItemFromAllFolders(item_id);
   }
+}
+
+void TabSyncWatcher::ClearForSignOut(Profile* profile,
+                                     base::OnceClosure clear_models) {
+  // Entering the new Space opens a new tab for it in each window (the Space
+  // tab filter does that for an empty Space).
+  std::move(clear_models).Run();
+
+  std::vector<BrowserWindowInterface*> windows;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        if (IsSharingBrowser(browser) && browser->GetProfile() == profile &&
+            browser->GetTabStripModel()) {
+          windows.push_back(browser);
+        }
+        return true;
+      });
+  if (windows.empty()) {
+    return;
+  }
+
+  // The front window stays, on a tab of the new Space. Closing its other tabs
+  // never moves the front tab, so the filter has no reason to open another.
+  BrowserWindowInterface* const kept_window = windows.front();
+  TabStripModel* model = kept_window->GetTabStripModel();
+  const std::string space_id = [&] {
+    const SpaceManager spaces(profile->GetPrefs());
+    const Space* space = spaces.GetActiveSpace();
+    return space ? space->id : std::string();
+  }();
+  tabs::TabInterface* front = model->GetActiveTab();
+  if (!front || !front->GetContents() ||
+      GetTabSpaceId(front->GetContents()) != space_id) {
+    chrome::AddTabAt(kept_window, GURL(), -1, /*foreground=*/true);
+    front = model->GetActiveTab();
+  }
+  const tabs::TabHandle kept = front ? front->GetHandle() : tabs::TabHandle();
+  for (int i = model->count() - 1; i >= 0; --i) {
+    if (model->GetTabAtIndex(i) != kept.Get()) {
+      model->CloseWebContentsAt(i, TabCloseTypes::CLOSE_NONE);
+    }
+  }
+
+  // The others close whole. Closing a window isn't closing its tabs, which
+  // are copies of the kept window's (and gone from it now).
+  for (BrowserWindowInterface* window : windows) {
+    if (window != kept_window && window->GetWindow()) {
+      window->GetWindow()->Close();
+    }
+  }
+
+  // Reopening a closed tab mustn't bring the account's tabs back. Windows
+  // close a moment later, so their entries are cleared again after that.
+  ClearRecentlyClosed(profile);
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](Profile* profile) {
+            if (IsLiveProfile(profile)) {
+              ClearRecentlyClosed(profile);
+            }
+          },
+          profile),
+      base::Seconds(2));
 }
 
 }  // namespace avora

@@ -3,6 +3,7 @@
 #include "chrome/browser/avora/sync/avora_tab_sync_service.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <utility>
@@ -321,6 +322,12 @@ void TabSyncService::CancelSignIn() {
 }
 
 void TabSyncService::StartSession(AuthSession session) {
+  // Left here by an account whose session expired: not this account's to
+  // merge.
+  const std::string owner = profile_->GetPrefs()->GetString(kLocalOwnerPref);
+  if (!owner.empty() && owner != session.user_id) {
+    ClearAccountData();
+  }
   memory_only_ = store_->Save(session) == SessionStore::SaveResult::kMemoryOnly;
   pending_email_ = session.email;
   session_ = std::move(session);
@@ -406,6 +413,7 @@ void TabSyncService::StartSync(bool fresh_sign_in) {
   if (fresh_sign_in || shared_->user_id() != session_->user_id) {
     shared_->Reset(session_->user_id);
   }
+  profile_->GetPrefs()->SetString(kLocalOwnerPref, session_->user_id);
   device_row_written_ = false;
   failures_ = 0;
   UpsertDeviceRow();
@@ -978,6 +986,7 @@ std::vector<TabSyncService::TodayTab> TabSyncService::TodayTabsForSpace(
 // static
 void TabSyncService::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(kPreviewsEnabledPref, true);
+  registry->RegisterStringPref(kLocalOwnerPref, std::string());
 }
 
 bool TabSyncService::previews_enabled() const {
@@ -1218,6 +1227,11 @@ void TabSyncService::OnSyncFailed() {
 void TabSyncService::OnSyncSucceeded() {
   failures_ = 0;
   upload_failing_ = false;
+  if (last_result_ == Result::kUnsyncedChanges && !shared_->HasPending()) {
+    // They went up after all; signing out is safe again.
+    SetResult(Result::kNone);
+    unsynced_count_ = 0;
+  }
   last_upload_ = base::Time::Now();
   size_t count = 0;
   for (const SharedRow* row : shared_->Rows(SharedTable::kItems)) {
@@ -1232,7 +1246,7 @@ void TabSyncService::OnSyncSucceeded() {
 
 // ── Sign-out ────────────────────────────────────────────────────────────────
 
-void TabSyncService::SignOut() {
+void TabSyncService::SignOut(bool discard_unsynced) {
   if (busy_) {
     return;
   }
@@ -1240,9 +1254,16 @@ void TabSyncService::SignOut() {
     FinishSignOut(Result::kSignedOut);
     return;
   }
+  // A burst of model changes still settling is this device's too.
+  if (shared_->loaded()) {
+    ReconcileModels(/*diff_first=*/false);
+  }
   busy_ = true;
   signing_out_ = true;
-  // Nothing new goes up from here on.
+  final_push_tried_ = false;
+  discard_unsynced_ = discard_unsynced;
+  unsynced_count_ = 0;
+  // Nothing new is recorded from here on.
   StopSync();
   NotifyChanged();
   if (!pushing_) {
@@ -1251,8 +1272,33 @@ void TabSyncService::SignOut() {
 }
 
 void TabSyncService::ContinueSignOut() {
+  // Signing out clears this Mac, so whatever hasn't gone up goes now.
+  if (!discard_unsynced_ && session_ && shared_->HasPending()) {
+    if (!final_push_tried_) {
+      final_push_tried_ = true;
+      pushing_ = true;
+      WithFreshToken(base::BindOnce(&TabSyncService::SendPush,
+                                    weak_factory_.GetWeakPtr(),
+                                    /*retried=*/false));
+      return;
+    }
+    AbandonSignOut();
+    return;
+  }
   WithFreshToken(base::BindOnce(&TabSyncService::DeleteDeviceWithToken,
                                 weak_factory_.GetWeakPtr()));
+}
+
+void TabSyncService::AbandonSignOut() {
+  busy_ = false;
+  signing_out_ = false;
+  unsynced_count_ = shared_->PendingCount();
+  SetResult(Result::kUnsyncedChanges);
+  pull_timer_.Start(FROM_HERE, pull_interval_,
+                    base::BindRepeating(&TabSyncService::Pull,
+                                        base::Unretained(this)));
+  // Backs off and keeps trying to send them; notifies.
+  OnSyncFailed();
 }
 
 void TabSyncService::DeleteDeviceWithToken(
@@ -1286,9 +1332,12 @@ void TabSyncService::FinishSignOut(Result result) {
   busy_ = false;
   signing_out_ = false;
   StopSync();
-  // The account's rows are forgotten here; the tabs stay open.
-  shared_->Reset(std::string());
   session_.reset();
+  state_ = State::kSignedOut;
+  // Signed out first, so closing the tabs isn't taken for the user closing
+  // them; before the reset, which forgets the Spaces' shared ids.
+  ClearAccountData();
+  shared_->Reset(std::string());
   memory_only_ = false;
   store_->Clear();
   pending_email_.clear();
@@ -1296,8 +1345,31 @@ void TabSyncService::FinishSignOut(Result result) {
   last_upload_ = base::Time();
   uploaded_tab_count_ = 0;
   upload_failing_ = false;
+  unsynced_count_ = 0;
   SetResult(result);
   NotifyChanged();
+}
+
+void TabSyncService::ClearAccountData() {
+  PrefService* prefs = profile_->GetPrefs();
+  const std::string owner = prefs->GetString(kLocalOwnerPref);
+  if (owner.empty()) {
+    return;
+  }
+  prefs->ClearPref(kLocalOwnerPref);
+  deferred_today_.clear();
+  last_preview_.clear();
+  base::AutoReset<bool> applying(&applying_, true);
+  // Run synchronously by ClearForSignOut(), before the store is reset.
+  base::OnceClosure clear_models =
+      base::BindOnce(&SharedModels::ClearForSignOut,
+                     base::Unretained(models_.get()), std::cref(*shared_), owner);
+  TodayTabs* today_tabs = GetTodayTabs();
+  if (today_tabs && today_tabs->IsReady(profile_)) {
+    today_tabs->ClearForSignOut(profile_, std::move(clear_models));
+  } else {
+    std::move(clear_models).Run();
+  }
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
@@ -1315,6 +1387,7 @@ TabSyncService::Status TabSyncService::GetStatus() const {
   status.last_upload = last_upload_;
   status.uploaded_tab_count = uploaded_tab_count_;
   status.upload_failing = upload_failing_;
+  status.unsynced_count = unsynced_count_;
   return status;
 }
 

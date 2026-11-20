@@ -19,8 +19,8 @@ type Auth = {
   // Only for REVIEW_EMAIL; everyone else's account has no password.
   signInWithPassword: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  // Deletes the account and its synced data, then signs out. Tabs on this
-  // device stay, as after signing out.
+  // Deletes the account and its synced data, then signs out, which clears
+  // this device's Spaces and tabs.
   deleteAccount: () => Promise<void>;
 };
 

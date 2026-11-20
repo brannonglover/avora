@@ -14,6 +14,7 @@
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/sync/avora_shared_store.h"
 
+class PrefRegistrySimple;
 class PrefService;
 
 namespace avora::sync {
@@ -34,6 +35,13 @@ class SharedModels : public SpaceManagerObserver,
   // The projection scopes, for SharedStore::Reconcile().
   static constexpr char kSpacesScope[] = "spaces";
   static constexpr char kSidebarScope[] = "sidebar";
+
+  // Identities (BrowserProfile ids) set aside at sign-out, so an account's
+  // Spaces keep their website sign-ins when it signs in here again:
+  // {user_id: {shared Space id: profile id}}.
+  static constexpr char kParkedIdentitiesPref[] =
+      "avora.sync.parked_identities";
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   // Removes a pinned item, unmarking its open tab if it has one. Supplied by
   // the views layer, which owns the tab markers; without it the item is only
@@ -57,8 +65,15 @@ class SharedModels : public SpaceManagerObserver,
 
   // First sign-in: links local Spaces to account Spaces of the same name, and
   // local Favorites and pinned items to account items of the same kind and
-  // URL in the linked Space.
-  void LinkMatching(SharedStore& store) const;
+  // URL in the linked Space. A linked Space takes the account Space's parked
+  // identity, if it has one.
+  void LinkMatching(SharedStore& store);
+
+  // Signing out of `user_id`: parks each Space's identity under the account
+  // (by the Space's shared id), then removes every Space with its Favorites,
+  // pinned items and pinned folders, leaving one empty Space with a new
+  // identity, as on a fresh install.
+  void ClearForSignOut(const SharedStore& store, const std::string& user_id);
 
   // Applies changed server rows: Spaces first, then Favorites and pinned
   // items. Rows of other kinds are ignored.
@@ -82,6 +97,12 @@ class SharedModels : public SpaceManagerObserver,
   void ApplyItems(SharedStore& store, const std::vector<SharedRow>& rows);
   void RemoveItem(const SidebarItem& item);
   void RemoveSpace(const std::string& local_id);
+  // A Space's Favorites, pinned items and pinned-folder data.
+  void RemoveSpaceContents(const std::string& local_id);
+  // The identity parked for `shared_space_id` of the store's account, taken
+  // out of the pref; empty if there is none or it no longer exists.
+  std::string TakeParkedIdentity(const SharedStore& store,
+                                 const std::string& shared_space_id);
 
   raw_ptr<PrefService> prefs_;
   base::RepeatingClosure on_changed_;

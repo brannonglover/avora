@@ -45,6 +45,8 @@ const char* ResultName(TabSyncService::Result result) {
       return "session-expired";
     case TabSyncService::Result::kSignedOutDeviceNotRemoved:
       return "signed-out-device-not-removed";
+    case TabSyncService::Result::kUnsyncedChanges:
+      return "unsynced-changes";
   }
 }
 
@@ -76,6 +78,7 @@ base::DictValue AvoraSyncHandler::StatusForPage(
   }
   dict.Set("tabCount", static_cast<int>(status.uploaded_tab_count));
   dict.Set("uploadFailing", status.upload_failing);
+  dict.Set("unsyncedCount", static_cast<int>(status.unsynced_count));
   dict.Set("previewsEnabled", service->previews_enabled());
   return dict;
 }
@@ -146,10 +149,12 @@ void AvoraSyncHandler::HandleCancelSignIn(const base::ListValue& args) {
   }
 }
 
+// Takes an optional boolean: sign out even if changes couldn't be sent.
 void AvoraSyncHandler::HandleSignOut(const base::ListValue& args) {
   AllowJavascript();
   if (service_) {
-    service_->SignOut();
+    service_->SignOut(/*discard_unsynced=*/!args.empty() &&
+                      args[0].is_bool() && args[0].GetBool());
   }
 }
 

@@ -78,6 +78,8 @@ class TabSyncWatcher : public BrowserCollectionObserver,
               const std::vector<std::string>& before) override;
   void Remove(Profile* profile, const std::string& guid) override;
   void RemovePinnedItem(Profile* profile, const std::string& item_id) override;
+  void ClearForSignOut(Profile* profile,
+                       base::OnceClosure clear_models) override;
 
  private:
   class FrontTab;

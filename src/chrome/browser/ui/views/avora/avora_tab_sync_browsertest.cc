@@ -6,6 +6,7 @@
 // as rows, another device's rows coming down into the tab strip and sidebar,
 // and signing out.
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <string>
@@ -24,14 +25,17 @@
 #include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/avora/avora_sidebar_item.h"
+#include "chrome/browser/avora/avora_profile.h"
 #include "chrome/browser/avora/avora_space_manager.h"
 #include "chrome/browser/avora/avora_tab_guid.h"
+#include "chrome/browser/avora/sync/avora_shared_models.h"
 #include "chrome/browser/avora/sync/avora_shared_rows.h"
 #include "chrome/browser/avora/sync/avora_sync_config.h"
 #include "chrome/browser/avora/sync/avora_sync_session_store.h"
 #include "chrome/browser/avora/sync/avora_tab_sync_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -54,6 +58,7 @@ namespace {
 using sync::TabSyncService;
 
 constexpr char kEmail[] = "me@example.com";
+constexpr char kOtherEmail[] = "someone@example.com";
 constexpr char kCode[] = "123456";
 constexpr char kPhone[] = "00000000-0000-4000-8000-0000000000ff";
 
@@ -124,6 +129,20 @@ class FakeSupabase {
     return !deleted || deleted->is_none();
   }
 
+  // Which account the next sign-in gets.
+  void SetUser(std::string_view user_id, std::string_view email) {
+    base::AutoLock lock(lock_);
+    user_id_ = user_id;
+    email_ = email;
+  }
+
+  // Makes sync_spaces and sync_items fail, as when the server can't be
+  // reached.
+  void FailWrites(bool fail) {
+    base::AutoLock lock(lock_);
+    fail_writes_ = fail;
+  }
+
   // Another device (the phone) writing, through the same path as Avora.
   void PhoneWrites(const std::string& table, base::DictValue change) {
     base::AutoLock lock(lock_);
@@ -168,6 +187,10 @@ class FakeSupabase {
     } else if (path == "/rest/v1/spaces" || path == "/rest/v1/items") {
       body = Select(path.substr(std::string("/rest/v1/").size()),
                     std::string(resource.url.query()));
+    } else if ((path == "/rest/v1/rpc/sync_spaces" ||
+                path == "/rest/v1/rpc/sync_items") &&
+               fail_writes_) {
+      status = "503 Service Unavailable";
     } else if (path == "/rest/v1/rpc/sync_spaces" ||
                path == "/rest/v1/rpc/sync_items") {
       const std::string table =
@@ -263,11 +286,12 @@ class FakeSupabase {
     return sync::FormatServerTime(now);
   }
 
-  static std::string Session(std::string_view access, std::string_view refresh) {
+  std::string Session(std::string_view access, std::string_view refresh) {
     return base::StrCat(
         {R"({"access_token":")", access,
          R"(","token_type":"bearer","expires_in":3600,"refresh_token":")",
-         refresh, R"(","user":{"id":"user-1","email":")", kEmail, R"("}})"});
+         refresh, R"(","user":{"id":")", user_id_, R"(","email":")", email_,
+         R"("}})"});
   }
 
   const std::string host_;
@@ -275,6 +299,9 @@ class FakeSupabase {
   std::vector<Request> requests_;
   std::map<std::string, std::map<std::string, base::DictValue>> tables_;
   base::Time last_now_;
+  std::string user_id_ = "user-1";
+  std::string email_ = kEmail;
+  bool fail_writes_ = false;
   content::URLLoaderInterceptor interceptor_;
 };
 
@@ -330,10 +357,12 @@ class AvoraTabSyncBrowserTest : public InProcessBrowserTest {
                                              GURL("chrome://avora-settings")));
   }
 
+  // Empty while the page is (re)loading: signing out can reload Settings
+  // in the new Space's identity.
   std::string PageText(std::string_view id) {
     return content::EvalJs(active_contents(),
-                           base::StrCat({"document.getElementById('", id,
-                                         "').textContent"}))
+                           base::StrCat({"(document.getElementById('", id,
+                                         "') || {}).textContent || ''"}))
         .ExtractString();
   }
 
@@ -344,13 +373,13 @@ class AvoraTabSyncBrowserTest : public InProcessBrowserTest {
 
   // Signs in through the Account section of chrome://avora-settings, typing
   // into its real email and code fields.
-  void SignInThroughSettings() {
+  void SignInThroughSettings(std::string_view email = kEmail) {
     OpenSettings();
     ASSERT_TRUE(WaitForPageText("account-state", "Not signed in."));
     ASSERT_TRUE(content::ExecJs(
         active_contents(),
         base::StrCat({"document.getElementById('account-email').value = '",
-                      kEmail,
+                      email,
                       "';"
                       "document.getElementById('account-send').click();"})));
     ASSERT_TRUE(WaitForPageText("account-state", "Enter the code sent to"));
@@ -361,6 +390,56 @@ class AvoraTabSyncBrowserTest : public InProcessBrowserTest {
                       "';"
                       "document.getElementById('account-verify').click();"})));
     ASSERT_TRUE(WaitForPageText("account-state", "Signed in as"));
+  }
+
+  // Signs out through the Account section, confirming, and waits for it.
+  void SignOutThroughSettings() {
+    OpenSettings();
+    ASSERT_TRUE(WaitForPageText("account-state", "Signed in as"));
+    ASSERT_TRUE(content::ExecJs(
+        active_contents(),
+        "document.getElementById('account-sign-out').click();"
+        "document.getElementById('account-sign-out-confirm').click();"));
+    WaitForSignOut();
+  }
+
+  // Signing out closes the Settings page too, so this watches the service.
+  void WaitForSignOut() {
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return service()->state() == TabSyncService::State::kSignedOut &&
+             !service()->GetStatus().busy;
+    }));
+  }
+
+  // Waits for the first full sync after signing in.
+  void WaitForSync() {
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return service()->GetStatus().last_upload != base::Time();
+    }));
+  }
+
+  // This profile's ordinary windows.
+  std::vector<BrowserWindowInterface*> Windows() {
+    std::vector<BrowserWindowInterface*> windows;
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [&](BrowserWindowInterface* window) {
+          if (window->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+              window->GetProfile() == browser()->GetProfile()) {
+            windows.push_back(window);
+          }
+          return true;
+        });
+    return windows;
+  }
+
+  // The identity of the Space named `name`, or empty.
+  std::string IdentityOf(std::string_view name) {
+    for (const Space& space : SpaceManager(prefs()).GetSpaces()) {
+      if (space.name == name) {
+        return space.profile_id;
+      }
+    }
+    return std::string();
   }
 
   // The tab showing `url` in this window, loaded or not.
@@ -615,20 +694,34 @@ IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignInMergesMatchingRows) {
   ASSERT_TRUE(base::test::RunUntil([&] { return !FindTab(shared); }));
 }
 
-// Signing out deletes the device row and stops sharing; the tabs stay.
-IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignOutStopsSharing) {
+// Signing out deletes the device row, stops sharing and clears this Mac: the
+// other windows and tabs close, leaving the Settings page in one fresh Space
+// with a new identity. The old Spaces' identities are set aside for the
+// account.
+IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignOutClearsThisMac) {
+  const GURL first = TestURL("first.example");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), first, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  BrowserWindowInterface* second = CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(second, TestURL("second.example")));
+  const std::string work = SpaceManager(prefs()).CreateSpace("Work");
+  std::vector<std::string> old_spaces;
+  std::vector<std::string> old_identities;
+  for (const Space& space : SpaceManager(prefs()).GetSpaces()) {
+    old_spaces.push_back(space.id);
+    old_identities.push_back(space.profile_id);
+  }
+
   SignInThroughSettings();
+  ASSERT_TRUE(WaitForOneRow(first));
   ASSERT_TRUE(base::test::RunUntil([&] {
     return !supabase_->RequestsTo("POST", "/rest/v1/devices").empty();
   }));
   const std::string device_id =
       prefs()->GetString(sync::SessionStore::kDeviceIdPref);
 
-  OpenSettings();
-  ASSERT_TRUE(WaitForPageText("account-state", "Signed in as"));
-  ASSERT_TRUE(content::ExecJs(
-      active_contents(), "document.getElementById('account-sign-out').click()"));
-  ASSERT_TRUE(WaitForPageText("account-state", "Not signed in."));
+  SignOutThroughSettings();
 
   std::vector<Request> deletes = supabase_->RequestsTo("DELETE", "/rest/v1/");
   ASSERT_EQ(deletes.size(), 1u);
@@ -639,18 +732,130 @@ IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignOutStopsSharing) {
   }));
   EXPECT_EQ(service()->state(), TabSyncService::State::kSignedOut);
   EXPECT_TRUE(prefs()->GetDict(sync::SessionStore::kSessionPref).empty());
+  // The account's rows stay in the account.
+  EXPECT_EQ(supabase_->LiveItemsWithUrl(first).size(), 1u);
+
+  // One window with one new tab, in one new Space.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return Windows().size() == 1u &&
+           Windows()[0]->GetTabStripModel()->count() == 1;
+  }));
+  Wait(base::Seconds(1));
+  ASSERT_EQ(Windows().size(), 1u);
+  TabStripModel* left = Windows()[0]->GetTabStripModel();
+  ASSERT_EQ(left->count(), 1);
+  EXPECT_EQ(left->GetActiveWebContents()->GetVisibleURL(),
+            GURL("chrome://newtab/"));
+  const std::vector<Space> spaces = SpaceManager(prefs()).GetSpaces();
+  ASSERT_EQ(spaces.size(), 1u);
+  EXPECT_FALSE(std::ranges::contains(old_spaces, spaces[0].id));
+  EXPECT_FALSE(std::ranges::contains(old_identities, spaces[0].profile_id));
+  // Parked for the account, not retired.
+  const base::DictValue* parked =
+      prefs()
+          ->GetDict(sync::SharedModels::kParkedIdentitiesPref)
+          .FindDict("user-1");
+  ASSERT_TRUE(parked);
+  EXPECT_EQ(parked->size(), 2u);
+  for (const std::string& identity : old_identities) {
+    EXPECT_TRUE(BrowserProfileStore(prefs()).GetProfileById(identity));
+  }
 
   // Signed out, tabs are not shared.
   const size_t writes =
       supabase_->RequestsTo("POST", "/rest/v1/rpc/sync_items").size();
   const GURL after = TestURL("after.example");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), after, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      Windows()[0], after, WindowOpenDisposition::NEW_BACKGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   Wait(kPull * 3);
   EXPECT_EQ(supabase_->RequestsTo("POST", "/rest/v1/rpc/sync_items").size(),
             writes);
   EXPECT_TRUE(supabase_->LiveItemsWithUrl(after).empty());
+}
+
+// Signing in again brings the account's Spaces back with the identities they
+// had here, so their sites are still signed in. Another account signing in
+// in between gets none of them.
+IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, SignInAgainRestoresSignIns) {
+  const GURL first = TestURL("first.example");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), first, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  const std::string first_name = SpaceManager(prefs()).GetSpaces()[0].name;
+  SpaceManager(prefs()).CreateSpace("Work");
+  const std::string first_identity = IdentityOf(first_name);
+  const std::string work_identity = IdentityOf("Work");
+  ASSERT_FALSE(work_identity.empty());
+
+  SignInThroughSettings();
+  ASSERT_TRUE(WaitForOneRow(first));
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return supabase_->Rows("spaces").size() == 2; }));
+  SignOutThroughSettings();
+
+  // Another account: this fake has one set of rows, so it sees the same
+  // Spaces, but none of the first account's sign-ins.
+  supabase_->SetUser("user-2", kOtherEmail);
+  SignInThroughSettings(kOtherEmail);
+  WaitForSync();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return SpaceManager(prefs()).GetSpaces().size() == 2u; }));
+  EXPECT_NE(IdentityOf("Work"), work_identity);
+  EXPECT_NE(IdentityOf(first_name), first_identity);
+  SignOutThroughSettings();
+
+  supabase_->SetUser("user-1", kEmail);
+  SignInThroughSettings();
+  WaitForSync();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return SpaceManager(prefs()).GetSpaces().size() == 2u; }));
+  EXPECT_EQ(IdentityOf("Work"), work_identity);
+  EXPECT_EQ(IdentityOf(first_name), first_identity);
+  EXPECT_FALSE(prefs()
+                   ->GetDict(sync::SharedModels::kParkedIdentitiesPref)
+                   .FindDict("user-1"));
+  // And the account's tab is back.
+  EXPECT_TRUE(base::test::RunUntil([&] { return FindTab(first); }));
+}
+
+// Changes that can't be sent keep you signed in, and nothing is cleared,
+// until you choose to sign out anyway.
+IN_PROC_BROWSER_TEST_F(AvoraTabSyncBrowserTest, UnsyncedChangesAskFirst) {
+  SignInThroughSettings();
+  WaitForSync();
+  supabase_->FailWrites(true);
+  const GURL unsent = TestURL("unsent.example");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), unsent, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return service()->GetStatus().upload_failing; }));
+
+  ASSERT_TRUE(content::ExecJs(
+      active_contents(),
+      "document.getElementById('account-sign-out').click();"
+      "document.getElementById('account-sign-out-confirm').click();"));
+  ASSERT_TRUE(WaitForPageText("account-message", "reached your account yet"));
+  EXPECT_EQ(service()->state(), TabSyncService::State::kSignedIn);
+  EXPECT_TRUE(PageText("account-state").starts_with("Signed in as"));
+  EXPECT_TRUE(FindTab(unsent));
+  EXPECT_TRUE(supabase_->RequestsTo("DELETE", "/rest/v1/").empty());
+
+  ASSERT_TRUE(content::ExecJs(
+      active_contents(),
+      "document.getElementById('account-sign-out-anyway').click();"));
+  WaitForSignOut();
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    TabStripModel* model = Windows()[0]->GetTabStripModel();
+    for (int i = 0; i < model->count(); ++i) {
+      if (model->GetWebContentsAt(i)->GetVisibleURL() == unsent) {
+        return false;
+      }
+    }
+    return true;
+  }));
+  EXPECT_TRUE(supabase_->LiveItemsWithUrl(unsent).empty());
 }
 
 // The tab in front gets a preview a moment after it loads: a JPEG in the

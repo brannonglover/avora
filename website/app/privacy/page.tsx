@@ -169,8 +169,10 @@ export default function PrivacyPage() {
               Synced data is kept while you have an account. When you close a
               tab, it&apos;s removed from sync; a record that it was deleted is
               kept for up to 30 days so your other devices catch up. Signing
-              out stops a device from syncing and removes it from your account;
-              its tabs stay on that device.
+              out stops a device from syncing, removes it from your account and
+              removes your Spaces and tabs from it. They stay in your account.
+              On a Mac, the sites you were signed in to in each Space are set
+              aside on that Mac until you sign in again.
             </p>
             <p>
               To delete your account, open the tab switcher in Avora for iPhone

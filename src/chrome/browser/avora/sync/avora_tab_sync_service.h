@@ -49,8 +49,11 @@ namespace avora::sync {
 // see: the views layer reports each one opened, navigated or closed by the
 // user, and opens, updates and closes them for remote changes (TodayTabs).
 //
-// Signing out deletes this device's public.devices row and forgets the
-// session and the shared rows; the tabs stay open here.
+// Signing out sends this device's unsent changes, deletes its
+// public.devices row, forgets the session and the shared rows, and clears the
+// account's Spaces, Favorites, pinned items and tabs from this Mac. Each
+// Space's identity (its website sign-ins) is set aside for the account and
+// given back when it signs in here again (docs/TAB_SYNC.md).
 //
 // Attached to the Profile as user data, like LiveFolderService. Off-the-record
 // profiles have none: their tabs are never shared.
@@ -80,6 +83,9 @@ class TabSyncService : public base::SupportsUserData::Data {
     // Signed out, but the device row could not be deleted (offline), so the
     // phone may keep showing these tabs. This install has a new id now.
     kSignedOutDeviceNotRemoved,
+    // Not signed out: changes made here couldn't be sent, and signing out
+    // would lose them. SignOut(/*discard_unsynced=*/true) signs out anyway.
+    kUnsyncedChanges,
   };
 
   struct Status {
@@ -101,6 +107,8 @@ class TabSyncService : public base::SupportsUserData::Data {
     size_t uploaded_tab_count = 0;
     // The most recent sync attempt failed; it is being retried.
     bool upload_failing = false;
+    // With kUnsyncedChanges: how many rows haven't reached the account.
+    size_t unsynced_count = 0;
   };
 
   class Observer : public base::CheckedObserver {
@@ -139,6 +147,11 @@ class TabSyncService : public base::SupportsUserData::Data {
     // Removes a pinned item and unmarks its open tab.
     virtual void RemovePinnedItem(Profile* profile,
                                   const std::string& item_id) = 0;
+    // Signing out: runs `clear_models` (which removes the Spaces), then
+    // closes every window and tab of the profile but one new tab in the
+    // front window, and forgets the recently closed tabs.
+    virtual void ClearForSignOut(Profile* profile,
+                                 base::OnceClosure clear_models) = 0;
   };
 
   // Set once from //chrome/browser (browser_view.cc), as for StyleAiSettings.
@@ -171,8 +184,11 @@ class TabSyncService : public base::SupportsUserData::Data {
   // Abandons a pending code and goes back to asking for an email.
   void CancelSignIn();
 
-  // Deletes this device's row, revokes the session and forgets it.
-  void SignOut();
+  // Sends this device's unsent changes, then deletes its row, revokes the
+  // session, forgets it and clears the account's Spaces and tabs from here.
+  // If the changes can't be sent, stays signed in with kUnsyncedChanges
+  // unless `discard_unsynced`.
+  void SignOut(bool discard_unsynced = false);
 
   // The user opened a today tab, or moved one to another Space. `predecessor`
   // and `successor` are the GUIDs of its neighbours in the Space, if any.
@@ -194,6 +210,10 @@ class TabSyncService : public base::SupportsUserData::Data {
 
   // ── Tab previews (docs/SYNC.md) ──
   static constexpr char kPreviewsEnabledPref[] = "avora.sync.previews_enabled";
+  // The account this Mac's Spaces and tabs belong to (its user id), empty
+  // while they are this Mac's alone. Outlives an expired session, so a
+  // different account signing in next clears them first.
+  static constexpr char kLocalOwnerPref[] = "avora.sync.local_owner";
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   bool previews_enabled() const;
@@ -281,11 +301,17 @@ class TabSyncService : public base::SupportsUserData::Data {
   void OnSyncSucceeded();
   void DeletePreviewOf(const std::string& shared_id);
 
-  // Deletes the device row once no push is in flight.
+  // Sends what is unsent, then deletes the device row, once no push is in
+  // flight.
   void ContinueSignOut();
+  // The unsent changes couldn't be sent: back to syncing, and say so.
+  void AbandonSignOut();
   void DeleteDeviceWithToken(std::optional<std::string> access_token);
   void OnDeviceDeleted(std::string access_token, RequestStatus status);
   void FinishSignOut(Result result);
+  // Clears the account's Spaces and tabs from this Mac, if they belong to an
+  // account, parking their identities for it.
+  void ClearAccountData();
 
   // The session was refused for good: forget it.
   void ExpireSession();
@@ -308,6 +334,10 @@ class TabSyncService : public base::SupportsUserData::Data {
   Result last_result_ = Result::kNone;
 
   bool signing_out_ = false;
+  // This sign-out's last push of unsent changes has been tried.
+  bool final_push_tried_ = false;
+  bool discard_unsynced_ = false;
+  size_t unsynced_count_ = 0;
   bool refresh_in_flight_ = false;
   std::vector<TokenCallback> token_waiters_;
 

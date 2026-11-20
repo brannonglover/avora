@@ -60,7 +60,9 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
       today's tabs. A tab you open or close on one device opens or closes on
       the others. Avora sends each page's address, title and a small preview
       (never of private windows, or of pages with a password field). Signing
-      out stops sharing; your tabs stay open here.</p>
+      out removes your Spaces and tabs from this Mac. They stay in your
+      account, and signing in again brings them back with the sites you were
+      signed in to in each Space.</p>
     <p id="account-state" role="status" aria-live="polite">Loading…</p>
     <p id="account-message" role="alert"></p>
     <form class="row" id="account-email-form" hidden>
@@ -79,6 +81,18 @@ inline constexpr char kIndexHtml[] = R"HTML(<!doctype html>
     <div class="row" id="account-signed-in-row" hidden>
       <label><input id="account-previews" type="checkbox"> Share page previews</label>
       <button id="account-sign-out" type="button">Sign out</button>
+    </div>
+    <div id="account-sign-out-confirm-row" hidden>
+      <p>Sign out? Your Spaces and tabs will be removed from this Mac, and
+        its windows and tabs will close, leaving a new tab. They stay in your
+        account.</p>
+      <div class="row">
+        <button id="account-sign-out-confirm" class="primary" type="button">Sign out</button>
+        <button id="account-sign-out-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+    <div class="row" id="account-sign-out-anyway-row" hidden>
+      <button id="account-sign-out-anyway" type="button">Sign out anyway</button>
     </div>
   </section>
   <section id="style-ai" aria-labelledby="style-ai-heading">
@@ -191,7 +205,8 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
       case 'signed-in':
         return ['Signed in. Your tabs will be the same on every device in a few seconds.', false];
       case 'signed-out':
-        return ['Signed out. Your tabs stay open here and stay in your account.', false];
+        return ['Signed out. Your Spaces and tabs were removed from this Mac and are still in ' +
+                'your account.', false];
       case 'invalid-email':
         return ['Enter a valid email address.', true];
       case 'invalid-code':
@@ -207,6 +222,14 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
       case 'signed-out-device-not-removed':
         return ['Signed out, but the server could not be reached to remove this Mac ' +
                 'from your account\'s devices.', true];
+      case 'unsynced-changes': {
+        const what = status.unsyncedCount === 1
+            ? 'A change on this Mac hasn\'t'
+            : `${status.unsyncedCount} changes on this Mac haven\'t`;
+        return [`${what} reached your account yet, so you are still signed in. ` +
+                'Signing out now would lose ' + (status.unsyncedCount === 1 ? 'it' : 'them') +
+                '. Check your connection and try again.', true];
+      }
       default:
         return [null, false];
     }
@@ -252,10 +275,17 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
     const ready = status.available && !status.starting;
     $('account-email-form').hidden = !ready || status.state !== 'signed-out';
     $('account-code-form').hidden = !ready || status.state !== 'awaiting-code';
-    $('account-signed-in-row').hidden = !ready || status.state !== 'signed-in';
+    const signedIn = ready && status.state === 'signed-in';
+    $('account-signed-in-row').hidden = !signedIn;
+    if (!signedIn || status.busy) {
+      $('account-sign-out-confirm-row').hidden = true;
+    }
+    $('account-sign-out-anyway-row').hidden =
+        !signedIn || status.result !== 'unsynced-changes';
     $('account-previews').checked = Boolean(status.previewsEnabled);
     for (const id of ['account-send', 'account-verify', 'account-resend',
-                      'account-change-email', 'account-sign-out']) {
+                      'account-change-email', 'account-sign-out',
+                      'account-sign-out-confirm', 'account-sign-out-anyway']) {
       $(id).disabled = Boolean(status.busy);
     }
     if (status.state !== previousState) {
@@ -282,7 +312,17 @@ inline constexpr char kSettingsJs[] = R"JS('use strict';
     }
   });
   $('account-change-email').addEventListener('click', () => chrome.send('cancelSyncSignIn'));
-  $('account-sign-out').addEventListener('click', () => chrome.send('signOutSync'));
+  $('account-sign-out').addEventListener('click', () => {
+    $('account-sign-out-confirm-row').hidden = false;
+  });
+  $('account-sign-out-cancel').addEventListener('click', () => {
+    $('account-sign-out-confirm-row').hidden = true;
+  });
+  $('account-sign-out-confirm').addEventListener('click', () => {
+    $('account-sign-out-confirm-row').hidden = true;
+    chrome.send('signOutSync', [false]);
+  });
+  $('account-sign-out-anyway').addEventListener('click', () => chrome.send('signOutSync', [true]));
   $('account-previews').addEventListener(
       'change', event => chrome.send('setSyncPreviews', [event.target.checked]));
   chrome.send('getSyncStatus');

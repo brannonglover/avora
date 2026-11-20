@@ -8,6 +8,9 @@
 
 #include "base/strings/string_util.h"
 #include "chrome/browser/avora/avora_pinned_folders.h"
+#include "chrome/browser/avora/avora_profile.h"
+#include "chrome/browser/avora/avora_space_icons.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "url/gurl.h"
@@ -96,7 +99,12 @@ std::vector<LocalRow> SharedModels::ProjectSidebar() const {
   return rows;
 }
 
-void SharedModels::LinkMatching(SharedStore& store) const {
+// static
+void SharedModels::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+  registry->RegisterDictionaryPref(kParkedIdentitiesPref);
+}
+
+void SharedModels::LinkMatching(SharedStore& store) {
   std::set<std::string> taken;
   for (const Space& space : space_manager_.GetSpaces()) {
     for (const SharedRow* row : store.Rows(SharedTable::kSpaces)) {
@@ -105,8 +113,15 @@ void SharedModels::LinkMatching(SharedStore& store) const {
       }
       if (base::EqualsCaseInsensitiveASCII(StringColumn(*row, "name"),
                                            space.name)) {
-        store.Link(SharedTable::kSpaces, row->id, space.id);
-        taken.insert(row->id);
+        const std::string shared_id = row->id;
+        store.Link(SharedTable::kSpaces, shared_id, space.id);
+        taken.insert(shared_id);
+        // This Space is the account's now, so it browses as the account's
+        // Space did when it was last here.
+        const std::string parked = TakeParkedIdentity(store, shared_id);
+        if (!parked.empty()) {
+          space_manager_.AdoptIdentity(space.id, parked);
+        }
         break;
       }
     }
@@ -171,7 +186,8 @@ void SharedModels::ApplySpaces(SharedStore& store,
       }
     } else {
       target = space_manager_.CreateSpace(name.empty() ? "Space" : name, icon,
-                                          std::string(), color);
+                                          TakeParkedIdentity(store, row.id),
+                                          color);
       store.Link(SharedTable::kSpaces, row.id, target);
     }
     if (theme) {
@@ -322,6 +338,11 @@ void SharedModels::RemoveSpace(const std::string& local_id) {
   if (space_manager_.GetSpaces().size() <= 1) {
     return;
   }
+  RemoveSpaceContents(local_id);
+  space_manager_.RemoveSpace(local_id);
+}
+
+void SharedModels::RemoveSpaceContents(const std::string& local_id) {
   item_store_.RemoveItemsForSpace(local_id);
   {
     ScopedDictPrefUpdate folders(
@@ -333,7 +354,62 @@ void SharedModels::RemoveSpace(const std::string& local_id) {
         prefs_, PinnedFoldersManager::kPinnedTabTitlesBySpacePref);
     titles->Remove(local_id);
   }
-  space_manager_.RemoveSpace(local_id);
+}
+
+void SharedModels::ClearForSignOut(const SharedStore& store,
+                                   const std::string& user_id) {
+  const std::vector<Space> spaces = space_manager_.GetSpaces();
+  if (!user_id.empty()) {
+    ScopedDictPrefUpdate parked(prefs_, kParkedIdentitiesPref);
+    base::DictValue* account = parked->EnsureDict(user_id);
+    for (const Space& space : spaces) {
+      if (!space.profile_id.empty()) {
+        account->Set(store.ToShared(SharedTable::kSpaces, space.id),
+                     space.profile_id);
+      }
+    }
+  }
+  // Made before the others go, so there is always a Space, and given a new
+  // identity: none of the account's sign-ins may carry over to it.
+  const std::string fresh = space_manager_.CreateSpace(
+      "Default Space", NextDefaultSpaceIconId(0), std::string(),
+      NextDefaultSpaceAccentColor(0));
+  space_manager_.ActivateSpace(fresh);
+  for (const Space& space : spaces) {
+    RemoveSpaceContents(space.id);
+    if (user_id.empty()) {
+      space_manager_.RemoveSpace(space.id);
+    } else {
+      space_manager_.RemoveSpaceKeepingIdentity(space.id);
+    }
+  }
+}
+
+std::string SharedModels::TakeParkedIdentity(
+    const SharedStore& store,
+    const std::string& shared_space_id) {
+  const base::DictValue* account =
+      prefs_->GetDict(kParkedIdentitiesPref).FindDict(store.user_id());
+  const std::string* found =
+      account ? account->FindString(shared_space_id) : nullptr;
+  if (!found) {
+    return std::string();
+  }
+  const std::string profile_id = *found;
+  {
+    ScopedDictPrefUpdate parked(prefs_, kParkedIdentitiesPref);
+    base::DictValue* entry = parked->FindDict(store.user_id());
+    entry->Remove(shared_space_id);
+    if (entry->empty()) {
+      parked->Remove(store.user_id());
+    }
+  }
+  // Not one a Space here already uses, and one that still exists.
+  if (!space_manager_.GetSpacesForProfile(profile_id).empty() ||
+      !BrowserProfileStore(prefs_).GetProfileById(profile_id)) {
+    return std::string();
+  }
+  return profile_id;
 }
 
 void SharedModels::OnSpacesChanged() {

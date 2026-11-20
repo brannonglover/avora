@@ -102,6 +102,8 @@ class SharedStore {
   void Delete(SharedTable table, std::string_view shared_id);
 
   bool HasPending() const;
+  // How many rows have changes the server hasn't confirmed, in flight or not.
+  size_t PendingCount() const;
   // Whether this device has a change to `shared_id` the server hasn't
   // confirmed.
   bool HasUnsentChange(SharedTable table, std::string_view shared_id) const;

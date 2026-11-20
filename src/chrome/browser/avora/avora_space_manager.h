@@ -87,6 +87,17 @@ class SpaceManager {
   // partition is cleared separately.
   void RemoveSpace(const std::string& id);
 
+  // As RemoveSpace, but the identity is kept, unowned, so a Space can be
+  // given it again later with CreateSpace(..., profile_id) or AdoptIdentity.
+  // For signing out of an Avora account (TabSyncService), which sets each
+  // Space's sign-ins aside until the account signs in again.
+  void RemoveSpaceKeepingIdentity(const std::string& id);
+
+  // Gives Space |id| the existing identity |profile_id| and retires the one it
+  // had, unless another Space still uses it. For a Space that turns out to be
+  // the local copy of an account Space whose identity was set aside.
+  void AdoptIdentity(const std::string& id, const std::string& profile_id);
+
   void ActivateSpace(const std::string& id);
 
   // Activates the space before/after the active one in |order|.  Wraps around.
@@ -157,6 +168,8 @@ class SpaceManager {
   // could share an identity.
   void ReleaseIdentity(const std::string& profile_id,
                        const std::vector<Space>& remaining);
+
+  void RemoveSpaceImpl(const std::string& id, bool release_identity);
 
   void SaveSpaces(const std::vector<Space>& spaces);
   void RefreshCacheIfNeeded() const;

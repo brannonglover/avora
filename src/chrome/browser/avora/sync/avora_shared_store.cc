@@ -3,6 +3,7 @@
 #include "chrome/browser/avora/sync/avora_shared_store.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -323,6 +324,18 @@ bool SharedStore::HasPending() const {
     }
   }
   return false;
+}
+
+size_t SharedStore::PendingCount() const {
+  std::set<std::pair<SharedTable, std::string>> rows;
+  for (const auto* queue : {&pending_, &in_flight_}) {
+    for (const auto& [table, changes] : *queue) {
+      for (const auto& [id, change] : changes) {
+        rows.insert({table, id});
+      }
+    }
+  }
+  return rows.size();
 }
 
 bool SharedStore::HasUnsentChange(SharedTable table,

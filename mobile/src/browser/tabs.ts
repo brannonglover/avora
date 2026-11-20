@@ -635,24 +635,12 @@ function attach(state: TabsState, accountId: string, rows: Rows): TabsState {
   };
 }
 
-// Signed out: the tabs stay on this phone but stop syncing.
+// Signed out: the account's Spaces and tabs leave this phone, recently closed
+// tabs and drafts included, so none of them can merge into whichever account
+// signs in next. They stay in the account. settle() then gives the phone the
+// "Personal" Space and start page of a fresh install.
 function detach(state: TabsState): TabsState {
-  const liveOnly = <T extends { deleted_at: string | null }>(rows: Record<string, T>) =>
-    Object.fromEntries(Object.entries(rows).filter(([, r]) => isLive(r)));
-  const items = liveOnly(state.items);
-  for (const [id, item] of Object.entries(items)) {
-    items[id] = { ...item, preview_path: null, preview_updated_at: null };
-  }
-  return {
-    ...state,
-    accountId: null,
-    spaces: liveOnly(state.spaces),
-    items,
-    pendingSpaces: {},
-    pendingItems: {},
-    cursor: null,
-    merged: null,
-  };
+  return { ...emptyState(), hydrated: state.hydrated, deviceId: state.deviceId };
 }
 
 function sent<T extends object>(pending: Record<string, T>, sentChanges: Record<string, T>) {
@@ -1100,6 +1088,16 @@ async function loadSaved(): Promise<Persisted | null> {
 
 // --- Hook ---------------------------------------------------------------------------
 
+// Set while the browser is mounted.
+let sendBeforeSignOut: (() => Promise<number>) | null = null;
+
+// Sends this phone's queued changes to the account. Resolves to how many rows
+// still haven't reached it (0 when everything did), which signing out would
+// lose.
+export function sendUnsentChanges(): Promise<number> {
+  return sendBeforeSignOut ? sendBeforeSignOut() : Promise.resolve(0);
+}
+
 export function useTabs() {
   const [state, dispatch] = useReducer(reducer, undefined, emptyState);
   const { session, ready } = useAuth();
@@ -1129,7 +1127,8 @@ export function useTabs() {
     return () => clearTimeout(timer);
   }, [state]);
 
-  // Follow the session: merge on sign-in, keep the tabs locally on sign-out.
+  // Follow the session: merge on sign-in, clear the phone on sign-out. Also
+  // clears on launch if the app quit between the two.
   const { hydrated, accountId } = state;
   useEffect(() => {
     if (!hydrated || !ready) return;
@@ -1179,21 +1178,45 @@ export function useTabs() {
   }, [attached, userId]);
 
   // Writes go out a moment after a burst of changes, as one request.
-  const sending = useRef(false);
-  const flush = useCallback(() => {
+  const sending = useRef<Promise<void> | null>(null);
+  const send = useCallback((): Promise<void> => {
+    if (sending.current) return sending.current;
     const { pendingSpaces, pendingItems, deviceId, accountId: account } = latest.current;
-    if (sending.current || !account) return;
-    if (!Object.keys(pendingSpaces).length && !Object.keys(pendingItems).length) return;
-    sending.current = true;
-    sendChanges(deviceId, pendingSpaces, pendingItems)
-      .then(
-        () => dispatch({ type: 'sent', accountId: account, spaces: pendingSpaces, items: pendingItems }),
-        retryLater,
-      )
+    if (!account) return Promise.resolve();
+    if (!Object.keys(pendingSpaces).length && !Object.keys(pendingItems).length) return Promise.resolve();
+    const request = sendChanges(deviceId, pendingSpaces, pendingItems)
+      .then(() => dispatch({ type: 'sent', accountId: account, spaces: pendingSpaces, items: pendingItems }))
       .finally(() => {
-        sending.current = false;
+        sending.current = null;
       });
-  }, [retryLater]);
+    sending.current = request;
+    return request;
+  }, []);
+  const flush = useCallback(() => {
+    send().catch(retryLater);
+  }, [send, retryLater]);
+
+  // Sign-out clears the phone, so it sends what's queued first.
+  useEffect(() => {
+    sendBeforeSignOut = async () => {
+      // A send already under way may predate the latest edits; wait it out,
+      // then send everything still queued. Sending a change twice is harmless.
+      await sending.current?.catch(() => {});
+      const { pendingSpaces, pendingItems, deviceId, accountId: account } = latest.current;
+      const unsent = Object.keys(pendingSpaces).length + Object.keys(pendingItems).length;
+      if (!account || !unsent) return 0;
+      try {
+        await sendChanges(deviceId, pendingSpaces, pendingItems);
+      } catch {
+        return unsent;
+      }
+      dispatch({ type: 'sent', accountId: account, spaces: pendingSpaces, items: pendingItems });
+      return 0;
+    };
+    return () => {
+      sendBeforeSignOut = null;
+    };
+  }, []);
 
   const { pendingSpaces, pendingItems } = state;
   useEffect(() => {
