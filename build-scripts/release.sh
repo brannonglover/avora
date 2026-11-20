@@ -37,7 +37,7 @@ FILE="Avora-$VERSION-arm64.dmg"
 DMG="$SITE/public/downloads/$FILE"
 
 export NOTARY_PROFILE="${NOTARY_PROFILE:-avora-notary}"
-export PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-$HOME/Downloads/Avora_Developer_ID.provisionprofile}"
+export PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-$HOME/.avora/Avora_Developer_ID.provisionprofile}"
 export CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning |
   sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)}"
 

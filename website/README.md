@@ -73,7 +73,8 @@ change to `releases.json` there.
   certificate, a Developer ID provisioning profile for `com.avora.browser`, and
   notary credentials saved once with `xcrun notarytool store-credentials`.
   `npm run release` expects them as `avora-notary` and
-  `~/Downloads/Avora_Developer_ID.provisionprofile`, and `NOTARY_PROFILE` and
+  `~/.avora/Avora_Developer_ID.provisionprofile` (not Downloads, which macOS
+  keeps apps like Claude's terminal from reading), and `NOTARY_PROFILE` and
   `PROVISIONING_PROFILE` override those. The script signs the app inside out, then notarizes and staples the DMG. It sets
   `notarized` in `releases.json` from what actually happened, which removes the
   Open Anyway note from the page, and a build that isn't accepted publishes
