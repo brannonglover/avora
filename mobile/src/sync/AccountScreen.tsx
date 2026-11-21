@@ -172,7 +172,8 @@ function SignIn() {
         style={[styles.input, styles.codeInput]}
         value={code}
         onChangeText={(text) => setCode(text.replace(/\D/g, ''))}
-        placeholder="123456"
+        // Supabase sends 8-digit codes (Email OTP Length).
+        placeholder="12345678"
         placeholderTextColor={colors.textTertiary}
         keyboardType="number-pad"
         textContentType="oneTimeCode"

@@ -13,6 +13,12 @@
       "port": 3000
     },
     {
+      "name": "mobile-metro",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "mobile", "start"],
+      "port": 8081
+    },
+    {
       "name": "website-prod",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

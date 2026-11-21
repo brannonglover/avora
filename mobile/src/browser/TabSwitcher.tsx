@@ -1,5 +1,5 @@
 import { CircleUser, Folder as FolderIcon, Pin, Plus, Star, X } from 'lucide-react-native';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Dimensions,
@@ -50,7 +50,9 @@ const PINNED_COLUMNS = 4;
 const LONG_PRESS_MS = 350;
 const HINT = 'Long press and drag to reorder, or long press for actions';
 
-export function TabSwitcher(props: Props) {
+// Memoized: the browser screen re-renders on every bit of page-load progress,
+// and this is the biggest thing on it.
+export const TabSwitcher = memo(function TabSwitcher(props: Props) {
   const { visible, tabs, activeId } = props;
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -320,7 +322,7 @@ export function TabSwitcher(props: Props) {
       ) : null}
     </Animated.View>
   );
-}
+});
 
 type PinnedEntry = { kind: 'tab'; tab: Tab } | { kind: 'folder'; folder: Folder; tabs: Tab[] };
 

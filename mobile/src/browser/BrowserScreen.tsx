@@ -13,7 +13,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react-native';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   AppState,
@@ -32,7 +32,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
-import { useAuth } from '../sync/auth';
+import { AUTH_REDIRECT, useAuth } from '../sync/auth';
 import { deletePreview, previewPath, previewSource, uploadPreview } from '../sync/remote';
 import { isShareableUrl } from '../sync/rows';
 
@@ -61,6 +61,17 @@ const MAX_LIVE_WEBVIEWS = 3;
 // How long after a page finishes loading to capture its preview, so late
 // layout and images are in.
 const CAPTURE_DELAY_MS = 1200;
+// A capture snapshots the page on the main thread, which stalls whatever is
+// animating. So it waits until this long after the last swipe or tab switch,
+// with no tab switcher, menu or address bar up, and gives up after a few
+// tries.
+const CAPTURE_IDLE_MS = 1500;
+const MAX_CAPTURE_RETRIES = 4;
+// Creating or tearing down a WebView takes the main thread for a moment,
+// which froze the address bar halfway through a swipe. So the set of loaded
+// pages stays as it was until a swipe or tab switch has settled, and the new
+// tab's preview stands in until then.
+const SETTLE_MS = 380;
 // Previews captured here, kept in memory so they show without a download.
 const MAX_LOCAL_PREVIEWS = 12;
 
@@ -104,9 +115,15 @@ export function BrowserScreen() {
   const tabsById = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
   const latestTabs = useRef(tabsById);
   const latestActiveId = useRef(activeTab?.id);
+  const latestNav = useRef(navById);
+  // Nothing is moving and nothing covers the page: safe to capture it.
+  const calm = useRef(true);
+  const lastTransition = useRef(0);
   useLayoutEffect(() => {
     latestTabs.current = tabsById;
     latestActiveId.current = activeTab?.id;
+    latestNav.current = navById;
+    calm.current = !switcherOpen && !editing && !sheet;
   });
 
   // The most recently used tabs keep a mounted WebView. A tab that arrived
@@ -120,6 +137,24 @@ export function BrowserScreen() {
     const live = activeTab.url !== null ? [activeTab.id, ...recent] : recent;
     return live.slice(0, MAX_LIVE_WEBVIEWS);
   }, [tabs, activeTab]);
+
+  // See SETTLE_MS. While held, these are the pages that stay mounted.
+  const [heldIds, setHeldIds] = useState<string[] | null>(null);
+  const latestLiveIds = useRef(liveIds);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useLayoutEffect(() => {
+    latestLiveIds.current = liveIds;
+  });
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
+  const holdPages = useCallback(() => {
+    setHeldIds((held) => held ?? latestLiveIds.current);
+    clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => setHeldIds(null), SETTLE_MS);
+  }, []);
+  const mountedIds = useMemo(
+    () => (heldIds ?? liveIds).filter((id) => tabsById.has(id)),
+    [heldIds, liveIds, tabsById],
+  );
 
   const updateNav = useCallback((id: string, patch: Partial<NavState>) => {
     setNavById((prev) => ({ ...prev, [id]: { ...(prev[id] ?? IDLE_NAV), ...patch } }));
@@ -190,12 +225,26 @@ export function BrowserScreen() {
 
   const scheduleCapture = useCallback(
     (id: string) => {
-      setTimeout(() => {
-        if (id === latestActiveId.current) capturePreview(latestTabs.current.get(id));
-      }, CAPTURE_DELAY_MS);
+      let retries = 0;
+      const attempt = () => {
+        if (id !== latestActiveId.current) return;
+        if (!calm.current || Date.now() - lastTransition.current < CAPTURE_IDLE_MS) {
+          if (++retries <= MAX_CAPTURE_RETRIES) setTimeout(attempt, CAPTURE_IDLE_MS);
+          return;
+        }
+        capturePreview(latestTabs.current.get(id));
+      };
+      setTimeout(attempt, CAPTURE_DELAY_MS);
     },
     [capturePreview],
   );
+
+  // Every switch of tab goes through here. It used to capture the tab being
+  // left, but that snapshot landed mid-animation; previews are now taken
+  // only once a page has loaded and the screen is calm.
+  const markTransition = useCallback(() => {
+    lastTransition.current = Date.now();
+  }, []);
 
   // Leaving the app counts as leaving the tab.
   useEffect(() => {
@@ -216,10 +265,6 @@ export function BrowserScreen() {
   );
 
   // --- Tab operations -------------------------------------------------------
-
-  // Every way of leaving the current tab goes through here first, so its
-  // preview is taken while it's still on screen.
-  const leave = useCallback(() => capturePreview(activeTab), [capturePreview, activeTab]);
 
   const dropPreview = useCallback((tab: Tab) => {
     if (tab.previewPath) deletePreview(tab.previewPath).catch(() => {});
@@ -255,12 +300,12 @@ export function BrowserScreen() {
   );
 
   const openNewTab = useCallback(() => {
-    leave();
+    markTransition();
     dispatch({ type: 'open', url: null });
     setSwitcherOpen(false);
     setQuery('');
     setEditing(true);
-  }, [dispatch, leave]);
+  }, [dispatch, markTransition]);
 
   // Links from other apps, when Avora is the default browser, each open in a
   // new tab. Waits for the saved tabs so the new one isn't lost to them.
@@ -268,21 +313,23 @@ export function BrowserScreen() {
   useEffect(() => {
     if (!hydrated) return;
     return onWebUrl((url) => {
-      leave();
+      markTransition();
       dispatch({ type: 'open', url });
       setSwitcherOpen(false);
       setSheet(null);
       setEditing(false);
       Keyboard.dismiss();
     });
-  }, [hydrated, dispatch, leave]);
+  }, [hydrated, dispatch, markTransition]);
 
   const selectTab = useCallback(
     (id: string) => {
+      markTransition();
+      holdPages();
       dispatch({ type: 'activate', id });
       setSwitcherOpen(false);
     },
-    [dispatch],
+    [dispatch, markTransition, holdPages],
   );
 
   const swipeTab = useCallback(
@@ -290,7 +337,8 @@ export function BrowserScreen() {
       const index = tabs.findIndex((t) => t.id === activeTab.id);
       const next = tabs[index + direction];
       Haptics.selectionAsync().catch(() => {});
-      leave();
+      markTransition();
+      holdPages();
       if (next) {
         dispatch({ type: 'activate', id: next.id });
       } else if (direction === 1 && activeTab.url !== null) {
@@ -298,8 +346,49 @@ export function BrowserScreen() {
         dispatch({ type: 'open', url: null });
       }
     },
-    [tabs, activeTab, dispatch, leave],
+    [tabs, activeTab, dispatch, markTransition, holdPages],
   );
+
+  // --- Per-tab callbacks ----------------------------------------------------
+  // Stable, so a page's loading progress re-renders only the bar, not every
+  // live page and the tab switcher.
+
+  const registerWebView = useCallback((id: string, ref: WebViewInstance | null) => {
+    webviews.current.set(id, ref);
+  }, []);
+  const registerContainer = useCallback((id: string, ref: ViewInstance | null) => {
+    containers.current.set(id, ref);
+  }, []);
+  const recordPage = useCallback(
+    (id: string, url: string, title: string) => dispatch({ type: 'record', id, url, title }),
+    [dispatch],
+  );
+  const openWindow = useCallback(
+    (id: string, url: string) => {
+      markTransition();
+      dispatch({ type: 'open', url, afterId: id, openerId: id });
+    },
+    [dispatch, markTransition],
+  );
+  const loadStarted = useCallback((id: string) => passwordFields.current.set(id, null), []);
+  const reloadTerminated = useCallback((id: string) => webviews.current.get(id)?.reload(), []);
+  // A sign-in or confirmation link from an email opens in a tab only to
+  // redirect back into the app. Once it has, that tab has nothing to show,
+  // unless it was already on a page of its own before.
+  const handOff = useCallback(
+    (id: string, url: string) => {
+      if (!url.startsWith(AUTH_REDIRECT) || latestNav.current[id]?.canGoBack) return;
+      dispatch({ type: 'close', id, forget: true });
+    },
+    [dispatch],
+  );
+
+  // The active tab's is shown even before its page is mounted (SETTLE_MS).
+  const activeId = activeTab?.id;
+  const livePreviews = useMemo(() => {
+    const ids = new Set([...mountedIds, ...(activeId ? [activeId] : [])]);
+    return new Map([...ids].map((id) => [id, previewFor(tabsById.get(id)!)]));
+  }, [mountedIds, activeId, tabsById, previewFor]);
 
   const clearToday = useCallback(() => {
     const today = tabs.filter((t) => !t.pinned);
@@ -429,30 +518,54 @@ export function BrowserScreen() {
 
   // Alert.prompt is iOS-only; on Android, Spaces are made and renamed on the
   // desktop for now.
-  const newSpace =
-    Platform.OS === 'ios'
-      ? () =>
-          Alert.prompt('New Space', undefined, (name) => {
-            if (name?.trim()) dispatch({ type: 'createSpace', name: name.trim() });
-          })
-      : undefined;
+  const promptNewSpace = useCallback(
+    () =>
+      Alert.prompt('New Space', undefined, (name) => {
+        if (name?.trim()) dispatch({ type: 'createSpace', name: name.trim() });
+      }),
+    [dispatch],
+  );
+  const newSpace = Platform.OS === 'ios' ? promptNewSpace : undefined;
 
-  const renameSpace =
-    Platform.OS === 'ios'
-      ? (id: string) => {
-          const space = spaces.find((s) => s.id === id);
-          if (!space) return;
-          Alert.prompt(
-            'Rename Space',
-            undefined,
-            (name) => {
-              if (name?.trim()) dispatch({ type: 'renameSpace', id, name: name.trim() });
-            },
-            'plain-text',
-            space.name,
-          );
-        }
-      : undefined;
+  const promptRenameSpace = useCallback(
+    (id: string) => {
+      const space = spaces.find((s) => s.id === id);
+      if (!space) return;
+      Alert.prompt(
+        'Rename Space',
+        undefined,
+        (name) => {
+          if (name?.trim()) dispatch({ type: 'renameSpace', id, name: name.trim() });
+        },
+        'plain-text',
+        space.name,
+      );
+    },
+    [spaces, dispatch],
+  );
+  const renameSpace = Platform.OS === 'ios' ? promptRenameSpace : undefined;
+
+  // --- Tab switcher callbacks -----------------------------------------------
+
+  const closeTabById = useCallback(
+    (id: string) => {
+      const tab = latestTabs.current.get(id);
+      if (tab) closeTab(tab);
+    },
+    [closeTab],
+  );
+  const moveTab = useCallback((id: string, by: number) => dispatch({ type: 'move', id, by }), [dispatch]);
+  const showTabActions = useCallback(
+    (tab: Tab) =>
+      setSheet({
+        title: tab.title || hostOf(tab.url) || 'Start Page',
+        subtitle: tab.url ? hostOf(tab.url) : undefined,
+        actions: tabActions(tab),
+      }),
+    [tabActions],
+  );
+  const openAccount = useCallback(() => router.push('/account'), []);
+  const closeSwitcher = useCallback(() => setSwitcherOpen(false), []);
 
   // --- Address bar ----------------------------------------------------------
 
@@ -522,33 +635,28 @@ export function BrowserScreen() {
             contentSize.current = e.nativeEvent.layout;
           }}
         >
-          {liveIds.map((id) => {
-            const tab = tabsById.get(id)!;
-            return (
-              <TabWebView
-                key={id}
-                tab={tab}
-                active={id === activeTab.id}
-                preview={previewFor(tab)}
-                ref={(ref) => {
-                  webviews.current.set(id, ref);
-                }}
-                containerRef={(ref) => {
-                  containers.current.set(id, ref);
-                }}
-                onNav={updateNav}
-                onRecord={(url, title) => dispatch({ type: 'record', id, url, title })}
-                onOpenWindow={(url) => {
-                  leave();
-                  dispatch({ type: 'open', url, afterId: id, openerId: id });
-                }}
-                onLoadStarted={() => passwordFields.current.set(id, null)}
-                onLoaded={() => scheduleCapture(id)}
-                onTerminated={() => webviews.current.get(id)?.reload()}
-                onPasswordField={(has) => onPasswordField(id, has)}
-              />
-            );
-          })}
+          {mountedIds.map((id) => (
+            <TabWebView
+              key={id}
+              tab={tabsById.get(id)!}
+              active={id === activeTab.id}
+              preview={livePreviews.get(id)}
+              onWebViewRef={registerWebView}
+              onContainerRef={registerContainer}
+              onNav={updateNav}
+              onRecord={recordPage}
+              onOpenWindow={openWindow}
+              onLoadStarted={loadStarted}
+              onLoaded={scheduleCapture}
+              onTerminated={reloadTerminated}
+              onPasswordField={onPasswordField}
+              onHandOff={handOff}
+            />
+          ))}
+
+          {activeTab.url !== null && !mountedIds.includes(activeTab.id) ? (
+            <PagePlaceholder tab={activeTab} preview={livePreviews.get(activeTab.id)} />
+          ) : null}
 
           {activeTab.url === null ? (
             <StartPage
@@ -582,7 +690,7 @@ export function BrowserScreen() {
           }}
           onNewTab={openNewTab}
           onShowTabs={() => {
-            leave();
+            markTransition();
             setEditing(false);
             setSwitcherOpen(true);
           }}
@@ -606,7 +714,8 @@ export function BrowserScreen() {
             setEditing(false);
             Keyboard.dismiss();
             if (tab.id === activeTab.id) return;
-            leave();
+            markTransition();
+            holdPages();
             dispatch({ type: 'activate', id: tab.id });
           }}
           onCancel={cancelEditing}
@@ -624,22 +733,13 @@ export function BrowserScreen() {
         onNewSpace={newSpace}
         onRenameSpace={renameSpace}
         onSelect={selectTab}
-        onCloseTab={(id) => {
-          const tab = tabsById.get(id);
-          if (tab) closeTab(tab);
-        }}
-        onMoveTab={(id, by) => dispatch({ type: 'move', id, by })}
-        onTabActions={(tab) =>
-          setSheet({
-            title: tab.title || hostOf(tab.url) || 'Start Page',
-            subtitle: tab.url ? hostOf(tab.url) : undefined,
-            actions: tabActions(tab),
-          })
-        }
+        onCloseTab={closeTabById}
+        onMoveTab={moveTab}
+        onTabActions={showTabActions}
         onNewTab={openNewTab}
         onClearToday={clearToday}
-        onAccount={() => router.push('/account')}
-        onDone={() => setSwitcherOpen(false)}
+        onAccount={openAccount}
+        onDone={closeSwitcher}
       />
 
       <Toast
@@ -661,33 +761,38 @@ export function BrowserScreen() {
 
 // --- Pieces -----------------------------------------------------------------
 
+// Every callback takes the tab's id and is stable, so the component is
+// memoized and skips the many renders a loading page causes elsewhere.
 type TabWebViewProps = {
   tab: Tab;
   active: boolean;
   // Shown over the page until it first paints.
   preview?: ImageSourcePropType;
-  ref: (ref: WebViewInstance | null) => void;
-  containerRef: (ref: ViewInstance | null) => void;
+  onWebViewRef: (id: string, ref: WebViewInstance | null) => void;
+  onContainerRef: (id: string, ref: ViewInstance | null) => void;
   onNav: (id: string, patch: Partial<NavState>) => void;
-  onRecord: (url: string, title: string) => void;
-  onOpenWindow: (url: string) => void;
-  onLoadStarted: () => void;
-  onLoaded: () => void;
+  onRecord: (id: string, url: string, title: string) => void;
+  onOpenWindow: (id: string, url: string) => void;
+  onLoadStarted: (id: string) => void;
+  onLoaded: (id: string) => void;
   // iOS reclaimed the page's content process (usually while the app was in
   // the background), leaving the WebView blank.
-  onTerminated: () => void;
-  onPasswordField: (has: boolean) => void;
+  onTerminated: (id: string) => void;
+  onPasswordField: (id: string, has: boolean) => void;
+  // The page sent a link to another app (or back to this one) instead of
+  // loading it.
+  onHandOff: (id: string, url: string) => void;
 };
 
 // Progress past which a page has usually painted something worth showing.
 const PAINTED_PROGRESS = 0.7;
 
-function TabWebView({
+const TabWebView = memo(function TabWebView({
   tab,
   active,
   preview,
-  ref,
-  containerRef,
+  onWebViewRef,
+  onContainerRef,
   onNav,
   onRecord,
   onOpenWindow,
@@ -695,6 +800,7 @@ function TabWebView({
   onLoaded,
   onTerminated,
   onPasswordField,
+  onHandOff,
 }: TabWebViewProps) {
   // A WebView that was unloaded and mounted again resumes from where the tab
   // was left, not from the last URL typed into it.
@@ -708,6 +814,8 @@ function TabWebView({
   const uri = tab.requestId === mount.requestId ? mount.uri : tab.requestedUrl ?? 'about:blank';
   const source = useMemo(() => ({ uri }), [uri]);
   const id = tab.id;
+  const webViewRef = useCallback((ref: WebViewInstance | null) => onWebViewRef(id, ref), [id, onWebViewRef]);
+  const containerRef = useCallback((ref: ViewInstance | null) => onContainerRef(id, ref), [id, onContainerRef]);
 
   return (
     <View
@@ -717,25 +825,29 @@ function TabWebView({
       pointerEvents={active ? 'auto' : 'none'}
     >
       <WebView<object>
-        ref={ref}
+        ref={webViewRef}
         source={source}
         style={styles.webview}
         containerStyle={styles.webview}
         allowsBackForwardNavigationGestures
         pullToRefreshEnabled
         allowsInlineMediaPlayback
-        sharedCookiesEnabled
+        // No sharedCookiesEnabled: every tab already shares iOS's persistent
+        // website data store, so logins carry across tabs and launches. That
+        // option also copied the app's whole cookie jar into each new WebView
+        // and back again on every cookie change, all on the main thread, which
+        // froze the screen for seconds whenever a tab loaded.
         setSupportMultipleWindows
         decelerationRate="normal"
         forceDarkOn={false}
         injectedJavaScript={PASSWORD_PROBE}
         onMessage={({ nativeEvent }) => {
           const has = parsePasswordProbe(nativeEvent.data);
-          if (has !== null) onPasswordField(has);
+          if (has !== null) onPasswordField(id, has);
         }}
         onLoadStart={() => {
           onNav(id, { loading: true, progress: 0.1 });
-          onLoadStarted();
+          onLoadStarted(id);
         }}
         onLoadProgress={({ nativeEvent }) => {
           onNav(id, { progress: nativeEvent.progress });
@@ -744,21 +856,22 @@ function TabWebView({
         onLoadEnd={() => {
           onNav(id, { loading: false, progress: 1 });
           setPainted(true);
-          onLoaded();
+          onLoaded(id);
         }}
         onNavigationStateChange={(e) => {
           onNav(id, { canGoBack: e.canGoBack, canGoForward: e.canGoForward });
-          if (e.url && e.url !== 'about:blank') onRecord(e.url, e.title && e.title !== e.url ? e.title : '');
+          if (e.url && e.url !== 'about:blank') onRecord(id, e.url, e.title && e.title !== e.url ? e.title : '');
         }}
-        onOpenWindow={({ nativeEvent }) => onOpenWindow(nativeEvent.targetUrl)}
+        onOpenWindow={({ nativeEvent }) => onOpenWindow(id, nativeEvent.targetUrl)}
         onContentProcessDidTerminate={() => {
           setPainted(false);
-          onTerminated();
+          onTerminated(id);
         }}
         onShouldStartLoadWithRequest={(req) => {
           if (isWebUrl(req.url)) return true;
           // mailto:, tel:, app links and the like belong to the OS.
           Linking.openURL(req.url).catch(() => {});
+          onHandOff(id, req.url);
           return false;
         }}
       />
@@ -766,6 +879,17 @@ function TabWebView({
         <Image source={preview} style={styles.preview} resizeMode="cover" pointerEvents="none" />
       ) : null}
       <TabBackdrop url={tab.url ?? tab.requestedUrl} title={tab.title} visible={!preview && !painted} />
+    </View>
+  );
+});
+
+// Stands in for a tab's page while it waits to be mounted: the same cover
+// TabWebView shows until its page first paints, so the hand-over is seamless.
+function PagePlaceholder({ tab, preview }: { tab: Tab; preview?: ImageSourcePropType }) {
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      {preview ? <Image source={preview} style={styles.preview} resizeMode="cover" /> : null}
+      <TabBackdrop url={tab.url ?? tab.requestedUrl} title={tab.title} visible={!preview} />
     </View>
   );
 }

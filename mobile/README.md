@@ -41,7 +41,7 @@ In the **tab switcher**:
 - **Today** is a list of everything else. Swipe a row left (or tap ✕) to close it, long-press for more actions, and use **Clear** to close all of them at once.
 - Tabs that a page opens (`target="_blank"`) land right after the page that opened them. Closing one, or pressing Android's back button on it, takes you back to that page.
 
-Closing a tab shows an **Undo** toast. Recently closed tabs are also listed on the start page and in the `⋯` menu. Tabs persist across launches; the five most recently used keep their page loaded, and older ones reload when you come back to them.
+Closing a tab shows an **Undo** toast. Recently closed tabs are also listed on the start page and in the `⋯` menu. Tabs persist across launches; the three most recently used keep their page loaded, and older ones reload when you come back to them.
 
 ## Layout
 

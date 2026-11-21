@@ -287,6 +287,10 @@ device.
   which the item's `preview_path` and `preview_updated_at` are set.
 - Capture after the page finishes loading and when the user leaves the tab,
   at most once a minute per tab. Only the device showing the tab captures it.
+  The phone doesn't capture on leaving a tab, only when leaving the app: a
+  snapshot blocks its main thread, which made swipes and the tab switcher
+  stutter. It also waits until the screen is calm (no switch in the last
+  1.5 seconds and nothing covering the page) before capturing a loaded page.
 - **Private pages get no preview.** Don't capture a page that has a password
   field, a page served with `Cache-Control: no-store` (banks, mail and
   account pages usually are), or an incognito tab. When a page stops

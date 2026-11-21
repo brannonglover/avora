@@ -115,7 +115,8 @@ type Action =
   | { type: 'activate'; id: string }
   | { type: 'navigate'; id: string; url: string }
   | { type: 'record'; id: string; url?: string; title?: string }
-  | { type: 'close'; id: string }
+  // |forget| keeps it out of the recently closed list.
+  | { type: 'close'; id: string; forget?: boolean }
   | { type: 'remove'; id: string }
   | { type: 'reopen'; closedAt?: number }
   | { type: 'togglePin'; id: string }
@@ -469,8 +470,8 @@ function remember(state: TabsState, tab: Tab): TabsState {
 
 // Takes a tab off the account (or this phone, for a draft); only this phone
 // can bring it back.
-function closeTab(state: TabsState, tab: Tab): TabsState {
-  let next = remember(state, tab);
+function closeTab(state: TabsState, tab: Tab, forget = false): TabsState {
+  let next = forget ? state : remember(state, tab);
   // The closing device deletes the preview object, so the row drops its path.
   const preview: ItemChange = tab.previewPath ? { preview_path: null, preview_updated_at: null } : {};
   if (tab.synced) next = changeItem(next, tab.id, { deleted_at: nowIso(), ...preview });
@@ -763,7 +764,7 @@ function step(state: TabsState, action: Exclude<Action, { type: 'hydrate' }>): T
     case 'close': {
       const tab = tabById(state, action.id);
       if (!tab) return state;
-      if (!tab.pinned) return closeTab(state, tab);
+      if (!tab.pinned) return closeTab(state, tab, action.forget);
       // Closing a pinned tab or Favorite unloads it; the item stays.
       const next = dropLocal(state, tab.id);
       if (state.activeBySpace[tab.spaceId] !== tab.id) return next;
