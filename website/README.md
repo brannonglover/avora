@@ -106,6 +106,24 @@ the personal API key from `~/.config/posthog/personal-key`, or from `.env.local`
 A click is intent, not a finished download, since the DMG comes from GitHub
 Releases. GitHub's own count is on each release asset's `download_count`.
 
+### Leaving out our own traffic
+
+Every chart has PostHog's internal-traffic filter on (Project settings >
+"Filter out internal and test users", shared with Cavaro). It leaves out:
+
+- events from the home and office addresses (`$ip`), and from localhost;
+- Claude's browser pane, which reports its browser as "Claude";
+- the developer's Avora install, by its install ID, and that install's update
+  checks from before they were marked;
+- anything marked `internal: true`. Opening the site once with `?internal=1`
+  marks that browser for good (`?internal=0` undoes it), for a phone or a
+  laptop on another network. `/appcast.xml` marks update checks from the
+  addresses in `ANALYTICS_INTERNAL_IPS` (Vercel production), comparing them
+  without recording them.
+
+A new network or Mac needs adding there: its address to the `$ip` rule and
+`ANALYTICS_INTERNAL_IPS`, or a new install ID to the `distinct_id` rule.
+
 ### Copies in use
 
 Two events show how many copies of Avora are actually used:

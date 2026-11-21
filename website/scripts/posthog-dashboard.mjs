@@ -349,6 +349,12 @@ const SECTIONS = [
 ];
 
 const INSIGHTS = [...WEBSITE_INSIGHTS, ...FIRST_OPEN_INSIGHTS, ...APP_INSIGHTS];
+
+// Every chart leaves out the project's internal and test traffic, the filter
+// under Project settings > "Filter out internal and test users": the
+// developer's networks, their Avora install, browsers marked with ?internal=1,
+// update checks from their networks, and Claude's browser.
+for (const insight of INSIGHTS) insight.query.source.filterTestAccounts = true;
 for (const section of SECTIONS) {
   section.insights = section.insights.map((name) => {
     const insight = INSIGHTS.find((i) => i.name === name);

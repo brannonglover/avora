@@ -20,12 +20,23 @@ const SPARKLE_UA = /^([^/\s]+)\/(\S+).*\bSparkle\/(\S+)/;
 // Chromium's versions have four parts; Avora's have three.
 const CHROMIUM_VERSION = /^\d+\.\d+\.\d+\.\d+$/;
 
+// The developer's own networks (comma-separated, in Vercel's environment).
+// A check from one is marked internal: true for PostHog's internal-traffic
+// filter. The address is only compared, never recorded.
+function internalAddresses(): string[] {
+  return (process.env.ANALYTICS_INTERNAL_IPS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+}
+
 export type UpdateCheck = {
   // Avora's version, or "1.4.0 or earlier" when the app only gave Chromium's.
   appVersion: string;
   chromiumVersion: string | null;
   sparkleVersion: string;
   distinctId: string;
+  internal: boolean;
 };
 
 export function updateCheckFrom(headers: Headers): UpdateCheck | null {
@@ -49,6 +60,7 @@ export function updateCheckFrom(headers: Headers): UpdateCheck | null {
     chromiumVersion: reportedChromium ? match[2] : null,
     sparkleVersion: match[3],
     distinctId,
+    internal: address !== "" && internalAddresses().includes(address),
   };
 }
 
@@ -67,6 +79,7 @@ export async function recordUpdateCheck(check: UpdateCheck) {
           app_version: check.appVersion,
           chromium_version: check.chromiumVersion,
           sparkle_version: check.sparkleVersion,
+          ...(check.internal ? { internal: true } : {}),
           $process_person_profile: false,
           $lib: "avora-website",
         },
