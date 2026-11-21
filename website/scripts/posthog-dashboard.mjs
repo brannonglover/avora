@@ -48,8 +48,26 @@ const ACTIVE = "app_active";
 // (lib/update-check-analytics.ts).
 const UPDATE_CHECK = "avora_update_check";
 
-// Website events are limited to the live site's host; the app's and the feed's
-// events have no host and are Avora's alone by name.
+// Automated browsers: security scanners, link checkers and crawlers that run
+// the page's script and so look like visitors, Download clicks included.  They
+// claim to be ordinary Chrome or Edge, so they're told apart by what no
+// person's browser reports: a time zone of UTC or "Etc/Unknown", an 800x600
+// screen, a window larger than the screen, or a window exactly the size of the
+// screen (no tabs, toolbar or taskbar, which is how headless browsers render).
+// Kept here rather than in the project's internal-traffic filter, which Cavaro
+// shares.  Events without these properties (the app's) are unaffected.
+const AUTOMATED_BROWSER = `(
+  ifNull(properties.$timezone in ('Etc/Unknown', 'UTC'), 0)
+  or ifNull(toFloat(properties.$screen_width) = 800 and toFloat(properties.$screen_height) = 600, 0)
+  or ifNull(toFloat(properties.$viewport_width) > toFloat(properties.$screen_width), 0)
+  or ifNull(toFloat(properties.$viewport_height) > toFloat(properties.$screen_height), 0)
+  or ifNull(toFloat(properties.$viewport_width) = toFloat(properties.$screen_width)
+      and toFloat(properties.$viewport_height) = toFloat(properties.$screen_height), 0)
+)`;
+
+// Website events are limited to the live site's host and to browsers people
+// use; the app's and the feed's events have no host and are Avora's alone by
+// name.
 const events = (event, math = "total", name = event) => ({
   kind: "EventsNode",
   event,
@@ -60,6 +78,7 @@ const events = (event, math = "total", name = event) => ({
     ? {
         properties: [
           { key: "$host", value: [SITE_HOST], operator: "exact", type: "event" },
+          { key: `not ${AUTOMATED_BROWSER}`, type: "hogql" },
         ],
       }
     : {}),

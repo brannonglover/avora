@@ -124,6 +124,14 @@ Every chart has PostHog's internal-traffic filter on (Project settings >
 A new network or Mac needs adding there: its address to the `$ip` rule and
 `ANALYTICS_INTERNAL_IPS`, or a new install ID to the `distinct_id` rule.
 
+The website charts also leave out automated browsers: security scanners and
+crawlers that run the page's script, Download button included, while claiming
+to be Chrome or Edge. `AUTOMATED_BROWSER` in `scripts/posthog-dashboard.mjs`
+spots them by what no person's browser reports: a UTC or "Etc/Unknown" time
+zone, an 800x600 screen, or a window larger than, or exactly the size of, the
+screen. It errs toward keeping a visit; a few bots with ordinary-looking
+screens still count.
+
 ### Copies in use
 
 Two events show how many copies of Avora are actually used:
