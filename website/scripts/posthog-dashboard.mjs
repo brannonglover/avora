@@ -54,8 +54,14 @@ const UPDATE_CHECK = "avora_update_check";
 // person's browser reports: a time zone of UTC or "Etc/Unknown", an 800x600
 // screen, a window larger than the screen, or a window exactly the size of the
 // screen (no tabs, toolbar or taskbar, which is how headless browsers render).
+// Bot fleets also reuse made-up devices from unrelated networks: screen sizes
+// no device has (FAKE_SCREENS), and Safari older than 16 on an iPhone screen
+// size Apple only shipped with iOS 16 and later.
 // Kept here rather than in the project's internal-traffic filter, which Cavaro
 // shares.  Events without these properties (the app's) are unaffected.
+// Each seen from several unrelated networks in Nov 2026, never from a person.
+const FAKE_SCREENS = ["360x910", "393x982", "1024x898", "1600x1333", "1381x1297"];
+
 const AUTOMATED_BROWSER = `(
   ifNull(properties.$timezone in ('Etc/Unknown', 'UTC'), 0)
   or ifNull(toFloat(properties.$screen_width) = 800 and toFloat(properties.$screen_height) = 600, 0)
@@ -63,6 +69,12 @@ const AUTOMATED_BROWSER = `(
   or ifNull(toFloat(properties.$viewport_height) > toFloat(properties.$screen_height), 0)
   or ifNull(toFloat(properties.$viewport_width) = toFloat(properties.$screen_width)
       and toFloat(properties.$viewport_height) = toFloat(properties.$screen_height), 0)
+  or ifNull(concat(toString(toInt(toFloat(properties.$screen_width))), 'x',
+      toString(toInt(toFloat(properties.$screen_height))))
+      in (${FAKE_SCREENS.map((size) => `'${size}'`).join(", ")}), 0)
+  or ifNull(properties.$os = 'iOS' and properties.$browser = 'Mobile Safari'
+      and toFloat(properties.$browser_version) < 16
+      and toFloat(properties.$screen_width) in (393, 402, 430, 440), 0)
 )`;
 
 // Website events are limited to the live site's host and to browsers people

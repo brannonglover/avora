@@ -128,9 +128,11 @@ The website charts also leave out automated browsers: security scanners and
 crawlers that run the page's script, Download button included, while claiming
 to be Chrome or Edge. `AUTOMATED_BROWSER` in `scripts/posthog-dashboard.mjs`
 spots them by what no person's browser reports: a UTC or "Etc/Unknown" time
-zone, an 800x600 screen, or a window larger than, or exactly the size of, the
-screen. It errs toward keeping a visit; a few bots with ordinary-looking
-screens still count.
+zone, an 800x600 screen, a window larger than, or exactly the size of, the
+screen, a screen size no device has (`FAKE_SCREENS`, sizes bot fleets reuse
+from unrelated networks), or old Safari on an iPhone too new for it. It errs
+toward keeping a visit; a new fleet with ordinary-looking screens still counts
+until its size is added to `FAKE_SCREENS`.
 
 ### Copies in use
 
